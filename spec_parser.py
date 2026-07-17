@@ -8,3 +8,7 @@ derived = spec[spec["Origin"] == "Derived"]
 print(len(copies), "copies")
 print(len(derived), "derived")
 print(spec["Origin"].value_counts())
+print("\n--- Derived variables ---")
+
+for i, row in derived.iterrows():
+    print(row["Variable"], "|", row["Type"], "|", row["Derivation"])
