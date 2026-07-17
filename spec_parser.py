@@ -12,3 +12,9 @@ print("\n--- Derived variables ---")
 
 for i, row in derived.iterrows():
     print(row["Variable"], "|", row["Type"], "|", row["Derivation"])
+
+from prompt_builder import build_prompt
+
+test_row = derived.iloc[0]
+print("\n--- PROMPT ---")
+print(build_prompt(test_row))
