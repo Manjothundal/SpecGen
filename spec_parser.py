@@ -18,3 +18,8 @@ from prompt_builder import build_prompt
 test_row = derived.iloc[0]
 print("\n--- PROMPT ---")
 print(build_prompt(test_row))
+
+from generator import generate_sas
+
+print("\n--- GENERATED SAS ---")
+print(generate_sas(build_prompt(test_row)))

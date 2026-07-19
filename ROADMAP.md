@@ -12,7 +12,7 @@ Offline-first tool that generates and updates SAS programs
 - [x] Phase 0: Setup (VS Code, Git, project folder)
 - [x] Phase 1: Spec parser (Excel -> Python)
 - [x] Phase 2: Prompt builder (one variable -> instruction)
-- [ ] Phase 3: Generator (first ADSL program)
+- [x] Phase 3: Generator (first ADSL program)
 - [ ] Phase 4: Validation + Ollama swap
 - [ ] Phase 5: SDTM from aCRF, TLF from SAP + mock shells
 - [ ] Phase 6: Update mode (spec diff -> code patch)
