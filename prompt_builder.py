@@ -9,8 +9,10 @@ Type: {row['Type']}, Length: {row['Length']}
 Derivation rule: {row['Derivation']}
 
 Rules:
-- Assume input SDTM datasets (DM, EX, etc.) are already available in WORK.
-- Output ONLY the SAS code, no explanation.
-- Add a comment above the code stating the variable name and rule.
+- Output ONLY the derivation logic statements (length, label, if/then, assignments).
+- Do NOT include data, set, merge, or run statements - the code will be inserted into an existing data step.
+- Assume all needed SDTM variables (from DM, EX, etc.) are already available in the step.
+- Add a comment above the logic stating the variable name and rule.
+- Output plain SAS code only, no explanation, no markdown fences.
 """
     return prompt

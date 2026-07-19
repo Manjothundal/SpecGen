@@ -23,3 +23,13 @@ from generator import generate_sas
 
 print("\n--- GENERATED SAS ---")
 print(generate_sas(build_prompt(test_row)))
+
+#assembler
+from assembler import assemble_adsl
+
+program = assemble_adsl(spec, derived)
+
+with open("adsl.sas", "w") as f:
+    f.write(program)
+
+print("\nSaved adsl.sas")
