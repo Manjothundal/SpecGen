@@ -57,7 +57,7 @@ data adsl;
   merge dm ex_dates ex_first suppdm_w se_epoch;
   by usubjid;
 
-/* Derive AGEGR1: Pooled Age Group 1 */
+/* AGEGR1: Pooled Age Group 1 */
 length AGEGR1 $10;
 label AGEGR1 = "Pooled Age Group 1";
 
@@ -68,7 +68,7 @@ select;
   otherwise AGEGR1 = "";
 end;
 
-/* AGEGR1N: Numeric code for AGEGR1: "<65"=1; "65-80"=2; ">80"=3 */
+/* Derive AGEGR1N: Numeric code for AGEGR1 */
 length AGEGR1N 8;
 label AGEGR1N = "Pooled Age Group 1 (N)";
 
@@ -84,7 +84,7 @@ length TRT01P $40;
 label TRT01P = "Planned Treatment for Period 01";
 TRT01P = ARM;
 
-/* Derive TRT01PN - Planned Treatment for Period 01 (N) */
+/* TRT01PN: Planned Treatment for Period 01 (N) */
 length TRT01PN 8;
 label TRT01PN = "Planned Treatment for Period 01 (N)";
 
@@ -98,7 +98,8 @@ end;
 /* TRTDURD: Total Treatment Duration (Days) */
 length TRTDURD 8;
 label TRTDURD = "Total Treatment Duration (Days)";
-if not missing(TRTSDT) and not missing(TRTEDT) then TRTDURD = TRTEDT - TRTSDT + 1;
+
+if nmiss(TRTEDT, TRTSDT) = 0 then TRTDURD = TRTEDT - TRTSDT + 1;
 else TRTDURD = .;
 
 /* EPOCHFL: Entered Treatment Epoch Flag */
@@ -122,12 +123,11 @@ label SAFFL = "Safety Population Flag";
 if not missing(TRTSDT) then SAFFL = "Y";
 else SAFFL = "N";
 
-/* ITTFL: Intent-To-Treat Population Flag */
-/* Y if ARM is not missing and not "Screen Failure"; else N */
+/* Derive ITTFL - Intent-To-Treat Population Flag */
 length ITTFL $1;
 label ITTFL = "Intent-To-Treat Population Flag";
 
-if not missing(ARM) and ARM ne "Screen Failure" then ITTFL = "Y";
+if not missing(ARM) and upcase(ARM) ne "SCREEN FAILURE" then ITTFL = "Y";
 else ITTFL = "N";
 
 /* TRT01A fallback: subjects never dosed take planned treatment */

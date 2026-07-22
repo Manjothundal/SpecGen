@@ -1,9 +1,22 @@
 from generator import generate_sas
 from prompt_builder import build_prompt
+from reviewer import review_block
 
 def clean(code):
     """Remove markdown fences if the model added them anyway."""
     return code.replace("```sas", "").replace("```", "").strip()
+
+def known_variables(spec):
+    """All variables legitimately available inside the main data step."""
+    # variables the spec defines
+    spec_vars = list(spec["Variable"])
+    # SDTM columns arriving from DM
+    dm_vars = ["STUDYID", "USUBJID", "SUBJID", "SITEID", "AGE", "AGEU",
+               "SEX", "RACE", "ARM", "ARMCD", "ACTARM", "DTHFL", "RFSTDTC", "RFENDTC"]
+    # columns created by the pre-steps
+    prestep_vars = ["TRTSDT", "TRTEDT", "TRT01A", "TRTEPSDT", "TRTEPEDT",
+                    "RACEOTH", "COMPLT"]
+    return sorted(set(spec_vars + dm_vars + prestep_vars))
 
 def gen_block(row):
     """Generate one variable's derivation logic via the model."""
@@ -86,9 +99,15 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
     parts.append("  by usubjid;")
     parts.append("")
 
-    # main-step derived variables, in spec Order
+    # main-step derived variables, in spec Order (each QC'd by the reviewer)
+    available = known_variables(spec)
     for i, row in main_step.sort_values("Order").iterrows():
-        parts.append(gen_block(row))
+        block = gen_block(row)
+        verdict = review_block(block, available)
+        if verdict.startswith("FAIL"):
+            print("   QC:", verdict)
+            block = "/* QC FLAG: " + verdict + " */\n" + block
+        parts.append(block)
         parts.append("")
 
     # TRT01A fallback: if never dosed, use planned treatment
