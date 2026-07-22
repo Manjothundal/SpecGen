@@ -1,6 +1,7 @@
 from generator import generate_sas
 from prompt_builder import build_prompt
 from reviewer import review_block
+from improver import improve_block
 
 def clean(code):
     """Remove markdown fences if the model added them anyway."""
@@ -99,10 +100,12 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
     parts.append("  by usubjid;")
     parts.append("")
 
-    # main-step derived variables, in spec Order (each QC'd by the reviewer)
+   # main-step derived variables, in spec Order
     available = known_variables(spec)
     for i, row in main_step.sort_values("Order").iterrows():
         block = gen_block(row)
+        print("   Improving:", row["Variable"])
+        block = clean(improve_block(block, row, available))
         verdict = review_block(block, available)
         if verdict.startswith("FAIL"):
             print("   QC:", verdict)
