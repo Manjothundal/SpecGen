@@ -1,4 +1,4 @@
-from generator import generate_sas
+from generator import review_sas
 
 def build_review_prompt(code, known_vars):
     """Ask the model to check generated code against the known variable list."""
@@ -26,5 +26,5 @@ No other text.
 
 def review_block(code, known_vars):
     """Return the model's one-line verdict on a code block."""
-    verdict = generate_sas(build_review_prompt(code, known_vars)).strip()
+    verdict = review_sas(build_review_prompt(code, known_vars)).strip()
     return verdict
