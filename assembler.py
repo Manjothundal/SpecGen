@@ -51,9 +51,22 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
     parts.append("quit;")
     parts.append("")
 
+    # ---- Pre-step 4: transpose SUPPDM to one row per subject
+    parts.append("/* Pre-step 4: transpose SUPPDM (tall) to one row per subject (wide) */")
+    parts.append("proc sort data=suppdm out=suppdm_s;")
+    parts.append("  by usubjid qnam;")
+    parts.append("run;")
+    parts.append("")
+    parts.append("proc transpose data=suppdm_s out=suppdm_w(drop=_name_);")
+    parts.append("  by usubjid;")
+    parts.append("  id qnam;")
+    parts.append("  var qval;")
+    parts.append("run;")
+    parts.append("")
+
     # ---- Main step
     parts.append("data adsl;")
-    parts.append("  merge dm ex_dates ex_first;")
+    parts.append("  merge dm ex_dates ex_first suppdm_w;")
     parts.append("  by usubjid;")
     parts.append("")
 

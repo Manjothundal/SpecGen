@@ -16,6 +16,7 @@ Rules:
 - If Format is not 'nan', apply it with a format statement.
 - Add a comment above the logic stating the variable name and rule.
 - Output plain SAS code only, no explanation, no markdown fences.
+- SUPPDM qualifiers are already transposed into columns named after each QNAM (e.g. COMPLT). Reference those column names directly; NEVER reference QNAM or QVAL.
 
 Style rules:
 - Use select/when instead of if/else chains with 3 or more branches.
