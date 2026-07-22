@@ -20,23 +20,40 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
     parts.append("/**********************************/")
     parts.append("")
 
-    # ---- Pre-step: collapse EX to one row per subject
-    parts.append("/* Pre-step: summarize EX to one row per subject */")
+    # ---- Pre-step 1: dosing records only, sorted by date
+    parts.append("/* Pre-step 1: dosing records, earliest first */")
+    parts.append("proc sort data=ex(where=(exdose > 0 and exstdtc ne '')) out=ex_dosed;")
+    parts.append("  by usubjid exstdtc;")
+    parts.append("run;")
+    parts.append("")
+
+    # ---- Pre-step 2: first treatment per subject
+    parts.append("/* Pre-step 2: treatment from the first dosing record */")
+    parts.append("data ex_first(keep=usubjid TRT01A);")
+    parts.append("  set ex_dosed;")
+    parts.append("  by usubjid exstdtc;")
+    parts.append("  if first.usubjid;")
+    parts.append("  length TRT01A $40;")
+    parts.append("  TRT01A = extrt;")
+    parts.append("run;")
+    parts.append("")
+
+    # ---- Pre-step 3: treatment date span per subject
+    parts.append("/* Pre-step 3: first and last dosing dates per subject */")
     parts.append("proc sql;")
-    parts.append("  create table ex_summary as select")
+    parts.append("  create table ex_dates as select")
     parts.append("    usubjid,")
-    parts.append("    min(case when exdose > 0 and exstdtc ne '' ")
-    parts.append("        then datepart(input(exstdtc, e8601dt.)) end) as TRTSDT format=date9.,")
-    parts.append("    max(case when exdose > 0 and exendtc ne '' ")
-    parts.append("        then datepart(input(exendtc, e8601dt.)) end) as TRTEDT format=date9.")
+    parts.append("    min(input(substr(exstdtc,1,10), ?? yymmdd10.)) as TRTSDT format=date9.,")
+    parts.append("    max(input(substr(exendtc,1,10), ?? yymmdd10.)) as TRTEDT format=date9.")
     parts.append("  from ex")
+    parts.append("  where exdose > 0")
     parts.append("  group by usubjid;")
     parts.append("quit;")
     parts.append("")
 
     # ---- Main step
     parts.append("data adsl;")
-    parts.append("  merge dm ex_summary;")
+    parts.append("  merge dm ex_dates ex_first;")
     parts.append("  by usubjid;")
     parts.append("")
 
