@@ -84,7 +84,7 @@ length TRT01P $40;
 label TRT01P = "Planned Treatment for Period 01";
 TRT01P = ARM;
 
-/* TRT01PN - Planned Treatment for Period 01 (N) */
+/* Derive TRT01PN - Planned Treatment for Period 01 (N) */
 length TRT01PN 8;
 label TRT01PN = "Planned Treatment for Period 01 (N)";
 
@@ -98,25 +98,25 @@ end;
 /* TRTDURD: Total Treatment Duration (Days) */
 length TRTDURD 8;
 label TRTDURD = "Total Treatment Duration (Days)";
-
-if not missing(TRTEDT) and not missing(TRTSDT) then TRTDURD = TRTEDT - TRTSDT + 1;
+if not missing(TRTSDT) and not missing(TRTEDT) then TRTDURD = TRTEDT - TRTSDT + 1;
 else TRTDURD = .;
 
 /* EPOCHFL: Entered Treatment Epoch Flag */
 /* Y if TRTEPSDT is non-missing; else N */
 length EPOCHFL $1;
 label EPOCHFL = "Entered Treatment Epoch Flag";
-if not missing(TRTEPSDT) then EPOCHFL = "Y";
-else EPOCHFL = "N";
+if not missing(TRTEPSDT) then EPOCHFL = 'Y';
+else EPOCHFL = 'N';
 
 /* COMPFL: Study Completion Flag */
+/* Y if SUPPDM QNAM=COMPLT has QVAL of "Y"; else N. */
 length COMPFL $1;
 label COMPFL = "Study Completion Flag";
 
 if upcase(COMPLT) = "Y" then COMPFL = "Y";
 else COMPFL = "N";
 
-/* SAFFL: Y if TRTSDT is non-missing; else N */
+/* SAFFL: Safety Population Flag - Y if TRTSDT is non-missing; else N */
 length SAFFL $1;
 label SAFFL = "Safety Population Flag";
 if not missing(TRTSDT) then SAFFL = "Y";

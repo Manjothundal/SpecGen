@@ -1,4 +1,5 @@
 import pandas as pd
+from runlog import log_run
 from assembler import assemble_adsl
 
 # Read the Variables sheet from the spec workbook
@@ -24,3 +25,6 @@ with open("adsl.sas", "w") as f:
     f.write(program)
 
 print("\nSaved adsl.sas")
+
+# Log this run in the runlog.csv file
+log_run("adam_spec.xlsx", "claude-sonnet-4-5", len(main_step), "adsl.sas")
