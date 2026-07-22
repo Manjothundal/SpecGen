@@ -48,18 +48,18 @@ length AGEGR1N 8;
 label AGEGR1N = "Pooled Age Group 1 (N)";
 
 select (AGEGR1);
-  when ("<65") AGEGR1N = 1;
+  when ("<65")   AGEGR1N = 1;
   when ("65-80") AGEGR1N = 2;
-  when (">80") AGEGR1N = 3;
-  otherwise AGEGR1N = .;
+  when (">80")   AGEGR1N = 3;
+  otherwise      AGEGR1N = .;
 end;
 
-/* Derive TRT01P - Planned Treatment for Period 01 */
+/* TRT01P: Planned Treatment for Period 01 - Set to DM.ARM */
 length TRT01P $40;
 label TRT01P = "Planned Treatment for Period 01";
 TRT01P = ARM;
 
-/* TRT01PN: Planned Treatment for Period 01 (N) */
+/* TRT01PN: Numeric code for TRT01P */
 length TRT01PN 8;
 label TRT01PN = "Planned Treatment for Period 01 (N)";
 
@@ -74,22 +74,25 @@ end;
 /* Derivation: TRTEDT - TRTSDT + 1. Missing if either date is missing. */
 length TRTDURD 8;
 label TRTDURD = "Total Treatment Duration (Days)";
-if n(TRTSDT, TRTEDT) = 2 then TRTDURD = TRTEDT - TRTSDT + 1;
+if not missing(TRTSDT) and not missing(TRTEDT) then TRTDURD = TRTEDT - TRTSDT + 1;
 else TRTDURD = .;
 
-/* Derive SAFFL: Safety Population Flag */
-/* Y if TRTSDT is non-missing; else N */
+/* SAFFL: Y if TRTSDT is non-missing; else N */
 length SAFFL $1;
 label SAFFL = "Safety Population Flag";
-if not missing(TRTSDT) then SAFFL = 'Y';
-else SAFFL = 'N';
+if not missing(TRTSDT) then SAFFL = "Y";
+else SAFFL = "N";
 
-/* ITTFL: Y if ARM is not missing and not "Screen Failure"; else N */
+/* ITTFL: Intent-To-Treat Population Flag */
+/* Y if ARM is not missing and not "Screen Failure"; else N */
 length ITTFL $1;
 label ITTFL = "Intent-To-Treat Population Flag";
 
-if not missing(ARM) and ARM ne "Screen Failure" then ITTFL = "Y";
-else ITTFL = "N";
+if ARM ne '' and ARM ne "Screen Failure" then ITTFL = 'Y';
+else ITTFL = 'N';
+
+/* TRT01A fallback: subjects never dosed take planned treatment */
+if missing(TRT01A) then TRT01A = TRT01P;
 
   keep STUDYID USUBJID SUBJID SITEID AGE AGEU AGEGR1 AGEGR1N SEX RACE ARM TRT01P TRT01PN TRT01A TRTSDT TRTEDT TRTDURD SAFFL ITTFL DTHFL;
 run;

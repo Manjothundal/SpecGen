@@ -62,6 +62,11 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
         parts.append(gen_block(row))
         parts.append("")
 
+    # TRT01A fallback: if never dosed, use planned treatment
+    parts.append("/* TRT01A fallback: subjects never dosed take planned treatment */")
+    parts.append("if missing(TRT01A) then TRT01A = TRT01P;")
+    parts.append("")
+
     # keep only spec variables
     keep_list = " ".join(spec["Variable"])
     parts.append("  keep " + keep_list + ";")
