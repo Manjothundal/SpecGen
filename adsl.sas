@@ -39,11 +39,25 @@ proc transpose data=suppdm_s out=suppdm_w(drop=_name_);
   var qval;
 run;
 
+/* Pre-step 5: treatment epoch dates from SE (ETCD = TRT) */
+proc sort data=se(where=(etcd = 'TRT')) out=se_trt;
+  by usubjid sestdtc;
+run;
+
+data se_epoch(keep=usubjid TRTEPSDT TRTEPEDT);
+  set se_trt;
+  by usubjid sestdtc;
+  if first.usubjid;
+  TRTEPSDT = input(substr(sestdtc,1,10), ?? yymmdd10.);
+  TRTEPEDT = input(substr(seendtc,1,10), ?? yymmdd10.);
+  format TRTEPSDT TRTEPEDT date9.;
+run;
+
 data adsl;
-  merge dm ex_dates ex_first suppdm_w;
+  merge dm ex_dates ex_first suppdm_w se_epoch;
   by usubjid;
 
-/* AGEGR1: Pooled Age Group 1 */
+/* Derive AGEGR1: Pooled Age Group 1 */
 length AGEGR1 $10;
 label AGEGR1 = "Pooled Age Group 1";
 
@@ -70,7 +84,7 @@ length TRT01P $40;
 label TRT01P = "Planned Treatment for Period 01";
 TRT01P = ARM;
 
-/* TRT01PN: Planned Treatment for Period 01 (N) */
+/* TRT01PN - Planned Treatment for Period 01 (N) */
 length TRT01PN 8;
 label TRT01PN = "Planned Treatment for Period 01 (N)";
 
@@ -88,13 +102,21 @@ label TRTDURD = "Total Treatment Duration (Days)";
 if not missing(TRTEDT) and not missing(TRTSDT) then TRTDURD = TRTEDT - TRTSDT + 1;
 else TRTDURD = .;
 
+/* EPOCHFL: Entered Treatment Epoch Flag */
+/* Y if TRTEPSDT is non-missing; else N */
+length EPOCHFL $1;
+label EPOCHFL = "Entered Treatment Epoch Flag";
+if not missing(TRTEPSDT) then EPOCHFL = "Y";
+else EPOCHFL = "N";
+
 /* COMPFL: Study Completion Flag */
 length COMPFL $1;
 label COMPFL = "Study Completion Flag";
+
 if upcase(COMPLT) = "Y" then COMPFL = "Y";
 else COMPFL = "N";
 
-/* SAFFL: Safety Population Flag - Y if TRTSDT is non-missing; else N */
+/* SAFFL: Y if TRTSDT is non-missing; else N */
 length SAFFL $1;
 label SAFFL = "Safety Population Flag";
 if not missing(TRTSDT) then SAFFL = "Y";
@@ -105,11 +127,11 @@ else SAFFL = "N";
 length ITTFL $1;
 label ITTFL = "Intent-To-Treat Population Flag";
 
-if not missing(ARM) and upcase(ARM) ne "SCREEN FAILURE" then ITTFL = "Y";
+if not missing(ARM) and ARM ne "Screen Failure" then ITTFL = "Y";
 else ITTFL = "N";
 
 /* TRT01A fallback: subjects never dosed take planned treatment */
 if missing(TRT01A) then TRT01A = TRT01P;
 
-  keep STUDYID USUBJID SUBJID SITEID AGE AGEU AGEGR1 AGEGR1N SEX RACE RACEOTH ARM TRT01P TRT01PN TRT01A TRTSDT TRTEDT TRTDURD COMPFL SAFFL ITTFL DTHFL;
+  keep STUDYID USUBJID SUBJID SITEID AGE AGEU AGEGR1 AGEGR1N SEX RACE RACEOTH ARM TRT01P TRT01PN TRT01A TRTSDT TRTEDT TRTDURD TRTEPSDT TRTEPEDT EPOCHFL COMPFL SAFFL ITTFL DTHFL;
 run;

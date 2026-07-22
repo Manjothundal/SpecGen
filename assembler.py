@@ -64,9 +64,25 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
     parts.append("run;")
     parts.append("")
 
+    # ---- Pre-step 5: treatment epoch dates from SE
+    parts.append("/* Pre-step 5: treatment epoch dates from SE (ETCD = TRT) */")
+    parts.append("proc sort data=se(where=(etcd = 'TRT')) out=se_trt;")
+    parts.append("  by usubjid sestdtc;")
+    parts.append("run;")
+    parts.append("")
+    parts.append("data se_epoch(keep=usubjid TRTEPSDT TRTEPEDT);")
+    parts.append("  set se_trt;")
+    parts.append("  by usubjid sestdtc;")
+    parts.append("  if first.usubjid;")
+    parts.append("  TRTEPSDT = input(substr(sestdtc,1,10), ?? yymmdd10.);")
+    parts.append("  TRTEPEDT = input(substr(seendtc,1,10), ?? yymmdd10.);")
+    parts.append("  format TRTEPSDT TRTEPEDT date9.;")
+    parts.append("run;")
+    parts.append("")
+
     # ---- Main step
     parts.append("data adsl;")
-    parts.append("  merge dm ex_dates ex_first suppdm_w;")
+    parts.append("  merge dm ex_dates ex_first suppdm_w se_epoch;")
     parts.append("  by usubjid;")
     parts.append("")
 
