@@ -1,6 +1,8 @@
 import pandas as pd
 from runlog import log_run
 from assembler import assemble_adsl
+from config import WRITER, REVIEWER
+from generator import model_name
 
 # Read the Variables sheet from the spec workbook
 spec = pd.read_excel("adam_spec.xlsx", sheet_name="Variables")
@@ -27,4 +29,13 @@ with open("adsl.sas", "w") as f:
 print("\nSaved adsl.sas")
 
 # Log this run in the runlog.csv file
-log_run("adam_spec.xlsx", "claude-sonnet-4-5", len(main_step), "adsl.sas")
+mode = f"{WRITER}-writer/{REVIEWER}-reviewer"
+log_run(
+    "adam_spec.xlsx",
+    mode,
+    model_name(WRITER),
+    model_name(REVIEWER),
+    model_name(REVIEWER),
+    len(main_step),
+    "adsl.sas",
+)

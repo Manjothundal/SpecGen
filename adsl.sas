@@ -57,26 +57,28 @@ data adsl;
   merge dm ex_dates ex_first suppdm_w se_epoch;
   by usubjid;
 
-* AGEGR1: Pooled Age Group 1;
+/* Derive AGEGR1: Pooled Age Group 1 */
 length AGEGR1 $10;
 label AGEGR1 = "Pooled Age Group 1";
-if AGE < 65 then AGEGR1 = "<65";
-else if 65 <= AGE <= 80 then AGEGR1 = "65-80";
-else if AGE > 80 then AGEGR1 = ">80";
+if AGE ne . then do;
+    if AGE < 65 then AGEGR1 = "<65";
+    else if AGE <= 80 then AGEGR1 = "65-80";
+    else if AGE > 80 then AGEGR1 = ">80";
+end;
 
-/* Derive AGEGR1N as numeric code for AGEGR1 */
+/* Derive numeric age group variable */
 length AGEGR1N 8;
-label AGEGR1N = "Pooled Age Group 1 (N)";
+label AGEGR1N = 'Pooled Age Group 1 (N)';
 if AGEGR1 = "<65" then AGEGR1N = 1;
 else if AGEGR1 = "65-80" then AGEGR1N = 2;
 else if AGEGR1 = ">80" then AGEGR1N = 3;
 
-/* TRT01P: Planned Treatment for Period 01 */
+* Derive TRT01P from ARM per specification;
 length TRT01P $40;
 label TRT01P = "Planned Treatment for Period 01";
 TRT01P = ARM;
 
-/* Derive TRT01PN: Planned Treatment for Period 01 (N) */
+/* TRT01PN: Planned Treatment for Period 01 (N) */
 length TRT01PN 8;
 label TRT01PN = "Planned Treatment for Period 01 (N)";
 select (TRT01P);
@@ -86,33 +88,33 @@ select (TRT01P);
     otherwise TRT01PN = .;
 end;
 
-/* Derive Total Treatment Duration (Days) */
+/* TRTDURD: Total Treatment Duration (Days) */
 length TRTDURD 8;
-label TRTDURD = 'Total Treatment Duration (Days)';
-if TRTEDT ne . and TRTSDT ne . then TRTDURD = TRTEDT - TRTSDT + 1;
+label TRTDURD = "Total Treatment Duration (Days)";
+if not missing(TRTEDT) and not missing(TRTSDT) then TRTDURD = TRTEDT - TRTSDT + 1;
 else TRTDURD = .;
 
-/* Derive EPOCHFL: Entered Treatment Epoch Flag */
+/* Derive Entered Treatment Epoch Flag */
 length EPOCHFL $1;
-label EPOCHFL = 'Entered Treatment Epoch Flag';
+label EPOCHFL = "Entered Treatment Epoch Flag";
 if not missing(TRTEPSDT) then EPOCHFL = 'Y';
 else EPOCHFL = 'N';
 
-/* Derive Study Completion Flag from SUPPDM QVAL */
+* Derive Study Completion Flag from COMPLT variable;
 length COMPFL $1;
-label COMPFL = 'Study Completion Flag';
+label COMPFL = "Study Completion Flag";
 if COMPLT = "Y" then COMPFL = "Y";
 else COMPFL = "N";
 
 /* Derive Safety Population Flag */
 length SAFFL $1;
-label SAFFL = 'Safety Population Flag';
+label SAFFL = "Safety Population Flag";
 if not missing(TRTSDT) then SAFFL = 'Y';
 else SAFFL = 'N';
 
-* Derive Intent-To-Treat Population Flag;
+* Derive ITT Population Flag based on ARM;
 length ITTFL $1;
-label ITTFL = "Intent-To-Treat Population Flag";
+label ITTFL = 'Intent-To-Treat Population Flag';
 if ARM ne "" and ARM ne "Screen Failure" then ITTFL = 'Y';
 else ITTFL = 'N';
 
