@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpecGen — UI Mockup</title>
+<style>
+  :root{
+    --paper:#FAFBFC; --ink:#14232E; --slate:#5B6B78; --line:#E3E9ED;
+    --teal:#0E7C86; --teal-dark:#0A5A62; --amber:#C77D0A; --amber-bg:#FDF3E3;
+    --green:#2E7D4F; --green-bg:#E8F4ED; --red:#B3402E; --red-bg:#FBEAE6;
+    --code-bg:#1B2B36; --code-ink:#D8E5EC; --local:#6B4FA3; --api:#0E7C86;
+    font-size:15px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    font-family:"Segoe UI", system-ui, -apple-system, sans-serif;
+    background:#EDF1F4; color:var(--ink); padding:28px 16px 60px;
+  }
+  .wrap{max-width:1180px; margin:0 auto;}
+  h1{font-size:1.45rem; font-weight:650; letter-spacing:-.01em;}
+  .sub{color:var(--slate); margin:6px 0 22px; max-width:72ch;}
+  .mono{font-family:Consolas, Menlo, monospace;}
+
+  .window{
+    background:var(--paper); border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 18px 50px rgba(20,35,46,.14); overflow:hidden;
+  }
+  .titlebar{
+    display:flex; align-items:center; gap:10px;
+    background:var(--ink); color:#fff; padding:9px 14px; font-size:.85rem;
+  }
+  .dots{display:flex; gap:6px;}
+  .dots span{width:11px;height:11px;border-radius:50%;background:#3E4F5B;}
+  .titlebar .mono{color:#9DB4C4; margin-left:6px;}
+  .brand{font-weight:700; letter-spacing:.02em;}
+
+  .modebar{
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    padding:12px 18px; border-bottom:1px solid var(--line); background:#fff;
+  }
+  .seg{display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden;}
+  .seg button{
+    border:0; background:#fff; padding:8px 15px; font:inherit; font-size:.85rem;
+    cursor:pointer; color:var(--slate); border-right:1px solid var(--line);
+  }
+  .seg button:last-child{border-right:0;}
+  .seg button.on{background:var(--teal); color:#fff; font-weight:600;}
+  .seg.lang button.on{background:var(--ink);}
+  .seglabel{font-size:.72rem; color:var(--slate); text-transform:uppercase; letter-spacing:.06em; font-weight:700;}
+  .privacy{font-size:.8rem; padding:5px 12px; border-radius:99px; font-weight:600;}
+  .privacy.off{background:#EFE9F8; color:var(--local);}
+  .privacy.hyb{background:var(--amber-bg); color:var(--amber);}
+  .privacy.api{background:#E2F1F2; color:var(--teal-dark);}
+  .agents{margin-left:auto; display:flex; gap:8px; font-size:.78rem; flex-wrap:wrap;}
+  .agent{display:flex; align-items:center; gap:6px; border:1px solid var(--line);
+    border-radius:7px; padding:5px 10px; background:#fff;}
+  .agent b{font-weight:600;}
+  .chip{width:8px;height:8px;border-radius:50%;}
+  .chip.local{background:var(--local);} .chip.api{background:var(--api);}
+
+  .appbody{display:flex; min-height:580px;}
+  nav{
+    width:200px; border-right:1px solid var(--line); background:#F4F7F9;
+    padding:16px 10px; flex-shrink:0;
+  }
+  nav button{
+    display:flex; align-items:center; gap:10px; width:100%;
+    border:0; background:none; font:inherit; font-size:.88rem; text-align:left;
+    padding:10px 12px; border-radius:8px; cursor:pointer; color:var(--slate);
+    margin-bottom:4px;
+  }
+  nav button .step{
+    width:22px;height:22px;border-radius:50%;border:1.5px solid var(--slate);
+    display:grid;place-items:center;font-size:.72rem;font-weight:700;flex-shrink:0;
+  }
+  nav button.on{background:#fff; color:var(--ink); font-weight:600;
+    box-shadow:0 1px 4px rgba(20,35,46,.08);}
+  nav button.on .step{background:var(--teal); border-color:var(--teal); color:#fff;}
+  main{flex:1; padding:20px 22px; min-width:0;}
+
+  .screen{display:none;}
+  .screen.on{display:block; animation:fade .18s ease;}
+  @keyframes fade{from{opacity:0; transform:translateY(4px);} to{opacity:1;}}
+  .screen h2{font-size:1.05rem; margin-bottom:4px;}
+  .screen .hint{color:var(--slate); font-size:.85rem; margin-bottom:16px;}
+
+  .co{
+    display:inline-grid; place-items:center; width:20px; height:20px;
+    background:var(--amber); color:#fff; border-radius:50%;
+    font-size:.72rem; font-weight:700; vertical-align:middle; margin-left:8px;
+    flex-shrink:0;
+  }
+
+  .drop{
+    border:1.6px dashed #B9C6CE; border-radius:10px; padding:20px;
+    display:flex; align-items:center; gap:14px; background:#fff; margin-bottom:14px;
+  }
+  .drop .file{font-weight:600;}
+  .btn{
+    border:0; border-radius:8px; padding:9px 18px; font:inherit; font-size:.88rem;
+    font-weight:600; cursor:pointer;
+  }
+  .btn.primary{background:var(--teal); color:#fff;}
+  .btn.primary:hover{background:var(--teal-dark);}
+  .btn.ghost{background:#fff; border:1px solid var(--line); color:var(--ink);}
+  table{width:100%; border-collapse:collapse; font-size:.84rem; background:#fff;}
+  th{
+    text-align:left; color:var(--slate); font-weight:600; font-size:.76rem;
+    text-transform:uppercase; letter-spacing:.05em;
+    padding:8px 10px; border-bottom:1.5px solid var(--line);
+  }
+  td{padding:8px 10px; border-bottom:1px solid var(--line);}
+  .src{font-size:.72rem; font-weight:700; padding:3px 9px; border-radius:99px;}
+  .src.dm{background:#E2F1F2; color:var(--teal-dark);}
+  .src.ex{background:#EFE9F8; color:var(--local);}
+  .src.supp{background:var(--amber-bg); color:var(--amber);}
+  .src.se{background:#E8EFF7; color:#2F5D8A;}
+  .src.der{background:#EEF2F4; color:var(--slate);}
+  .counts{display:flex; gap:18px; margin:14px 0 0; font-size:.85rem; color:var(--slate); flex-wrap:wrap;}
+  .counts b{color:var(--ink);}
+
+  .pipeline{display:flex; align-items:stretch; gap:10px; margin-bottom:18px; flex-wrap:wrap;}
+  .stage{flex:1; min-width:150px; border:1px solid var(--line); border-radius:10px;
+    padding:12px 14px; background:#fff;}
+  .stage h4{font-size:.85rem; display:flex; align-items:center; gap:7px;}
+  .stage p{font-size:.76rem; color:var(--slate); margin-top:5px;}
+  .arrow{align-self:center; color:#9AAAB4; font-size:1.1rem;}
+  .prog{background:#fff; border:1px solid var(--line); border-radius:10px; padding:6px 0;}
+  .prog li{list-style:none; display:flex; align-items:center; gap:10px;
+    padding:7px 16px; font-size:.85rem; border-bottom:1px solid #F0F4F6;}
+  .prog li:last-child{border-bottom:0;}
+  .st{font-size:.72rem; font-weight:700; padding:2px 9px; border-radius:99px; margin-left:auto;}
+  .st.done{background:var(--green-bg); color:var(--green);}
+  .st.run{background:var(--amber-bg); color:var(--amber);}
+  .st.wait{background:#EEF2F4; color:var(--slate);}
+
+  .review{display:flex; gap:16px; align-items:flex-start;}
+  .codepane{
+    flex:1.4; min-width:0; background:var(--code-bg); color:var(--code-ink);
+    border-radius:10px; padding:16px 18px; font-family:Consolas,Menlo,monospace;
+    font-size:.8rem; line-height:1.55; overflow:auto; max-height:420px;
+  }
+  .codepane .cm{color:#7FB4A8;}
+  .codepane .flag{background:#4A3620; color:#F3C579; display:block; padding:2px 6px;
+    border-radius:4px; margin:6px 0;}
+  .rail{flex:1; min-width:230px; display:flex; flex-direction:column; gap:10px;}
+  .card{background:#fff; border:1px solid var(--line); border-radius:10px; padding:11px 13px;}
+  .card .head{display:flex; align-items:center; gap:8px; font-size:.86rem; font-weight:600;}
+  .badges{display:flex; gap:5px; margin:7px 0;}
+  .b{font-size:.66rem; font-weight:700; padding:2px 7px; border-radius:5px;}
+  .b.d{background:#EFE9F8; color:var(--local);}
+  .b.i{background:#E2F1F2; color:var(--teal-dark);}
+  .b.q{background:var(--green-bg); color:var(--green);}
+  .b.qf{background:var(--amber-bg); color:var(--amber);}
+  .card .acts{display:flex; gap:8px;}
+  .mini{border-radius:7px; padding:5px 12px; font:inherit; font-size:.78rem;
+    font-weight:600; cursor:pointer; border:1px solid var(--line); background:#fff;}
+  .mini.ok{border-color:var(--green); color:var(--green);}
+  .mini.ok.picked{background:var(--green); color:#fff;}
+  .mini.edit{color:var(--slate);}
+  .signoff{font-size:.84rem; color:var(--slate); background:#fff; border:1px dashed #B9C6CE;
+    border-radius:10px; padding:11px 13px;}
+
+  .auditrow{display:flex; gap:14px; margin-bottom:16px; flex-wrap:wrap;}
+  .kpi{flex:1; min-width:150px; background:#fff; border:1px solid var(--line);
+    border-radius:10px; padding:12px 14px;}
+  .kpi .n{font-size:1.3rem; font-weight:650;}
+  .kpi .l{font-size:.76rem; color:var(--slate);}
+
+  /* compare screen */
+  .cmp-drops{display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px;}
+  .cmp-drops .drop{flex:1; min-width:240px; margin:0;}
+  .sev{font-size:.7rem; font-weight:700; padding:2px 9px; border-radius:99px;}
+  .sev.hi{background:var(--red-bg); color:var(--red);}
+  .sev.lo{background:var(--amber-bg); color:var(--amber);}
+  .sev.ok{background:var(--green-bg); color:var(--green);}
+  .stamp{
+    display:inline-flex; align-items:center; gap:8px; margin-top:14px;
+    border:2px solid var(--red); color:var(--red); font-weight:700;
+    border-radius:8px; padding:7px 14px; font-size:.85rem; transform:rotate(-1.2deg);
+  }
+  .drill{background:#fff; border:1px solid var(--line); border-radius:10px;
+    padding:12px 14px; margin-top:12px; font-size:.83rem;}
+  .drill .mono{background:#F4F7F9; display:block; padding:8px 10px; border-radius:7px; margin-top:8px;}
+  .diffhi{background:#FBEAE6; color:var(--red); font-weight:700; padding:0 3px; border-radius:3px;}
+
+  .legend{margin-top:26px; background:#fff; border:1px solid var(--line);
+    border-radius:10px; padding:18px 20px;}
+  .legend h3{font-size:.95rem; margin-bottom:12px;}
+  .legend ol{list-style:none; display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:9px 26px;}
+  .legend li{display:flex; gap:10px; font-size:.85rem; align-items:flex-start;}
+  .legend .co{margin:1px 0 0;}
+  .legend b{font-weight:600;}
+  @media (max-width:760px){
+    .appbody{flex-direction:column;} nav{width:100%; display:flex; overflow-x:auto;}
+    nav button{white-space:nowrap;}
+    .review{flex-direction:column;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>SpecGen — interface concept</h1>
+  <p class="sub">Clickable mockup of the SpecGen desktop app: spec-to-program generation in SAS or R, a three-agent pipeline with three privacy modes, human sign-off, an audit trail, and the output comparison module. Numbered badges are explained in the legend below.</p>
+
+  <div class="window">
+    <div class="titlebar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span class="brand">SpecGen</span> <span class="mono">— study: TOY-001 &nbsp;·&nbsp; adam_spec.xlsx</span>
+    </div>
+
+    <div class="modebar">
+      <span class="seglabel">Mode</span>
+      <div class="seg" role="tablist" aria-label="Generation mode">
+        <button class="on" onclick="setMode('off',this)">Offline</button>
+        <button onclick="setMode('hyb',this)">Hybrid</button>
+        <button onclick="setMode('api',this)">API</button>
+      </div>
+      <span class="co">1</span>
+      <span class="seglabel">Language</span>
+      <div class="seg lang" role="tablist" aria-label="Output language">
+        <button class="on" onclick="setLang('sas',this)">SAS</button>
+        <button onclick="setLang('r',this)">R</button>
+      </div>
+      <span class="co">2</span>
+      <span id="privacy" class="privacy off">Specs never leave this machine</span>
+      <div class="agents">
+        <span class="agent"><span id="chipW" class="chip local"></span><b>Writer</b> <span id="mW" class="mono">qwen2.5-coder:7b</span></span>
+        <span class="agent" id="agImp" style="display:none"><span class="chip api"></span><b>Improver</b> <span class="mono">claude-sonnet-4-5</span></span>
+        <span class="agent"><span id="chipR" class="chip local"></span><b>Reviewer</b> <span id="mR" class="mono">qwen2.5-coder:7b</span></span>
+        <span class="co">3</span>
+      </div>
+    </div>
+
+    <div class="appbody">
+      <nav>
+        <button class="on" onclick="go(0,this)"><span class="step">1</span> Spec</button>
+        <button onclick="go(1,this)"><span class="step">2</span> Generate</button>
+        <button onclick="go(2,this)"><span class="step">3</span> Review &amp; sign off</button>
+        <button onclick="go(3,this)"><span class="step">4</span> Export &amp; audit</button>
+        <button onclick="go(4,this)"><span class="step">5</span> Compare &amp; verify</button>
+      </nav>
+
+      <main>
+        <!-- SCREEN 1 -->
+        <section class="screen on">
+          <h2>Load the specification</h2>
+          <p class="hint">Drop the ADaM spec workbook. The parser reads the Variables sheet and routes every variable by its Source.</p>
+          <div class="drop">
+            <div>📄</div>
+            <div>
+              <div class="file mono">adam_spec.xlsx</div>
+              <div style="font-size:.78rem;color:var(--slate)">Variables · SuppQualifiers · Codelists — 25 variables</div>
+            </div>
+            <span class="co">4</span>
+            <button class="btn primary" style="margin-left:auto">Parse spec</button>
+            <span class="co">5</span>
+          </div>
+          <table>
+            <tr><th>Order</th><th>Variable</th><th>Origin</th><th>Source</th><th>Derivation</th></tr>
+            <tr><td>7</td><td class="mono">AGEGR1</td><td>Derived</td><td><span class="src dm">DM</span></td><td>&lt;65 / 65–80 / &gt;80 from AGE</td></tr>
+            <tr><td>11</td><td class="mono">RACEOTH</td><td>Predecessor</td><td><span class="src supp">SUPPDM</span></td><td>QNAM=RACEOTH (QVAL)</td></tr>
+            <tr><td>15</td><td class="mono">TRT01A</td><td>Derived</td><td><span class="src ex">EX_SUMMARY</span></td><td>EXTRT of first dose; else TRT01P</td></tr>
+            <tr><td>19</td><td class="mono">TRTEPSDT</td><td>Derived</td><td><span class="src se">SE_EPOCH</span></td><td>SESTDTC where ETCD=TRT</td></tr>
+            <tr><td>22</td><td class="mono">COMPFL</td><td>Derived</td><td><span class="src der">DERIVED</span></td><td>Y if COMPLT = "Y"</td></tr>
+          </table>
+          <div class="counts">
+            <span><b>11</b> copies</span><span><b>9</b> main-step</span>
+            <span><b>3</b> EX pre-step</span><span><b>2</b> SE pre-step</span><span><b>1</b> SUPPDM</span>
+            <span class="co">6</span>
+          </div>
+        </section>
+
+        <!-- SCREEN 2 -->
+        <section class="screen">
+          <h2>Generate the program</h2>
+          <p class="hint">Pre-steps are built by the harness in the chosen language; each derived variable travels the agent pipeline for the current mode.</p>
+          <div class="pipeline">
+            <div class="stage"><h4><span class="chip local"></span> Writer drafts</h4><p id="wNote">Local model writes each derivation from the spec row. Nothing leaves the machine.</p></div>
+            <div class="arrow">→</div>
+            <div class="stage" id="stImp" style="opacity:.35"><h4><span class="chip api"></span> Improver rewrites</h4><p>Claude rewrites the draft as a principal programmer (Hybrid / API modes).</p></div>
+            <div class="arrow">→</div>
+            <div class="stage"><h4><span class="chip api"></span> Reviewer QCs</h4><p>Checks against the known-variable list; failures become QC flags, never silent edits.</p></div>
+          </div>
+          <ul class="prog">
+            <li><span class="mono">AGEGR1</span><span class="st done">improved · pass</span></li>
+            <li><span class="mono">AGEGR1N</span><span class="st done">improved · pass</span></li>
+            <li><span class="mono">TRT01P</span><span class="st run">improving…</span></li>
+            <li><span class="mono">TRT01PN</span><span class="st wait">queued</span></li>
+            <li><span class="mono">ITTFL</span><span class="st wait">queued</span></li>
+          </ul>
+          <div style="margin-top:16px; display:flex; gap:10px; align-items:center;">
+            <button class="btn primary" id="genBtn">Generate ADSL (SAS)</button><span class="co">7</span>
+            <span style="font-size:.8rem;color:var(--slate)">est. 9 variables · ~2 min in Hybrid · logged to runlog.csv</span>
+          </div>
+        </section>
+
+        <!-- SCREEN 3 -->
+        <section class="screen">
+          <h2>Review &amp; sign off</h2>
+          <p class="hint">The generated program on the left; your double-programming rail on the right. Nothing exports until every block is approved.</p>
+          <div class="review">
+            <pre class="codepane"><span class="cm">/* AGEGR1: Pooled Age Group 1 */</span>
+length AGEGR1 $10;
+label AGEGR1 = "Pooled Age Group 1";
+if AGE &lt; 65 then AGEGR1 = "&lt;65";
+else if 65 &lt;= AGE &lt;= 80 then AGEGR1 = "65-80";
+else if AGE &gt; 80 then AGEGR1 = "&gt;80";
+
+<span class="flag">/* QC FLAG: FAIL: ARM compared to numeric missing */</span>
+<span class="cm">/* ITTFL: Intent-To-Treat Population Flag */</span>
+length ITTFL $1;
+if ARM ne . and ARM ne "Screen Failure"
+  then ITTFL = 'Y';
+else ITTFL = 'N';</pre>
+            <div class="rail">
+              <div class="card">
+                <div class="head"><span class="mono">AGEGR1</span><span class="co">8</span></div>
+                <div class="badges"><span class="b d">DRAFT local</span><span class="b i">IMPROVED api</span><span class="b q">QC PASS</span></div>
+                <div class="acts">
+                  <button class="mini ok" onclick="approve(this)">Approve</button>
+                  <button class="mini edit">Open in editor</button>
+                </div>
+              </div>
+              <div class="card">
+                <div class="head"><span class="mono">ITTFL</span><span class="co">9</span></div>
+                <div class="badges"><span class="b d">DRAFT local</span><span class="b qf">QC FLAG</span></div>
+                <div class="acts">
+                  <button class="mini ok" onclick="approve(this)">Approve</button>
+                  <button class="mini edit">Send back to Improver</button>
+                </div>
+              </div>
+              <div class="signoff" id="signoff">Signed off: <b>7 of 9</b> blocks · export locked until 9 of 9</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- SCREEN 4 -->
+        <section class="screen">
+          <h2>Export &amp; audit trail</h2>
+          <p class="hint">Every run is a row: when, which mode and language, which models, who signed off. Part 11-ready by design.</p>
+          <div class="auditrow">
+            <div class="kpi"><div class="n" id="outName">adsl.sas</div><div class="l">program · 118 lines · sha 4f2a…</div></div>
+            <div class="kpi"><div class="n">9 / 9</div><div class="l">blocks approved by M. Hundal</div></div>
+            <div class="kpi"><div class="n">Hybrid</div><div class="l">mode of record for this run</div></div>
+          </div>
+          <table>
+            <tr><th>Timestamp</th><th>Mode</th><th>Lang</th><th>Writer</th><th>Improver</th><th>Reviewer</th><th>Output</th></tr>
+            <tr><td class="mono">2026-07-22 23:41</td><td>Hybrid</td><td>SAS</td><td class="mono">qwen2.5-coder:7b</td><td class="mono">claude-sonnet-4-5</td><td class="mono">claude-sonnet-4-5</td><td class="mono">adsl.sas</td></tr>
+            <tr><td class="mono">2026-07-22 21:12</td><td>Offline</td><td>SAS</td><td class="mono">qwen2.5-coder:14b</td><td>—</td><td class="mono">qwen2.5-coder:14b</td><td class="mono">adsl.sas</td></tr>
+          </table>
+          <div style="margin-top:16px; display:flex; gap:10px; align-items:center;">
+            <button class="btn primary">Export program</button><span class="co">10</span>
+            <button class="btn ghost">Commit to Git</button><span class="co">11</span>
+          </div>
+        </section>
+
+        <!-- SCREEN 5 -->
+        <section class="screen">
+          <h2>Compare &amp; verify outputs</h2>
+          <p class="hint">The QC leg: compare production TLF outputs against QC outputs or mock shells — RTF, Word, or PDF. Deterministic parsing and diffing, no AI involved. Results land in the audit trail.</p>
+          <div class="cmp-drops">
+            <div class="drop">
+              <div>📑</div>
+              <div><div class="file mono">t_14_2_1_prod.rtf</div>
+              <div style="font-size:.78rem;color:var(--slate)">Production output · 12 pages</div></div>
+            </div>
+            <div class="drop">
+              <div>📑</div>
+              <div><div class="file mono">t_14_2_1_qc.rtf</div>
+              <div style="font-size:.78rem;color:var(--slate)">QC output · 4 pages (cut) — blocks aligned by content, not page number</div></div>
+              <span class="co">12</span>
+            </div>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center; margin-bottom:14px;">
+            <button class="btn primary">Run comparison</button><span class="co">13</span>
+            <button class="btn ghost">Check against mock shell</button><span class="co">14</span>
+          </div>
+          <table>
+            <tr><th>Location</th><th>Finding</th><th>Severity</th></tr>
+            <tr><td class="mono">Page 4 · Table 14.2.1 · row 3</td><td>N differs: 42 vs 41 (Drug A 50mg, Female)</td><td><span class="sev hi">VALUE</span></td></tr>
+            <tr><td class="mono">Page 7 · footnote 2</td><td>Text differs: "safety population" vs "Safety Population"</td><td><span class="sev lo">FORMAT</span></td></tr>
+            <tr><td class="mono">Pages 1–3, 5, 6, 8–12</td><td>All blocks match</td><td><span class="sev ok">MATCH</span></td></tr>
+          </table>
+          <div class="drill">
+            <b>Drill-down — Page 4, row 3</b> <span class="co">15</span>
+            <span class="mono">Prod:&nbsp; Drug A 50mg &nbsp; Female &nbsp; n = <span class="diffhi">42</span> (36.8%)<br>
+            QC:&nbsp;&nbsp;&nbsp; Drug A 50mg &nbsp; Female &nbsp; n = <span class="diffhi">41</span> (36.0%)</span>
+          </div>
+          <div class="stamp">✕ &nbsp;1 VALUE DIFFERENCE — NOT VERIFIED · logged 2026-07-22 23:58</div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div class="legend">
+    <h3>What each click does</h3>
+    <ol>
+      <li><span class="co">1</span><div><b>Mode switcher.</b> Offline = Writer + Reviewer both local, nothing leaves the machine. Hybrid = local draft, Claude improves and QCs. API = Claude end to end. Maps to config.py.</div></li>
+      <li><span class="co">2</span><div><b>Language toggle.</b> SAS or R output from the same spec. R mode uses admiral-style pipelines; the harness swaps its pre-step templates, the agents get R style rules.</div></li>
+      <li><span class="co">3</span><div><b>Agent readout.</b> Which model fills each role in the current mode — the same values written to the run log.</div></li>
+      <li><span class="co">4</span><div><b>Spec drop zone.</b> Accepts the .xlsx workbook (later: define.xml). Shows the sheets it found.</div></li>
+      <li><span class="co">5</span><div><b>Parse spec.</b> Runs the parser: splits copies vs derived and routes by Source. Spec errors (like a misaligned row) surface here, not downstream.</div></li>
+      <li><span class="co">6</span><div><b>Routing counts.</b> Pre-flight check — how many variables take each path, which pre-steps will be built.</div></li>
+      <li><span class="co">7</span><div><b>Generate.</b> Builds pre-steps, then sends each derived variable through the agent pipeline. Live status per variable; a run-log row is written whatever happens.</div></li>
+      <li><span class="co">8</span><div><b>Approve.</b> Your sign-off on one block — recorded with your name and time in the audit trail. The human-in-the-loop gate.</div></li>
+      <li><span class="co">9</span><div><b>Send back to Improver.</b> A flagged block returns to Claude with the QC finding attached and comes back rewritten for another review.</div></li>
+      <li><span class="co">10</span><div><b>Export program.</b> Enabled only when every block is approved. Writes adsl.sas or adsl.R plus its run-log row and content hash.</div></li>
+      <li><span class="co">11</span><div><b>Commit to Git.</b> One click for add–commit–push, with a generated message naming spec version, mode, and language.</div></li>
+      <li><span class="co">12</span><div><b>Comparison inputs.</b> Production vs QC output — RTF, Word, or PDF, full or cut. Blocks are aligned by content, so a 4-page cut compares cleanly against a 12-page original.</div></li>
+      <li><span class="co">13</span><div><b>Run comparison.</b> Deterministic parse-and-diff of every table cell, title, and footnote. No AI — results are exactly reproducible.</div></li>
+      <li><span class="co">14</span><div><b>Check against mock shell.</b> Validates output structure (titles, columns, footnotes, decimal places) against the shell definition instead of a second output.</div></li>
+      <li><span class="co">15</span><div><b>Drill-down.</b> Click any finding to see the two versions side by side with the difference highlighted. The verdict stamp is written to the audit trail.</div></li>
+    </ol>
+  </div>
+</div>
+
+<script>
+  const screens = document.querySelectorAll('.screen');
+  const navBtns = document.querySelectorAll('nav button');
+  function go(i, btn){
+    screens.forEach((s,k)=>s.classList.toggle('on', k===i));
+    navBtns.forEach(b=>b.classList.toggle('on', b===btn));
+  }
+  function setMode(m, btn){
+    document.querySelectorAll('.seg:not(.lang) button').forEach(b=>b.classList.toggle('on', b===btn));
+    const p = document.getElementById('privacy');
+    const imp = document.getElementById('agImp'), stImp = document.getElementById('stImp');
+    const mW=document.getElementById('mW'), mR=document.getElementById('mR');
+    const cW=document.getElementById('chipW'), cR=document.getElementById('chipR');
+    if(m==='off'){
+      p.className='privacy off'; p.textContent='Specs never leave this machine';
+      imp.style.display='none'; stImp.style.opacity=.35;
+      mW.textContent='qwen2.5-coder:7b'; mR.textContent='qwen2.5-coder:7b';
+      cW.className='chip local'; cR.className='chip local';
+    }else if(m==='hyb'){
+      p.className='privacy hyb'; p.textContent='Drafts local · review via API';
+      imp.style.display='flex'; stImp.style.opacity=1;
+      mW.textContent='qwen2.5-coder:7b'; mR.textContent='claude-sonnet-4-5';
+      cW.className='chip local'; cR.className='chip api';
+    }else{
+      p.className='privacy api'; p.textContent='Best quality · specs sent to API';
+      imp.style.display='flex'; stImp.style.opacity=1;
+      mW.textContent='claude-sonnet-4-5'; mR.textContent='claude-sonnet-4-5';
+      cW.className='chip api'; cR.className='chip api';
+    }
+  }
+  let lang='sas';
+  function setLang(l, btn){
+    lang=l;
+    document.querySelectorAll('.seg.lang button').forEach(b=>b.classList.toggle('on', b===btn));
+    document.getElementById('genBtn').textContent = l==='sas' ? 'Generate ADSL (SAS)' : 'Generate ADSL (R)';
+    document.getElementById('outName').textContent = l==='sas' ? 'adsl.sas' : 'adsl.R';
+    document.getElementById('wNote').textContent = l==='sas'
+      ? 'Local model writes each derivation from the spec row. Nothing leaves the machine.'
+      : 'Local model writes admiral-style R for each derivation. Nothing leaves the machine.';
+  }
+  function approve(btn){
+    btn.classList.add('picked'); btn.textContent='Approved';
+    const s = document.getElementById('signoff');
+    s.innerHTML = 'Signed off: <b>8 of 9</b> blocks · export locked until 9 of 9';
+  }
+</script>
+</body>
+</html>
