@@ -57,28 +57,57 @@ data adsl;
   merge dm ex_dates ex_first suppdm_w se_epoch;
   by usubjid;
 
-/* Derive AGEGR1: Pooled Age Group 1 */
+* Derive AGEGR1 per specification;
 length AGEGR1 $10;
 label AGEGR1 = "Pooled Age Group 1";
-if AGE ne . then do;
-    if AGE < 65 then AGEGR1 = "<65";
-    else if AGE <= 80 then AGEGR1 = "65-80";
-    else if AGE > 80 then AGEGR1 = ">80";
-end;
+if AGE < 65 then AGEGR1 = "<65";
+else if 65 <= AGE <= 80 then AGEGR1 = "65-80";
+else if AGE > 80 then AGEGR1 = ">80";
 
-/* Derive numeric age group variable */
+/* Derive numeric age group variable from character age group */
 length AGEGR1N 8;
 label AGEGR1N = 'Pooled Age Group 1 (N)';
+
 if AGEGR1 = "<65" then AGEGR1N = 1;
 else if AGEGR1 = "65-80" then AGEGR1N = 2;
 else if AGEGR1 = ">80" then AGEGR1N = 3;
+
+* SEXN: Numeric code for SEX: "M"=1; "F"=2.;
+length SEXN 8;
+label SEXN = 'Sex (N)';
+if SEX = 'M' then SEXN = 1;
+else if SEX = 'F' then SEXN = 2;
+
+* RACEN: Numeric code for RACE;
+
+length RACEN 8;
+label RACEN = 'Race (N)';
+
+select (upcase(RACE));
+    when ("WHITE") RACEN = 1;
+    when ("BLACK OR AFRICAN AMERICAN") RACEN = 2;
+    when ("ASIAN") RACEN = 3;
+    when ("AMERICAN INDIAN OR ALASKA NATIVE") RACEN = 4;
+    when ("OTHER") RACEN = 5;
+    otherwise RACEN = .;
+end;
+
+/* Derive Baseline BMI Group */
+length BMIBLGR1 $20;
+label BMIBLGR1 = 'Baseline BMI Group';
+if not missing(BMIBL) then do;
+    if BMIBL < 25 then BMIBLGR1 = '<25';
+    else if BMIBL < 30 then BMIBLGR1 = '25-<30';
+    else BMIBLGR1 = '>=30';
+end;
+else call missing(BMIBLGR1);
 
 * Derive TRT01P from ARM per specification;
 length TRT01P $40;
 label TRT01P = "Planned Treatment for Period 01";
 TRT01P = ARM;
 
-/* TRT01PN: Planned Treatment for Period 01 (N) */
+/* Derive TRT01PN: Planned Treatment for Period 01 (N) */
 length TRT01PN 8;
 label TRT01PN = "Planned Treatment for Period 01 (N)";
 select (TRT01P);
@@ -88,38 +117,101 @@ select (TRT01P);
     otherwise TRT01PN = .;
 end;
 
-/* TRTDURD: Total Treatment Duration (Days) */
+* Derive TRT01AN from TRT01A;
+length TRT01AN 8;
+label TRT01AN = 'Actual Treatment for Period 01 (N)';
+if TRT01A = "Placebo" then TRT01AN = 0;
+else if TRT01A = "Drug A 50mg" then TRT01AN = 1;
+else if TRT01A = "Drug A 100mg" then TRT01AN = 2;
+
+* Derive Total Treatment Duration (Days);
 length TRTDURD 8;
 label TRTDURD = "Total Treatment Duration (Days)";
-if not missing(TRTEDT) and not missing(TRTSDT) then TRTDURD = TRTEDT - TRTSDT + 1;
-else TRTDURD = .;
+if missing(TRTEDT) or missing(TRTSDT) then TRTDURD = .;
+else TRTDURD = TRTEDT - TRTSDT + 1;
 
-/* Derive Entered Treatment Epoch Flag */
-length EPOCHFL $1;
-label EPOCHFL = "Entered Treatment Epoch Flag";
-if not missing(TRTEPSDT) then EPOCHFL = 'Y';
-else EPOCHFL = 'N';
-
-* Derive Study Completion Flag from COMPLT variable;
+/* Derive study completion flag */
 length COMPFL $1;
-label COMPFL = "Study Completion Flag";
-if COMPLT = "Y" then COMPFL = "Y";
-else COMPFL = "N";
+label COMPFL = 'Study Completion Flag';
+if EOSSTT = "COMPLETED" then COMPFL = 'Y';
+else COMPFL = 'N';
 
-/* Derive Safety Population Flag */
+/* Derive Date of Death from DTHDTC */
+length DTHDT 8;
+label DTHDT = 'Date of Death';
+format DTHDT DATE9.;
+if missing(DTHDTC) or length(strip(DTHDTC)) < 10 then DTHDT = .;
+else DTHDT = input(DTHDTC, ??E8601DA.);
+
+/* SAFFL: Safety Population Flag - Y if TRTSDT is non-missing; else N */
 length SAFFL $1;
 label SAFFL = "Safety Population Flag";
 if not missing(TRTSDT) then SAFFL = 'Y';
 else SAFFL = 'N';
 
-* Derive ITT Population Flag based on ARM;
+* Derive Intent-To-Treat Population Flag;
 length ITTFL $1;
-label ITTFL = 'Intent-To-Treat Population Flag';
-if ARM ne "" and ARM ne "Screen Failure" then ITTFL = 'Y';
+label ITTFL = "Intent-To-Treat Population Flag";
+if not missing(ARM) and ARM ne 'Screen Failure' then ITTFL = 'Y';
 else ITTFL = 'N';
+
+* Derive Per-Protocol Population Flag;
+length PPROTFL $1;
+label PPROTFL = 'Per-Protocol Population Flag';
+if ITTFL = "Y" and EOSSTT = "COMPLETED" and COMPFL = "Y" then PPROTFL = "Y";
+else PPROTFL = "N";
+
+/* Derive Enrolled Population Flag based on informed consent date */
+length ENRLFL $1;
+label ENRLFL = "Enrolled Population Flag";
+if not missing(RFICDTC) then ENRLFL = 'Y';
+else ENRLFL = 'N';
+
+* Derive RANDFL based on RANDDT;
+length RANDFL $1;
+label RANDFL = "Randomised Population Flag";
+if not missing(RANDDT) then RANDFL = 'Y';
+else RANDFL = 'N';
+
+* Derive RFICDT from RFICDTC per specification;
+length RFICDT 8;
+label RFICDT = "Date of Informed Consent";
+format RFICDT DATE9.;
+if missing(RFICDTC) or length(RFICDTC) < 10 then RFICDT = .;
+else RFICDT = input(RFICDTC, ??yymmdd10.);
+
+/* DURDSGR1: Duration of Disease Group */
+length DURDSGR1 $20;
+label DURDSGR1 = 'Duration of Disease Group';
+if DURDISM < 12 then DURDSGR1 = '<1 year';
+else if 12 <= DURDISM < 36 then DURDSGR1 = '1-<3 years';
+else if DURDISM >= 36 then DURDSGR1 = '>=3 years';
+
+* Derivation of Day of Randomisation Relative to Screening;
+length RANDDY 8;
+label RANDDY = "Day of Randomisation Relative to Screening";
+if not missing(RANDDT) and not missing(SCRPDT) then RANDDY = RANDDT - SCRPDT + 1;
+else RANDDY = .;
+
+/* DTHDY: Day of Death Relative to First Dose */
+length DTHDY 8;
+label DTHDY = "Day of Death Relative to First Dose";
+if missing(DTHDT) or missing(TRTSDT) then DTHDY = .;
+else DTHDY = DTHDT - TRTSDT + 1;
+
+* Derive Day of End of Study Relative to First Dose;
+length EOSDY 8;
+label EOSDY = 'Day of End of Study Relative to First Dose';
+if not missing(EOSDT) and not missing(TRTSDT) then EOSDY = EOSDT - TRTSDT + 1;
+
+* Derive EPOCHFL based on TRTEPSDT;
+length EPOCHFL $1;
+label EPOCHFL = 'Entered Treatment Epoch Flag';
+if not missing(TRTEPSDT) then EPOCHFL = 'Y';
+else EPOCHFL = 'N';
 
 /* TRT01A fallback: subjects never dosed take planned treatment */
 if missing(TRT01A) then TRT01A = TRT01P;
 
-  keep STUDYID USUBJID SUBJID SITEID AGE AGEU AGEGR1 AGEGR1N SEX RACE RACEOTH ARM TRT01P TRT01PN TRT01A TRTSDT TRTEDT TRTDURD TRTEPSDT TRTEPEDT EPOCHFL COMPFL SAFFL ITTFL DTHFL;
+  keep STUDYID USUBJID SUBJID SITEID INVID COUNTRY AGE AGEU AGEGR1 AGEGR1N SEX SEXN RACE RACEN ETHNIC RACEOTH BMIBL BMIBLGR1 HEIGHTBL WEIGHTBL ARM ARMCD ACTARM ACTARMCD TRT01P TRT01PN TRT01A TRT01AN TRTSDT TRTSDTM TRTEDT TRTDURD TRTEPSDT TRTEPEDT EOSSTT EOSDT DCSREAS DCSREASP DCTDT COMPFL DTHFL DTHDTC DTHDT SAFFL ITTFL PPROTFL ENRLFL RANDFL RFICDTC RFICDT RANDDT SCRFREAS CMFL CMINFL MHFL DURDISM DURDSGR1 SCRPDT FUPDT RANDDY DTHDY EOSDY EPOCHFL;
 run;

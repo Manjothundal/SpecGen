@@ -5,7 +5,7 @@ from config import WRITER, REVIEWER
 from generator import model_name
 
 # Read the Variables sheet from the spec workbook
-spec = pd.read_excel("adam_spec.xlsx", sheet_name="Variables")
+spec = pd.read_excel("adam_spec_full.xlsx", sheet_name="Variables")
 
 # Split copies (straight from SDTM) vs derived (need logic)
 copies = spec[spec["Origin"] == "Predecessor"]
@@ -31,7 +31,7 @@ print("\nSaved adsl.sas")
 # Log this run in the runlog.csv file
 mode = f"{WRITER}-writer/{REVIEWER}-reviewer"
 log_run(
-    "adam_spec.xlsx",
+    "adam_spec_full.xlsx",
     mode,
     model_name(WRITER),
     model_name(REVIEWER),
