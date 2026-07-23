@@ -53,160 +53,222 @@ data se_epoch(keep=usubjid TRTEPSDT TRTEPEDT);
   format TRTEPSDT TRTEPEDT date9.;
 run;
 
+/* Pre-step 6: end-of-study disposition (DS) */
+proc sort data=ds(where=(dscat='DISPOSITION EVENT' and missing(dsscat))) out=ds_eos;
+  by usubjid dsstdtc;
+run;
+
+data ds_summary(keep=usubjid EOSSTT EOSDT DCSREAS DCSREASP);
+  set ds_eos;
+  by usubjid dsstdtc;
+  if first.usubjid;
+  length EOSSTT $20 DCSREAS $40 DCSREASP $200;
+  if dsdecod = 'COMPLETED' then EOSSTT = 'COMPLETED';
+  else EOSSTT = 'DISCONTINUED';
+  EOSDT = input(substr(dsstdtc,1,10), ?? yymmdd10.);
+  if EOSSTT = 'DISCONTINUED' then do;
+    DCSREAS = dsdecod;
+    DCSREASP = dsterm;
+  end;
+  format EOSDT date9.;
+run;
+
+/* Pre-step 7: treatment discontinuation date (DS, DSSCAT='STUDY TREATMENT') */
+proc sort data=ds(where=(dscat='DISPOSITION EVENT' and dsscat='STUDY TREATMENT' and dsdecod ne 'COMPLETED')) out=ds_trt;
+  by usubjid dsstdtc;
+run;
+
+data ds_trtdisc(keep=usubjid DCTDT);
+  set ds_trt;
+  by usubjid dsstdtc;
+  if first.usubjid;
+  DCTDT = input(substr(dsstdtc,1,10), ?? yymmdd10.);
+  format DCTDT date9.;
+run;
+
+/* Pre-step 8: baseline vitals from VS (VSBLFL='Y') */
+proc sql;
+  create table vs_summary as select
+    usubjid,
+    max(case when vstestcd = 'BMI'    and vsblfl = 'Y' then vsstresn end) as BMIBL    format=8.1,
+    max(case when vstestcd = 'HEIGHT' and vsblfl = 'Y' then vsstresn end) as HEIGHTBL format=8.1,
+    max(case when vstestcd = 'WEIGHT' and vsblfl = 'Y' then vsstresn end) as WEIGHTBL format=8.1
+  from vs
+  group by usubjid;
+quit;
+
+/* Pre-step 9: CM existence flags */
+proc sql;
+  create table cm_summary as select
+    usubjid,
+    case when sum(cmcat in ('PRIOR','CONCOMITANT')) > 0 then 'Y' else 'N' end as CMFL   length=1,
+    case when sum(cmcat = 'PRIOR')                > 0 then 'Y' else 'N' end as CMINFL length=1
+  from cm
+  group by usubjid;
+quit;
+
+/* Pre-step 10: MH existence flag */
+proc sql;
+  create table mh_summary as select
+    usubjid,
+    case when sum(mhcat = 'PRIMARY DIAGNOSIS' and mhenrf = 'ONGOING') > 0
+         then 'Y' else 'N' end as MHFL length=1
+  from mh
+  group by usubjid;
+quit;
+
 data adsl;
-  merge dm ex_dates ex_first suppdm_w se_epoch;
+  merge dm ex_dates ex_first suppdm_w se_epoch ds_summary ds_trtdisc vs_summary cm_summary mh_summary;
   by usubjid;
 
-* Derive AGEGR1 per specification;
+/* Derive AGEGR1: Pooled Age Group 1 */
 length AGEGR1 $10;
-label AGEGR1 = "Pooled Age Group 1";
-if AGE < 65 then AGEGR1 = "<65";
-else if 65 <= AGE <= 80 then AGEGR1 = "65-80";
-else if AGE > 80 then AGEGR1 = ">80";
+label AGEGR1 = 'Pooled Age Group 1';
+if AGE < 65 then AGEGR1 = '<65';
+else if 65 <= AGE <= 80 then AGEGR1 = '65-80';
+else if AGE > 80 then AGEGR1 = '>80';
 
-/* Derive numeric age group variable from character age group */
+/* Derive AGEGR1N from AGEGR1 */
 length AGEGR1N 8;
 label AGEGR1N = 'Pooled Age Group 1 (N)';
+select (AGEGR1);
+    when ("<65") AGEGR1N = 1;
+    when ("65-80") AGEGR1N = 2;
+    when (">80") AGEGR1N = 3;
+    otherwise AGEGR1N = .;
+end;
 
-if AGEGR1 = "<65" then AGEGR1N = 1;
-else if AGEGR1 = "65-80" then AGEGR1N = 2;
-else if AGEGR1 = ">80" then AGEGR1N = 3;
-
-* SEXN: Numeric code for SEX: "M"=1; "F"=2.;
+/* Derive SEXN as numeric code for SEX */
 length SEXN 8;
 label SEXN = 'Sex (N)';
-if SEX = 'M' then SEXN = 1;
-else if SEX = 'F' then SEXN = 2;
+if SEX = "M" then SEXN = 1;
+else if SEX = "F" then SEXN = 2;
 
-* RACEN: Numeric code for RACE;
-
+/* Derive RACEN: numeric code for RACE */
 length RACEN 8;
 label RACEN = 'Race (N)';
-
-select (upcase(RACE));
-    when ("WHITE") RACEN = 1;
-    when ("BLACK OR AFRICAN AMERICAN") RACEN = 2;
-    when ("ASIAN") RACEN = 3;
-    when ("AMERICAN INDIAN OR ALASKA NATIVE") RACEN = 4;
-    when ("OTHER") RACEN = 5;
+select(upcase(RACE));
+    when('WHITE') RACEN = 1;
+    when('BLACK OR AFRICAN AMERICAN') RACEN = 2;
+    when('ASIAN') RACEN = 3;
+    when('AMERICAN INDIAN OR ALASKA NATIVE') RACEN = 4;
+    when('OTHER') RACEN = 5;
     otherwise RACEN = .;
 end;
 
 /* Derive Baseline BMI Group */
 length BMIBLGR1 $20;
-label BMIBLGR1 = 'Baseline BMI Group';
-if not missing(BMIBL) then do;
-    if BMIBL < 25 then BMIBLGR1 = '<25';
-    else if BMIBL < 30 then BMIBLGR1 = '25-<30';
-    else BMIBLGR1 = '>=30';
-end;
-else call missing(BMIBLGR1);
+label BMIBLGR1 = "Baseline BMI Group";
+if BMIBL < 25 then BMIBLGR1 = "<25";
+else if 25 <= BMIBL < 30 then BMIBLGR1 = "25-<30";
+else if BMIBL >= 30 then BMIBLGR1 = ">=30";
 
-* Derive TRT01P from ARM per specification;
+* TRT01P: Planned Treatment for Period 01;
 length TRT01P $40;
-label TRT01P = "Planned Treatment for Period 01";
+label TRT01P = 'Planned Treatment for Period 01';
 TRT01P = ARM;
 
-/* Derive TRT01PN: Planned Treatment for Period 01 (N) */
+* Derive TRT01PN from TRT01P;
 length TRT01PN 8;
-label TRT01PN = "Planned Treatment for Period 01 (N)";
+label TRT01PN = 'Planned Treatment for Period 01 (N)';
 select (TRT01P);
-    when ("Placebo") TRT01PN = 0;
-    when ("Drug A 50mg") TRT01PN = 1;
-    when ("Drug A 100mg") TRT01PN = 2;
+    when ('Placebo') TRT01PN = 0;
+    when ('Drug A 50mg') TRT01PN = 1;
+    when ('Drug A 100mg') TRT01PN = 2;
     otherwise TRT01PN = .;
 end;
 
-* Derive TRT01AN from TRT01A;
+/* Derive TRT01AN from TRT01A per specification */
 length TRT01AN 8;
 label TRT01AN = 'Actual Treatment for Period 01 (N)';
-if TRT01A = "Placebo" then TRT01AN = 0;
-else if TRT01A = "Drug A 50mg" then TRT01AN = 1;
-else if TRT01A = "Drug A 100mg" then TRT01AN = 2;
+if TRT01A = 'Placebo' then TRT01AN = 0;
+else if TRT01A = 'Drug A 50mg' then TRT01AN = 1;
+else if TRT01A = 'Drug A 100mg' then TRT01AN = 2;
 
-* Derive Total Treatment Duration (Days);
+/* Derive Total Treatment Duration (Days) */
 length TRTDURD 8;
 label TRTDURD = "Total Treatment Duration (Days)";
 if missing(TRTEDT) or missing(TRTSDT) then TRTDURD = .;
 else TRTDURD = TRTEDT - TRTSDT + 1;
 
-/* Derive study completion flag */
+/* COMPFL: Study Completion Flag */
 length COMPFL $1;
-label COMPFL = 'Study Completion Flag';
+label COMPFL = "Study Completion Flag";
 if EOSSTT = "COMPLETED" then COMPFL = 'Y';
 else COMPFL = 'N';
 
+/* QC FLAG: FAIL: Invalid informat syntax ??e8601da., should be e8601da. or ?? e8601da. */
 /* Derive Date of Death from DTHDTC */
 length DTHDT 8;
-label DTHDT = 'Date of Death';
-format DTHDT DATE9.;
-if missing(DTHDTC) or length(strip(DTHDTC)) < 10 then DTHDT = .;
-else DTHDT = input(DTHDTC, ??E8601DA.);
+label DTHDT = "Date of Death";
+DTHDT = input(DTHDTC, ??e8601da.);
 
-/* SAFFL: Safety Population Flag - Y if TRTSDT is non-missing; else N */
-length SAFFL $1;
-label SAFFL = "Safety Population Flag";
+* Derive SAFFL: Y if TRTSDT is non-missing, else N;
+length SAFFL $ 1;
+label SAFFL = 'Safety Population Flag';
 if not missing(TRTSDT) then SAFFL = 'Y';
 else SAFFL = 'N';
 
-* Derive Intent-To-Treat Population Flag;
+/* ITTFL: Intent-To-Treat Population Flag */
 length ITTFL $1;
-label ITTFL = "Intent-To-Treat Population Flag";
+label ITTFL = 'Intent-To-Treat Population Flag';
 if not missing(ARM) and ARM ne 'Screen Failure' then ITTFL = 'Y';
 else ITTFL = 'N';
 
 * Derive Per-Protocol Population Flag;
 length PPROTFL $1;
-label PPROTFL = 'Per-Protocol Population Flag';
-if ITTFL = "Y" and EOSSTT = "COMPLETED" and COMPFL = "Y" then PPROTFL = "Y";
-else PPROTFL = "N";
+label PPROTFL = "Per-Protocol Population Flag";
+if ITTFL = 'Y' and EOSSTT = 'COMPLETED' and COMPFL = 'Y' then PPROTFL = 'Y';
+else PPROTFL = 'N';
 
-/* Derive Enrolled Population Flag based on informed consent date */
+* Derivation of Enrolled Population Flag;
 length ENRLFL $1;
-label ENRLFL = "Enrolled Population Flag";
-if not missing(RFICDTC) then ENRLFL = 'Y';
+label ENRLFL = 'Enrolled Population Flag';
+if RFICDTC ne '' then ENRLFL = 'Y';
 else ENRLFL = 'N';
 
-* Derive RANDFL based on RANDDT;
+/* Derive Randomised Population Flag */
 length RANDFL $1;
-label RANDFL = "Randomised Population Flag";
+label RANDFL = 'Randomised Population Flag';
 if not missing(RANDDT) then RANDFL = 'Y';
 else RANDFL = 'N';
 
-* Derive RFICDT from RFICDTC per specification;
+/* Derive RFICDT from RFICDTC - date part only if complete */
 length RFICDT 8;
 label RFICDT = "Date of Informed Consent";
-format RFICDT DATE9.;
+format RFICDT date9.;
 if missing(RFICDTC) or length(RFICDTC) < 10 then RFICDT = .;
-else RFICDT = input(RFICDTC, ??yymmdd10.);
+else RFICDT = input(substr(RFICDTC,1,10), ??yymmdd10.);
 
-/* DURDSGR1: Duration of Disease Group */
+* Derivation logic for DURDSGR1;
 length DURDSGR1 $20;
-label DURDSGR1 = 'Duration of Disease Group';
-if DURDISM < 12 then DURDSGR1 = '<1 year';
-else if 12 <= DURDISM < 36 then DURDSGR1 = '1-<3 years';
-else if DURDISM >= 36 then DURDSGR1 = '>=3 years';
+label DURDSGR1 = "Duration of Disease Group";
+if DURDISM < 12 then DURDSGR1 = "<1 year";
+else if 12 <= DURDISM < 36 then DURDSGR1 = "1-<3 years";
+else if DURDISM >= 36 then DURDSGR1 = ">=3 years";
 
-* Derivation of Day of Randomisation Relative to Screening;
+/* QC FLAG: FAIL: Incorrect study day calculation - should be + (RANDDT >= SCRPDT) not + 1 */
+/* Derive Day of Randomisation Relative to Screening */
 length RANDDY 8;
 label RANDDY = "Day of Randomisation Relative to Screening";
 if not missing(RANDDT) and not missing(SCRPDT) then RANDDY = RANDDT - SCRPDT + 1;
 else RANDDY = .;
 
-/* DTHDY: Day of Death Relative to First Dose */
+/* Derive Day of Death Relative to First Dose */
 length DTHDY 8;
-label DTHDY = "Day of Death Relative to First Dose";
+label DTHDY = 'Day of Death Relative to First Dose';
 if missing(DTHDT) or missing(TRTSDT) then DTHDY = .;
 else DTHDY = DTHDT - TRTSDT + 1;
 
-* Derive Day of End of Study Relative to First Dose;
+* Day of End of Study Relative to First Dose;
 length EOSDY 8;
-label EOSDY = 'Day of End of Study Relative to First Dose';
-if not missing(EOSDT) and not missing(TRTSDT) then EOSDY = EOSDT - TRTSDT + 1;
+label EOSDY = "Day of End of Study Relative to First Dose";
+if nmiss(EOSDT, TRTSDT) > 0 then EOSDY = .;
+else EOSDY = EOSDT - TRTSDT + 1;
 
 * Derive EPOCHFL based on TRTEPSDT;
 length EPOCHFL $1;
-label EPOCHFL = 'Entered Treatment Epoch Flag';
+label EPOCHFL = "Entered Treatment Epoch Flag";
 if not missing(TRTEPSDT) then EPOCHFL = 'Y';
 else EPOCHFL = 'N';
 
