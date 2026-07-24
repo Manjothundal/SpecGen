@@ -2,6 +2,9 @@ from generator import generate_sas
 from prompt_builder import build_prompt
 from reviewer import review_block
 from improver import improve_block
+from macro_lookup import load_catalog, find_macro
+
+catalog = load_catalog()
 
 def clean(code):
     """Remove markdown fences if the model added them anyway."""
@@ -178,13 +181,18 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
    # main-step derived variables, in spec Order
     available = known_variables(spec)
     for i, row in main_step.sort_values("Order").iterrows():
-        block = gen_block(row)
-        print("   Improving:", row["Variable"])
-        block = clean(improve_block(block, row, available))
-        verdict = review_block(block, available)
-        if verdict.startswith("FAIL"):
-            print("   QC:", verdict)
-            block = "/* QC FLAG: " + verdict + " */\n" + block
+        match = find_macro(row["Variable"], catalog)
+        if match:
+            print("Macro match:", row["Variable"], "->", match["macro"])
+            block = "/* " + row["Variable"] + ": using validated macro */\n" + match["call"]
+        else:
+            block = gen_block(row)
+            print("   Improving:", row["Variable"])
+            block = clean(improve_block(block, row, available))
+            verdict = review_block(block, available)
+            if verdict.startswith("FAIL"):
+                print("   QC:", verdict)
+                block = "/* QC FLAG: " + verdict + " */\n" + block
         parts.append(block)
         parts.append("")
 

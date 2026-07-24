@@ -1,11 +1,28 @@
+from macro_lookup import load_catalog, find_macro
+
+catalog = load_catalog()
+
 def build_prompt(row):
     """Turn one spec row into an instruction for the AI."""
 
-    # Only mention Format when the spec actually has one
     format_line = ""
     fmt = str(row["Format"]).strip()
     if fmt and fmt.lower() != "nan":
         format_line = f"Format: {fmt}\n"
+
+    # Check if a validated macro exists for this variable
+    match = find_macro(row["Variable"], catalog)
+    if match:
+        macro_section = f"""
+VALIDATED MACRO AVAILABLE — use it instead of writing raw code:
+Macro: {match['macro']}
+Purpose: {match['purpose']}
+Parameters: {match['parameters']}
+Example call: {match['example_call']}
+NOTE: This macro is validated and handles missing values. Call it with the correct parameters. Do NOT write raw derivation logic — output ONLY the macro call.
+"""
+    else:
+        macro_section = ""
 
     prompt = f"""You are a senior clinical SAS programmer.
 Write SAS 9.4 code to derive one ADaM variable.
@@ -14,7 +31,7 @@ Variable: {row['Variable']}
 Label: {row['Label']}
 Type: {row['Type']}, Length: {row['Length']}
 {format_line}Derivation rule: {row['Derivation']}
-
+{macro_section}
 Rules:
 - Output ONLY the derivation logic statements (length, label, format, if/then, assignments).
 - Do NOT include data, set, merge, or run statements - the code will be inserted into an existing data step.

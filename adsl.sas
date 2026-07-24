@@ -122,158 +122,99 @@ data adsl;
   merge dm ex_dates ex_first suppdm_w se_epoch ds_summary ds_trtdisc vs_summary cm_summary mh_summary;
   by usubjid;
 
-* Derive AGEGR1 per specification;
-length AGEGR1 $10;
-label AGEGR1 = "Pooled Age Group 1";
-if AGE < 65 then AGEGR1 = "<65";
-else if AGE <= 80 then AGEGR1 = "65-80";
-else if AGE > 80 then AGEGR1 = ">80";
+/* AGEGR1: using validated macro */
+%adsl_agegr(inds=adsl, agevar=AGE, grpvar=AGEGR1, grpnvar=AGEGR1N, cuts=65|80, labels=<65|65-80|>80);
 
-/* Derive AGEGR1N from AGEGR1 */
+/* AGEGR1N: Pooled Age Group 1 (N) */
 length AGEGR1N 8;
 label AGEGR1N = 'Pooled Age Group 1 (N)';
 if AGEGR1 = "<65" then AGEGR1N = 1;
 else if AGEGR1 = "65-80" then AGEGR1N = 2;
 else if AGEGR1 = ">80" then AGEGR1N = 3;
 
-/* SEXN: Sex (N) */
+/* Derive SEXN: Numeric code for SEX */
 length SEXN 8;
-label SEXN = "Sex (N)";
-if SEX = "M" then SEXN = 1;
-else if SEX = "F" then SEXN = 2;
+if SEX = 'M' then SEXN = 1;
+else if SEX = 'F' then SEXN = 2;
+label SEXN = 'Sex (N)';
 
-/* RACEN: Race (N) */
+* RACEN Race (N);
 length RACEN 8;
-label RACEN = "Race (N)";
-
+label RACEN = 'Race (N)';
 if RACE = "WHITE" then RACEN = 1;
 else if RACE = "BLACK OR AFRICAN AMERICAN" then RACEN = 2;
 else if RACE = "ASIAN" then RACEN = 3;
 else if RACE = "AMERICAN INDIAN OR ALASKA NATIVE" then RACEN = 4;
 else if RACE = "OTHER" then RACEN = 5;
 
-/* BMIBLGR1: Baseline BMI Group */
-length BMIBLGR1 $20;
-label BMIBLGR1 = "Baseline BMI Group";
-if not missing(BMIBL) then do;
-    if BMIBL < 25 then BMIBLGR1 = "<25";
-    else if BMIBL < 30 then BMIBLGR1 = "25-<30";
-    else BMIBLGR1 = ">=30";
-end;
+/* BMIBLGR1: using validated macro */
+%adsl_bmigrp(inds=adsl, bmivar=BMIBL, grpvar=BMIBLGR1, cuts=25|30, labels=<25|25-<30|>=30);
 
-/* TRT01P: Planned Treatment for Period 01 */
-length TRT01P $40;
-label TRT01P = "Planned Treatment for Period 01";
-TRT01P = ARM;
+/* TRT01P: using validated macro */
+%adsl_trtvar(inds=adsl, srcvar=ARM, trtvar=TRT01P, trtnvar=TRT01PN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2);
 
-* Derive TRT01PN from TRT01P per specification;
+/* Derive TRT01PN: Numeric code for TRT01P */
 length TRT01PN 8;
-label TRT01PN = "Planned Treatment for Period 01 (N)";
-select(TRT01P);
-    when("Placebo") TRT01PN = 0;
-    when("Drug A 50mg") TRT01PN = 1;
-    when("Drug A 100mg") TRT01PN = 2;
-    otherwise TRT01PN = .;
-end;
+label TRT01PN = 'Planned Treatment for Period 01 (N)';
 
-* Derive TRT01AN: Actual Treatment for Period 01 (N);
-length TRT01AN 8;
-label TRT01AN = "Actual Treatment for Period 01 (N)";
-select (TRT01A);
-    when ("Placebo") TRT01AN = 0;
-    when ("Drug A 50mg") TRT01AN = 1;
-    when ("Drug A 100mg") TRT01AN = 2;
-    otherwise TRT01AN = .;
-end;
+if TRT01P = 'Placebo' then TRT01PN = 0;
+else if TRT01P = 'Drug A 50mg' then TRT01PN = 1;
+else if TRT01P = 'Drug A 100mg' then TRT01PN = 2;
 
-/* TRTDURD: Total Treatment Duration (Days) */
+/* TRT01AN: using validated macro */
+%adsl_trtvar(inds=adsl, srcvar=TRT01A, trtvar=TRT01A, trtnvar=TRT01AN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2);
+
+/* Derive Total Treatment Duration (Days) */
 length TRTDURD 8;
 label TRTDURD = "Total Treatment Duration (Days)";
 if not missing(TRTEDT) and not missing(TRTSDT) then TRTDURD = TRTEDT - TRTSDT + 1;
 else call missing(TRTDURD);
 
-* Derive study completion flag based on end of study status;
-length COMPFL $1;
-label COMPFL = 'Study Completion Flag';
-if EOSSTT = "COMPLETED" then COMPFL = 'Y';
-else COMPFL = 'N';
+/* COMPFL: using validated macro */
+%adsl_popflag(inds=adsl, flagvar=COMPFL, cond=EOSSTT="COMPLETED", label=Study Completion Flag);
 
-/* QC FLAG: FAIL: Invalid informat syntax '?? E8601DA.' - should be 'E8601DA.' or 'yymmdd10.' */
-/* Derive DTHDT from DTHDTC per specification */
-length DTHDT 8;
-label DTHDT = "Date of Death";
-format DTHDT DATE9.;
-if missing(DTHDTC) or length(DTHDTC) < 10 then DTHDT = .;
-else DTHDT = input(DTHDTC, ?? E8601DA.);
+/* DTHDT: using validated macro */
+%adsl_dtctodt(inds=adsl, dtcvar=DTHDTC, dtvar=DTHDT, fmt=DATE9.);
 
-/* SAFFL: Safety Population Flag - Y if TRTSDT is non-missing, otherwise N */
-length SAFFL $1;
-label SAFFL = "Safety Population Flag";
-if not missing(TRTSDT) then SAFFL = 'Y';
-else SAFFL = 'N';
+/* SAFFL: using validated macro */
+%adsl_popflag(inds=adsl, flagvar=SAFFL, cond=not missing(TRTSDT), label=Safety Population Flag);
 
-* Derive Intent-To-Treat Population Flag;
-length ITTFL $1;
-label ITTFL = "Intent-To-Treat Population Flag";
-if not missing(ARM) and ARM ne "Screen Failure" then ITTFL = 'Y';
-else ITTFL = 'N';
+/* ITTFL: using validated macro */
+%adsl_popflag(inds=adsl, flagvar=ITTFL, cond=not missing(ARM) and ARM ne "Screen Failure", label=Intent-To-Treat Population Flag);
 
-/* PPROTFL: Per-Protocol Population Flag */
+/* Derive Per-Protocol Population Flag */
 length PPROTFL $1;
-label PPROTFL = "Per-Protocol Population Flag";
+label PPROTFL = 'Per-Protocol Population Flag';
 if ITTFL = "Y" and EOSSTT = "COMPLETED" and COMPFL = "Y" then PPROTFL = "Y";
 else PPROTFL = "N";
 
-* Derivation of Enrolled Population Flag;
-length ENRLFL $1;
-label ENRLFL = "Enrolled Population Flag";
-if not missing(RFICDTC) then ENRLFL = 'Y';
-else ENRLFL = 'N';
+/* ENRLFL: using validated macro */
+%adsl_popflag(inds=adsl, flagvar=ENRLFL, cond=not missing(RFICDTC), label=Enrolled Population Flag);
 
-/* Derive Randomised Population Flag */
-length RANDFL $1;
-label RANDFL = 'Randomised Population Flag';
-if not missing(RANDDT) then RANDFL = 'Y';
-else RANDFL = 'N';
+/* RANDFL: using validated macro */
+%adsl_popflag(inds=adsl, flagvar=RANDFL, cond=not missing(RANDDT), label=Randomised Population Flag);
 
-/* RFICDT: Date of Informed Consent */
-length RFICDT 8;
-label RFICDT = "Date of Informed Consent";
-if missing(RFICDTC) or length(RFICDTC) < 10 then call missing(RFICDT);
-else RFICDT = input(RFICDTC, ??E8601DA.);
+/* RFICDT: using validated macro */
+%adsl_dtctodt(inds=adsl, dtcvar=RFICDTC, dtvar=RFICDT, fmt=DATE9.);
 
 /* Derive Duration of Disease Group */
 length DURDSGR1 $20;
-label DURDSGR1 = "Duration of Disease Group";
-if DURDISM < 12 then DURDSGR1 = "<1 year";
-else if 12 <= DURDISM < 36 then DURDSGR1 = "1-<3 years";
-else if DURDISM >= 36 then DURDSGR1 = ">=3 years";
+label DURDSGR1 = 'Duration of Disease Group';
+if DURDISM < 12 then DURDSGR1 = '<1 year';
+else if 12 <= DURDISM < 36 then DURDSGR1 = '1-<3 years';
+else if DURDISM >= 36 then DURDSGR1 = '>=3 years';
 
-/* Derive Day of Randomisation Relative to Screening per CDISC --DY convention */
-length RANDDY 8;
-label RANDDY = "Day of Randomisation Relative to Screening";
+/* RANDDY: using validated macro */
+%adsl_studyday(inds=adsl, datevar=RANDDT, refvar=SCRPDT, dyvar=RANDDY, label=Day of Randomisation Relative to Screening);
 
-if missing(RANDDT) or missing(SCRPDT) then call missing(RANDDY);
-else RANDDY = (RANDDT - SCRPDT) + (RANDDT >= SCRPDT);
+/* DTHDY: using validated macro */
+%adsl_studyday(inds=adsl, datevar=DTHDT, refvar=TRTSDT, dyvar=DTHDY, label=Day of Death Relative to First Dose);
 
-/* DTHDY: Day of Death Relative to First Dose */
-length DTHDY 8;
-label DTHDY = "Day of Death Relative to First Dose";
-if missing(DTHDT) or missing(TRTSDT) then call missing(DTHDY);
-else DTHDY = (DTHDT - TRTSDT) + (DTHDT >= TRTSDT);
+/* EOSDY: using validated macro */
+%adsl_studyday(inds=adsl, datevar=EOSDT, refvar=TRTSDT, dyvar=EOSDY, label=Day of End of Study Relative to First Dose);
 
-/* Derive EOSDY per CDISC --DY convention */
-length EOSDY 8;
-label EOSDY = 'Day of End of Study Relative to First Dose';
-if missing(EOSDT) or missing(TRTSDT) then EOSDY = .;
-else if EOSDT >= TRTSDT then EOSDY = (EOSDT - TRTSDT) + 1;
-else EOSDY = EOSDT - TRTSDT;
-
-/* EPOCHFL: Entered Treatment Epoch Flag */
-length EPOCHFL $1;
-label EPOCHFL = 'Entered Treatment Epoch Flag';
-if not missing(TRTEPSDT) then EPOCHFL = 'Y';
-else EPOCHFL = 'N';
+/* EPOCHFL: using validated macro */
+%adsl_popflag(inds=adsl, flagvar=EPOCHFL, cond=not missing(TRTEPSDT), label=Entered Treatment Epoch Flag);
 
 /* TRT01A fallback: subjects never dosed take planned treatment */
 if missing(TRT01A) then TRT01A = TRT01P;
