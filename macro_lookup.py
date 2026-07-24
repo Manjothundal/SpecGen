@@ -61,7 +61,7 @@ Reply with ONLY the pattern name, nothing else."""
 
     # Build a suggested call note for the model to adapt
     row["suggested_call"] = (
-        f"/* Pattern: {pattern} — consider adapting this macro call for {variable}: */\n"
-        f"/* {row['call']} */"
-    )
+    f"/* Pattern: {pattern} - consider adapting this macro call for {variable}: */\n"
+    f"/* {row['call']} */"
+)
     return row

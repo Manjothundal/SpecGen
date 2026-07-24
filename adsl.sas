@@ -128,26 +128,30 @@ data adsl;
 /*-- END AGEGR1 --*/
 
 /*-- BEGIN SEXN --*/
-/* Pattern: codelist_decode — consider adapting this macro call for SEXN: */
+/* Pattern: codelist_decode - consider adapting this macro call for SEXN: */
 /* %adsl_trtvar(inds=adsl, srcvar=ARM, trtvar=TRT01P, trtnvar=TRT01PN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2); */
-* Derive SEXN from SEX per specification;
+/* Derive SEXN as numeric code for SEX */
 length SEXN 8;
 label SEXN = 'Sex (N)';
-if SEX = "M" then SEXN = 1;
-else if SEX = "F" then SEXN = 2;
+if SEX = 'M' then SEXN = 1;
+else if SEX = 'F' then SEXN = 2;
 /*-- END SEXN --*/
 
 /*-- BEGIN RACEN --*/
-/* Pattern: codelist_decode — consider adapting this macro call for RACEN: */
+/* Pattern: codelist_decode - consider adapting this macro call for RACEN: */
 /* %adsl_trtvar(inds=adsl, srcvar=ARM, trtvar=TRT01P, trtnvar=TRT01PN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2); */
-/* Derive RACEN: Numeric code for RACE */
+* Derive RACEN from RACE;
 length RACEN 8;
 label RACEN = "Race (N)";
-if RACE = 'WHITE' then RACEN = 1;
-else if RACE = 'BLACK OR AFRICAN AMERICAN' then RACEN = 2;
-else if RACE = 'ASIAN' then RACEN = 3;
-else if RACE = 'AMERICAN INDIAN OR ALASKA NATIVE' then RACEN = 4;
-else if RACE = 'OTHER' then RACEN = 5;
+
+select (upcase(RACE));
+    when ("WHITE") RACEN = 1;
+    when ("BLACK OR AFRICAN AMERICAN") RACEN = 2;
+    when ("ASIAN") RACEN = 3;
+    when ("AMERICAN INDIAN OR ALASKA NATIVE") RACEN = 4;
+    when ("OTHER") RACEN = 5;
+    otherwise RACEN = .;
+end;
 /*-- END RACEN --*/
 
 /*-- BEGIN BMIBLGR1 --*/
@@ -166,10 +170,11 @@ else if RACE = 'OTHER' then RACEN = 5;
 /*-- END TRT01AN --*/
 
 /*-- BEGIN TRTDURD --*/
-/* TRTDURD: Total Treatment Duration (Days) */
+* Derive Total Treatment Duration (Days);
 length TRTDURD 8;
 label TRTDURD = "Total Treatment Duration (Days)";
 if not missing(TRTEDT) and not missing(TRTSDT) then TRTDURD = TRTEDT - TRTSDT + 1;
+else call missing(TRTDURD);
 /*-- END TRTDURD --*/
 
 /*-- BEGIN COMPFL --*/
@@ -193,9 +198,9 @@ if not missing(TRTEDT) and not missing(TRTSDT) then TRTDURD = TRTEDT - TRTSDT + 
 /*-- END ITTFL --*/
 
 /*-- BEGIN PPROTFL --*/
-/* Pattern: condition_flag — consider adapting this macro call for PPROTFL: */
+/* Pattern: condition_flag - consider adapting this macro call for PPROTFL: */
 /* %adsl_popflag(inds=adsl, flagvar=COMPFL, cond=EOSSTT="COMPLETED", label=Study Completion Flag); */
-* Derive Per-Protocol Population Flag;
+/* PPROTFL: Per-Protocol Population Flag */
 length PPROTFL $1;
 label PPROTFL = 'Per-Protocol Population Flag';
 
@@ -219,14 +224,16 @@ else PPROTFL = "N";
 /*-- END RFICDT --*/
 
 /*-- BEGIN DURDSGR1 --*/
-/* Pattern: numeric_range_group — consider adapting this macro call for DURDSGR1: */
+/* Pattern: numeric_range_group - consider adapting this macro call for DURDSGR1: */
 /* %adsl_agegr(inds=adsl, agevar=AGE, grpvar=AGEGR1, grpnvar=AGEGR1N, cuts=65|80, labels=<65|65-80|>80); */
 /* Derive Duration of Disease Group */
 length DURDSGR1 $20;
 label DURDSGR1 = "Duration of Disease Group";
+
 if DURDISM < 12 then DURDSGR1 = "<1 year";
 else if 12 <= DURDISM < 36 then DURDSGR1 = "1-<3 years";
 else if DURDISM >= 36 then DURDSGR1 = ">=3 years";
+else call missing(DURDSGR1);
 /*-- END DURDSGR1 --*/
 
 /*-- BEGIN RANDDY --*/

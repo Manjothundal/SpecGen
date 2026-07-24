@@ -124,7 +124,7 @@ data adsl;
   by usubjid;
 
 /*-- BEGIN AGEGR1 --*/
-/* Derive Pooled Age Group 1 */
+/* Derive AGEGR1 with age groups <65, 65-75, >75 */
 length AGEGR1 $10;
 label AGEGR1 = "Pooled Age Group 1";
 if AGE < 65 then AGEGR1 = "<65";
@@ -133,26 +133,30 @@ else if AGE > 75 then AGEGR1 = ">75";
 /*-- END AGEGR1 --*/
 
 /*-- BEGIN SEXN --*/
-/* Pattern: codelist_decode � consider adapting this macro call for SEXN: */
+/* Pattern: codelist_decode - consider adapting this macro call for SEXN: */
 /* %adsl_trtvar(inds=adsl, srcvar=ARM, trtvar=TRT01P, trtnvar=TRT01PN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2); */
-* Derive SEXN from SEX per specification;
+/* Derive SEXN as numeric code for SEX */
 length SEXN 8;
 label SEXN = 'Sex (N)';
-if SEX = "M" then SEXN = 1;
-else if SEX = "F" then SEXN = 2;
+if SEX = 'M' then SEXN = 1;
+else if SEX = 'F' then SEXN = 2;
 /*-- END SEXN --*/
 
 /*-- BEGIN RACEN --*/
-/* Pattern: codelist_decode � consider adapting this macro call for RACEN: */
+/* Pattern: codelist_decode - consider adapting this macro call for RACEN: */
 /* %adsl_trtvar(inds=adsl, srcvar=ARM, trtvar=TRT01P, trtnvar=TRT01PN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2); */
-/* Derive RACEN: Numeric code for RACE */
+* Derive RACEN from RACE;
 length RACEN 8;
 label RACEN = "Race (N)";
-if RACE = 'WHITE' then RACEN = 1;
-else if RACE = 'BLACK OR AFRICAN AMERICAN' then RACEN = 2;
-else if RACE = 'ASIAN' then RACEN = 3;
-else if RACE = 'AMERICAN INDIAN OR ALASKA NATIVE' then RACEN = 4;
-else if RACE = 'OTHER' then RACEN = 5;
+
+select (upcase(RACE));
+    when ("WHITE") RACEN = 1;
+    when ("BLACK OR AFRICAN AMERICAN") RACEN = 2;
+    when ("ASIAN") RACEN = 3;
+    when ("AMERICAN INDIAN OR ALASKA NATIVE") RACEN = 4;
+    when ("OTHER") RACEN = 5;
+    otherwise RACEN = .;
+end;
 /*-- END RACEN --*/
 
 /*-- BEGIN BMIBLGR1 --*/
@@ -171,10 +175,11 @@ else if RACE = 'OTHER' then RACEN = 5;
 /*-- END TRT01AN --*/
 
 /*-- BEGIN TRTDURD --*/
-/* TRTDURD: Total Treatment Duration (Days) */
+* Derive Total Treatment Duration (Days);
 length TRTDURD 8;
 label TRTDURD = "Total Treatment Duration (Days)";
 if not missing(TRTEDT) and not missing(TRTSDT) then TRTDURD = TRTEDT - TRTSDT + 1;
+else call missing(TRTDURD);
 /*-- END TRTDURD --*/
 
 /*-- BEGIN COMPFL --*/
@@ -193,17 +198,17 @@ if not missing(TRTEDT) and not missing(TRTSDT) then TRTDURD = TRTEDT - TRTSDT + 
 /*-- END SAFFL --*/
 
 /*-- BEGIN ITTFL --*/
-/* Derive Intent-To-Treat Population Flag */
+/* Derive ITTFL based on ARM not missing, not "Screen Failure", and not "Withdrawn" */
 length ITTFL $1;
 label ITTFL = "Intent-To-Treat Population Flag";
-if not missing(ARM) and ARM not in ("Screen Failure" "Withdrawn") then ITTFL = "Y";
+if not missing(ARM) and ARM ne "Screen Failure" and ARM ne "Withdrawn" then ITTFL = "Y";
 else ITTFL = "N";
 /*-- END ITTFL --*/
 
 /*-- BEGIN PPROTFL --*/
-/* Pattern: condition_flag � consider adapting this macro call for PPROTFL: */
+/* Pattern: condition_flag - consider adapting this macro call for PPROTFL: */
 /* %adsl_popflag(inds=adsl, flagvar=COMPFL, cond=EOSSTT="COMPLETED", label=Study Completion Flag); */
-* Derive Per-Protocol Population Flag;
+/* PPROTFL: Per-Protocol Population Flag */
 length PPROTFL $1;
 label PPROTFL = 'Per-Protocol Population Flag';
 
@@ -227,14 +232,16 @@ else PPROTFL = "N";
 /*-- END RFICDT --*/
 
 /*-- BEGIN DURDSGR1 --*/
-/* Pattern: numeric_range_group � consider adapting this macro call for DURDSGR1: */
+/* Pattern: numeric_range_group - consider adapting this macro call for DURDSGR1: */
 /* %adsl_agegr(inds=adsl, agevar=AGE, grpvar=AGEGR1, grpnvar=AGEGR1N, cuts=65|80, labels=<65|65-80|>80); */
 /* Derive Duration of Disease Group */
 length DURDSGR1 $20;
 label DURDSGR1 = "Duration of Disease Group";
+
 if DURDISM < 12 then DURDSGR1 = "<1 year";
 else if 12 <= DURDISM < 36 then DURDSGR1 = "1-<3 years";
 else if DURDISM >= 36 then DURDSGR1 = ">=3 years";
+else call missing(DURDSGR1);
 /*-- END DURDSGR1 --*/
 
 /*-- BEGIN RANDDY --*/
@@ -261,12 +268,12 @@ else if DURDISM >= 36 then DURDSGR1 = ">=3 years";
 if missing(TRT01A) then TRT01A = TRT01P;
 
 /*-- BEGIN AGEGR2 --*/
-/* Derive AGEGR2 - Pooled Age Group 2 */
+* AGEGR2: Pooled Age Group 2;
 length AGEGR2 $10;
 label AGEGR2 = "Pooled Age Group 2";
-if AGE < 65 then AGEGR2 = "<65";
-else if 65 <= AGE <= 75 then AGEGR2 = "65-75";
-else if AGE > 75 then AGEGR2 = ">75";
+if AGE < 65 then AGEGR2 = '<65';
+else if 65 <= AGE <= 75 then AGEGR2 = '65-75';
+else if AGE > 75 then AGEGR2 = '>75';
 /*-- END AGEGR2 --*/
 
   keep STUDYID USUBJID SUBJID SITEID AGE AGEU AGEGR1 AGEGR1N SEX RACE RACEOTH ARM TRT01P TRT01PN TRT01A TRTSDT TRTEDT TRTDURD TRTEPSDT TRTEPEDT EPOCHFL COMPFL SAFFL ITTFL DTHFL AGEGR2;
