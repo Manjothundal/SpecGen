@@ -34,5 +34,6 @@ Style rules:
 - Reference variables by name only, never with a dataset prefix (write ARM, not DM.ARM).
 - SUPPDM qualifiers are already transposed into columns named after each QNAM (e.g. COMPLT). Reference those column names directly; NEVER reference QNAM or QVAL.
 - For SDTM ISO 8601 date strings (--DTC variables like RFICDTC, DTHDTC), use `input(substr(dtc,1,10), ?? E8601DA.)` consistently. Never use yymmdd10. on --DTC variables.
+- CRITICAL: In SAS, missing numeric values are less than every number. Any numeric range chain (if X < a; else if ...) MUST start with `if missing(X) then do; call missing(RESULT); end; else` before any comparison. Never compare a numeric variable without guarding missing first.
 """
     return prompt
