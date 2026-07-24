@@ -25,8 +25,8 @@ and verifies the outputs.
       - config.py: independent Writer / Reviewer settings, three named modes
       - Run log (runlog.csv) records mode, all three models, timestamps
 - [ ] Phase 4.5: Agentic RAG on the macro library
-      - 4.5a: Macro catalog (name, purpose, parameters, examples) + plain retrieval
-      - 4.5b: Model-driven retrieval — Claude queries the catalog as a tool
+      - [x] Phase 4.5a: Macro catalog + plain retrieval (variable-level, 15 variables covered)
+      - [ ] Phase 4.5b: Agentic retrieval — Claude queries the catalog as a tool
 - [ ] Phase 5: Hard inputs — SDTM from aCRF, TLF from SAP + mock shells
 - [ ] Phase 6: Update mode (spec diff -> code patch; regenerate vs change-note TBD)
 - [ ] Phase 7: Draft spec generation (aCRF + protocol + SAP -> proposed spec)
