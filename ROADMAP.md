@@ -24,10 +24,14 @@ and verifies the outputs.
       - Local Writer via Ollama (qwen2.5-coder 7b / 14b tested)
       - config.py: independent Writer / Reviewer settings, three named modes
       - Run log (runlog.csv) records mode, all three models, timestamps
-- [ ] Phase 4.5: Agentic RAG on the macro library
+- [x] Phase 4.5: Agentic RAG on the macro library
       - [x] Phase 4.5a: Macro catalog + plain retrieval (variable-level, 15 variables covered)
       - [x] Phase 4.5b: Agentic retrieval — Claude queries the catalog as a tool
-- [ ] Phase 5: Hard inputs — SDTM from aCRF, TLF from SAP + mock shells
+- [ ] Phase 5: SDTM + TLF generation
+      - 5a: aCRF parser (PDF/Word annotations → structured domain/variable metadata)
+      - 5b: Draft SDTM spec from aCRF metadata (human reviews and completes before pipeline)
+      - 5c: SDTM program generation from approved spec (new multi-row assembly mode)
+      - 5d: TLF from SAP + mock shells
 - [ ] Phase 6: Update mode (spec diff -> code patch; regenerate vs change-note TBD)
 - [ ] Phase 7: Draft spec generation (aCRF + protocol + SAP -> proposed spec)
 - [ ] Phase 8: R output alongside SAS (admiral-style pipelines; language toggle)
@@ -41,7 +45,10 @@ and verifies the outputs.
 ## Open items (near-term)
 - Test against a fuller, realistic ADSL spec (60-100+ variables)
 - Fix any items surfaced by that test (informats, TRT01A edge cases)
-- README + GitHub rename to `specgen`
+- Side-effect variables (AGEGR1N, TRT01PN) now skipped in main loop — covered by paired macro calls
+- Known gap: DURDSGR1 missing-value guard not applied by model; macro would fix this
+- Known gap: TRTDURD missing else branch (call missing)
+- TRT01PN pattern hint shows SAFFL example instead of TRT01P — catalog suggestion needs variable-specific call
 
 ## Later ideas
 - Simple local UI (see docs/specgen_ui_mockup.html) — desktop app with mode
