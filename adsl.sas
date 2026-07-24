@@ -125,27 +125,36 @@ data adsl;
 /* AGEGR1: using validated macro */
 %adsl_agegr(inds=adsl, agevar=AGE, grpvar=AGEGR1, grpnvar=AGEGR1N, cuts=65|80, labels=<65|65-80|>80);
 
-/* AGEGR1N: Pooled Age Group 1 (N) */
+/* Pattern: numeric_range_group — consider adapting this macro call for AGEGR1N: */
+/* %adsl_agegr(inds=adsl, agevar=AGE, grpvar=AGEGR1, grpnvar=AGEGR1N, cuts=65|80, labels=<65|65-80|>80); */
+* AGEGR1N - Pooled Age Group 1 (N);
 length AGEGR1N 8;
-label AGEGR1N = 'Pooled Age Group 1 (N)';
-if AGEGR1 = "<65" then AGEGR1N = 1;
-else if AGEGR1 = "65-80" then AGEGR1N = 2;
-else if AGEGR1 = ">80" then AGEGR1N = 3;
+label AGEGR1N = "Pooled Age Group 1 (N)";
+if AGE < 65 then AGEGR1N = 1;
+else if AGE <= 80 then AGEGR1N = 2;
+else if AGE > 80 then AGEGR1N = 3;
 
-/* Derive SEXN: Numeric code for SEX */
+/* Pattern: codelist_decode — consider adapting this macro call for SEXN: */
+/* %adsl_trtvar(inds=adsl, srcvar=ARM, trtvar=TRT01P, trtnvar=TRT01PN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2); */
+/* Derive SEXN from SEX */
 length SEXN 8;
+label SEXN = 'Sex (N)';
 if SEX = 'M' then SEXN = 1;
 else if SEX = 'F' then SEXN = 2;
-label SEXN = 'Sex (N)';
 
-* RACEN Race (N);
+/* Pattern: codelist_decode — consider adapting this macro call for RACEN: */
+/* %adsl_trtvar(inds=adsl, srcvar=ARM, trtvar=TRT01P, trtnvar=TRT01PN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2); */
+/* Derive RACEN from RACE */
 length RACEN 8;
 label RACEN = 'Race (N)';
-if RACE = "WHITE" then RACEN = 1;
-else if RACE = "BLACK OR AFRICAN AMERICAN" then RACEN = 2;
-else if RACE = "ASIAN" then RACEN = 3;
-else if RACE = "AMERICAN INDIAN OR ALASKA NATIVE" then RACEN = 4;
-else if RACE = "OTHER" then RACEN = 5;
+select (RACE);
+  when ('WHITE') RACEN = 1;
+  when ('BLACK OR AFRICAN AMERICAN') RACEN = 2;
+  when ('ASIAN') RACEN = 3;
+  when ('AMERICAN INDIAN OR ALASKA NATIVE') RACEN = 4;
+  when ('OTHER') RACEN = 5;
+  otherwise RACEN = .;
+end;
 
 /* BMIBLGR1: using validated macro */
 %adsl_bmigrp(inds=adsl, bmivar=BMIBL, grpvar=BMIBLGR1, cuts=25|30, labels=<25|25-<30|>=30);
@@ -153,22 +162,25 @@ else if RACE = "OTHER" then RACEN = 5;
 /* TRT01P: using validated macro */
 %adsl_trtvar(inds=adsl, srcvar=ARM, trtvar=TRT01P, trtnvar=TRT01PN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2);
 
-/* Derive TRT01PN: Numeric code for TRT01P */
+/* Pattern: codelist_decode — consider adapting this macro call for TRT01PN: */
+/* %adsl_trtvar(inds=adsl, srcvar=ARM, trtvar=TRT01P, trtnvar=TRT01PN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2); */
+/* Derive TRT01PN from TRT01P */
 length TRT01PN 8;
-label TRT01PN = 'Planned Treatment for Period 01 (N)';
-
-if TRT01P = 'Placebo' then TRT01PN = 0;
-else if TRT01P = 'Drug A 50mg' then TRT01PN = 1;
-else if TRT01P = 'Drug A 100mg' then TRT01PN = 2;
+label TRT01PN = "Planned Treatment for Period 01 (N)";
+select(TRT01P);
+    when("Placebo") TRT01PN = 0;
+    when("Drug A 50mg") TRT01PN = 1;
+    when("Drug A 100mg") TRT01PN = 2;
+    otherwise TRT01PN = .;
+end;
 
 /* TRT01AN: using validated macro */
 %adsl_trtvar(inds=adsl, srcvar=TRT01A, trtvar=TRT01A, trtnvar=TRT01AN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2);
 
 /* Derive Total Treatment Duration (Days) */
 length TRTDURD 8;
-label TRTDURD = "Total Treatment Duration (Days)";
+label TRTDURD = 'Total Treatment Duration (Days)';
 if not missing(TRTEDT) and not missing(TRTSDT) then TRTDURD = TRTEDT - TRTSDT + 1;
-else call missing(TRTDURD);
 
 /* COMPFL: using validated macro */
 %adsl_popflag(inds=adsl, flagvar=COMPFL, cond=EOSSTT="COMPLETED", label=Study Completion Flag);
@@ -182,7 +194,9 @@ else call missing(TRTDURD);
 /* ITTFL: using validated macro */
 %adsl_popflag(inds=adsl, flagvar=ITTFL, cond=not missing(ARM) and ARM ne "Screen Failure", label=Intent-To-Treat Population Flag);
 
-/* Derive Per-Protocol Population Flag */
+/* Pattern: condition_flag — consider adapting this macro call for PPROTFL: */
+/* %adsl_popflag(inds=adsl, flagvar=COMPFL, cond=EOSSTT="COMPLETED", label=Study Completion Flag); */
+/* PPROTFL: Per-Protocol Population Flag */
 length PPROTFL $1;
 label PPROTFL = 'Per-Protocol Population Flag';
 if ITTFL = "Y" and EOSSTT = "COMPLETED" and COMPFL = "Y" then PPROTFL = "Y";
@@ -197,12 +211,16 @@ else PPROTFL = "N";
 /* RFICDT: using validated macro */
 %adsl_dtctodt(inds=adsl, dtcvar=RFICDTC, dtvar=RFICDT, fmt=DATE9.);
 
-/* Derive Duration of Disease Group */
+/* Pattern: numeric_range_group — consider adapting this macro call for DURDSGR1: */
+/* %adsl_agegr(inds=adsl, agevar=AGE, grpvar=AGEGR1, grpnvar=AGEGR1N, cuts=65|80, labels=<65|65-80|>80); */
+/* Derive DURDSGR1: Duration of Disease Group */
 length DURDSGR1 $20;
 label DURDSGR1 = 'Duration of Disease Group';
+
 if DURDISM < 12 then DURDSGR1 = '<1 year';
 else if 12 <= DURDISM < 36 then DURDSGR1 = '1-<3 years';
 else if DURDISM >= 36 then DURDSGR1 = '>=3 years';
+else call missing(DURDSGR1);
 
 /* RANDDY: using validated macro */
 %adsl_studyday(inds=adsl, datevar=RANDDT, refvar=SCRPDT, dyvar=RANDDY, label=Day of Randomisation Relative to Screening);

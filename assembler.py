@@ -2,7 +2,7 @@ from generator import generate_sas
 from prompt_builder import build_prompt
 from reviewer import review_block
 from improver import improve_block
-from macro_lookup import load_catalog, find_macro
+from macro_lookup import load_catalog, find_macro, find_by_pattern
 
 catalog = load_catalog()
 
@@ -181,11 +181,14 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
    # main-step derived variables, in spec Order
     available = known_variables(spec)
     for i, row in main_step.sort_values("Order").iterrows():
+        # 1. Exact catalog match — use macro call directly
         match = find_macro(row["Variable"], catalog)
         if match:
             print("Macro match:", row["Variable"], "->", match["macro"])
             block = "/* " + row["Variable"] + ": using validated macro */\n" + match["call"]
         else:
+            # 2. Pattern match — suggest macro, let model adapt parameters
+            pmatch = find_by_pattern(row["Variable"], str(row["Derivation"]), catalog)
             block = gen_block(row)
             print("   Improving:", row["Variable"])
             block = clean(improve_block(block, row, available))
@@ -193,6 +196,10 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
             if verdict.startswith("FAIL"):
                 print("   QC:", verdict)
                 block = "/* QC FLAG: " + verdict + " */\n" + block
+            # Prepend macro suggestion if found
+            if pmatch:
+                print("   Pattern hint:", row["Variable"], "->", pmatch["pattern"])
+                block = pmatch["suggested_call"] + "\n" + block
         parts.append(block)
         parts.append("")
 
