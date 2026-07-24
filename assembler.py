@@ -5,6 +5,10 @@ from improver import improve_block
 from macro_lookup import load_catalog, find_macro, find_by_pattern
 
 catalog = load_catalog()
+# Variables derived as side effects of another variable's macro call
+# e.g. %adsl_agegr derives both AGEGR1 and AGEGR1N in one call
+# e.g. %adsl_trtvar derives both TRT01P and TRT01PN in one call
+MACRO_SIDE_EFFECTS = {"AGEGR1N", "TRT01PN"}
 
 def clean(code):
     """Remove markdown fences if the model added them anyway."""
@@ -181,6 +185,10 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
    # main-step derived variables, in spec Order
     available = known_variables(spec)
     for i, row in main_step.sort_values("Order").iterrows():
+        # Skip variables already derived as macro side effects
+        if row["Variable"] in MACRO_SIDE_EFFECTS:
+            print("Side effect (skipped):", row["Variable"])
+            continue
         # 1. Exact catalog match — use macro call directly
         match = find_macro(row["Variable"], catalog)
         if match:
