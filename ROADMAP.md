@@ -32,7 +32,10 @@ and verifies the outputs.
       - 5b: Draft SDTM spec from aCRF metadata (human reviews and completes before pipeline)
       - 5c: SDTM program generation from approved spec (new multi-row assembly mode)
       - 5d: TLF from SAP + mock shells
-- [ ] Phase 6: Update mode (spec diff -> code patch; regenerate vs change-note TBD)
+- [~] Phase 6: Update mode — CORE WORKING (differ + marker-based patcher)
+      - spec_differ.py: v1 vs v2 comparison (new / changed / deleted / unchanged)
+      - spec_patcher.py: replaces changed blocks via BEGIN/END markers, appends new, rebuilds keep
+      - Open: log patch runs to runlog.csv; update catalog params instead of bypassing; em-dash encoding fix
 - [ ] Phase 7: Draft spec generation (aCRF + protocol + SAP -> proposed spec)
 - [ ] Phase 8: R output alongside SAS (admiral-style pipelines; language toggle)
 - [ ] Phase 9: Compare & verify module
