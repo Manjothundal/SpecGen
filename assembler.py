@@ -26,10 +26,10 @@ def known_variables(spec):
                     "RACEOTH", "COMPLT"]
     return sorted(set(spec_vars + dm_vars + prestep_vars))
 
-def gen_block(row):
+def gen_block(row, skip_macro=False):
     """Generate one variable's derivation logic via the model."""
     print("Generating:", row["Variable"])
-    return clean(generate_sas(build_prompt(row)))
+    return clean(generate_sas(build_prompt(row, skip_macro=skip_macro)))
 
 def assemble_adsl(spec, derived, ex_summary, main_step):
     parts = []
@@ -189,25 +189,29 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
         if row["Variable"] in MACRO_SIDE_EFFECTS:
             print("Side effect (skipped):", row["Variable"])
             continue
+
+        var = row["Variable"]
+
         # 1. Exact catalog match — use macro call directly
-        match = find_macro(row["Variable"], catalog)
+        match = find_macro(var, catalog)
         if match:
-            print("Macro match:", row["Variable"], "->", match["macro"])
-            block = "/* " + row["Variable"] + ": using validated macro */\n" + match["call"]
+            print("Macro match:", var, "->", match["macro"])
+            block = f"/*-- BEGIN {var} --*/\n/* {var}: using validated macro */\n{match['call']}\n/*-- END {var} --*/"
         else:
-            # 2. Pattern match — suggest macro, let model adapt parameters
-            pmatch = find_by_pattern(row["Variable"], str(row["Derivation"]), catalog)
+            # 2. Pattern match + generate
+            pmatch = find_by_pattern(var, str(row["Derivation"]), catalog)
             block = gen_block(row)
-            print("   Improving:", row["Variable"])
+            print("   Improving:", var)
             block = clean(improve_block(block, row, available))
             verdict = review_block(block, available)
             if verdict.startswith("FAIL"):
                 print("   QC:", verdict)
                 block = "/* QC FLAG: " + verdict + " */\n" + block
-            # Prepend macro suggestion if found
             if pmatch:
-                print("   Pattern hint:", row["Variable"], "->", pmatch["pattern"])
+                print("   Pattern hint:", var, "->", pmatch["pattern"])
                 block = pmatch["suggested_call"] + "\n" + block
+            block = f"/*-- BEGIN {var} --*/\n{block}\n/*-- END {var} --*/"
+
         parts.append(block)
         parts.append("")
 

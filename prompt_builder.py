@@ -2,7 +2,7 @@ from macro_lookup import load_catalog, find_macro
 
 catalog = load_catalog()
 
-def build_prompt(row):
+def build_prompt(row, skip_macro=False):
     """Turn one spec row into an instruction for the AI."""
 
     format_line = ""
@@ -11,15 +11,14 @@ def build_prompt(row):
         format_line = f"Format: {fmt}\n"
 
     # Check if a validated macro exists for this variable
-    match = find_macro(row["Variable"], catalog)
+    match = None if skip_macro else find_macro(row["Variable"], catalog)
     if match:
         macro_section = f"""
 VALIDATED MACRO AVAILABLE — use it instead of writing raw code:
 Macro: {match['macro']}
 Purpose: {match['purpose']}
-Parameters: {match['parameters']}
-Example call: {match['example_call']}
-NOTE: This macro is validated and handles missing values. Call it with the correct parameters. Do NOT write raw derivation logic — output ONLY the macro call.
+Call: {match['call']}
+NOTE: This macro is validated and handles missing values. Adapt the call for this specific variable if needed. Do NOT write raw derivation logic — output ONLY the macro call.
 """
     else:
         macro_section = ""
