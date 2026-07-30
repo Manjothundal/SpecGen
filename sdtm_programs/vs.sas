@@ -16,379 +16,191 @@
 libname raw  'C:\sas_data\raw'  access=readonly;
 libname sdtm 'C:\sas_data\sdtm';
 
-/*-----------------------------------------------------------------------------
-  PROGRAM:        SDTM_VS.sas
-  DESCRIPTION:    Create SDTM VS (Vital Signs) Domain
-  PROGRAMMER:     [Programmer Name]
-  DATE:           [Date]
-  
-  INPUT:          raw.vs       - Raw vital signs data
-                  raw.dm       - Raw demographics (for USUBJID, RFSTDTC)
-                  
-  OUTPUT:         sdtm.vs      - SDTM VS Domain
-  
-  ASSUMPTIONS:    - Raw data is in wide format (one column per test)
-                  - Tests: SYSBP, DIABP, PULSE, RESP, TEMP, WEIGHT, HEIGHT
------------------------------------------------------------------------------*/
+/*=======================================================================================
+  Program:      VS_SDTM.sas
+  Description:  Create SDTM VS (Vital Signs) domain
+  Input:        raw.vs, raw.dm
+  Output:       sdtm.vs
+=======================================================================================*/
 
 /*-- BEGIN VS --*/
 
-/*-----------------------------------------------------------------------------
-  Step 1: Merge DM data to get USUBJID and RFSTDTC for study day calculation
------------------------------------------------------------------------------*/
-proc sort data=raw.dm out=dm_sub(keep=studyid siteid subjid usubjid rfstdtc);
-    by studyid siteid subjid;
+*-- Read in DM data for USUBJID, STUDYID, and RFSTDTC --;
+proc sort data=raw.dm out=dm_for_vs;
+    by STUDYID SITEID SUBJID;
 run;
 
-proc sort data=raw.vs;
-    by studyid siteid subjid;
+data dm_for_vs;
+    set dm_for_vs;
+    keep STUDYID SITEID SUBJID USUBJID RFSTDTC;
 run;
 
-data vs_dm;
-    length usubjid $40;
-    merge raw.vs(in=a)
-          dm_sub(in=b);
-    by studyid siteid subjid;
+*-- Read and transpose source VS data to vertical format --;
+data vs_raw;
+    set raw.vs;
+run;
+
+*-- Check if data is in wide format and transpose if needed --;
+*-- Assume raw.vs contains: STUDYID, SITEID, SUBJID, VISITNUM, VISIT, VSDTC, VSPOS,
+   and vital signs parameters (SYSBP, DIABP, PULSE, TEMP, RESP, WEIGHT, HEIGHT) --;
+
+proc transpose data=vs_raw out=vs_vert(rename=(col1=VSORRES _NAME_=VSTESTCD));
+    by STUDYID SITEID SUBJID VISITNUM VISIT VSDTC VSPOS;
+    var SYSBP DIABP PULSE TEMP RESP WEIGHT HEIGHT;
+run;
+
+*-- Merge with DM to get USUBJID and RFSTDTC --;
+proc sort data=vs_vert;
+    by STUDYID SITEID SUBJID;
+run;
+
+data vs_merge;
+    length STUDYID $20 DOMAIN $2 USUBJID $40 VSTESTCD $8 VSTEST $40 VSCAT $40
+           VSORRES $200 VSORRESU $40 VSSTRESC $200 VSSTRESN 8 VSSTRESU $40
+           VSSTAT $8 VSREASND $200 VISITNUM 8 VISIT $40 VSDTC $20 VSDY 8 VSPOS $40;
+    
+    merge vs_vert(in=a)
+          dm_for_vs(in=b);
+    by STUDYID SITEID SUBJID;
     if a;
     
-    /* Derive USUBJID if not in source */
-    if missing(usubjid) then usubjid = catx('-', studyid, siteid, subjid);
-run;
-
-/*-----------------------------------------------------------------------------
-  Step 2: Transpose data from wide to vertical format (one row per test)
------------------------------------------------------------------------------*/
-data vs_vert;
-    set vs_dm;
+    *-- If USUBJID is not in source data, derive it --;
+    if missing(USUBJID) then USUBJID = catx('-', STUDYID, SITEID, SUBJID);
     
-    length vstestcd $8 vstest $40 vsorres $200 vsorresu $40 vscat $40 
-           vsstat $20 vsreasnd $200 vspos $20;
+    *-- Set DOMAIN --;
+    DOMAIN = 'VS';
     
-    /* Systolic Blood Pressure */
-    if not missing(sysbp) or sysbp_nd = 'Y' then do;
-        vstestcd = 'SYSBP';
-        vstest = 'Systolic Blood Pressure';
-        if sysbp_nd = 'Y' then do;
-            vsorres = '';
-            vsorresu = '';
-            vsstat = 'NOT DONE';
-            vsreasnd = sysbp_reason;
-        end;
-        else do;
-            vsorres = strip(put(sysbp, best.));
-            vsorresu = 'mmHg';
-            vsstat = '';
-            vsreasnd = '';
-        end;
-        vscat = 'VITAL SIGNS';
-        vspos = upcase(strip(position));
-        output;
+    *-- Set VSCAT --;
+    VSCAT = 'VITAL SIGNS';
+    
+    *-- Map VSTESTCD to VSTEST --;
+    select (upcase(VSTESTCD));
+        when ('SYSBP')   VSTEST = 'Systolic Blood Pressure';
+        when ('DIABP')   VSTEST = 'Diastolic Blood Pressure';
+        when ('PULSE')   VSTEST = 'Pulse Rate';
+        when ('TEMP')    VSTEST = 'Temperature';
+        when ('RESP')    VSTEST = 'Respiratory Rate';
+        when ('WEIGHT')  VSTEST = 'Weight';
+        when ('HEIGHT')  VSTEST = 'Height';
+        otherwise        VSTEST = VSTESTCD;
     end;
     
-    /* Diastolic Blood Pressure */
-    if not missing(diabp) or diabp_nd = 'Y' then do;
-        vstestcd = 'DIABP';
-        vstest = 'Diastolic Blood Pressure';
-        if diabp_nd = 'Y' then do;
-            vsorres = '';
-            vsorresu = '';
-            vsstat = 'NOT DONE';
-            vsreasnd = diabp_reason;
-        end;
-        else do;
-            vsorres = strip(put(diabp, best.));
-            vsorresu = 'mmHg';
-            vsstat = '';
-            vsreasnd = '';
-        end;
-        vscat = 'VITAL SIGNS';
-        vspos = upcase(strip(position));
-        output;
+    *-- Derive original units --;
+    select (upcase(VSTESTCD));
+        when ('SYSBP', 'DIABP') VSORRESU = 'mmHg';
+        when ('PULSE')          VSORRESU = 'beats/min';
+        when ('TEMP')           VSORRESU = 'C';
+        when ('RESP')           VSORRESU = 'breaths/min';
+        when ('WEIGHT')         VSORRESU = 'kg';
+        when ('HEIGHT')         VSORRESU = 'cm';
+        otherwise               VSORRESU = '';
     end;
     
-    /* Pulse Rate */
-    if not missing(pulse) or pulse_nd = 'Y' then do;
-        vstestcd = 'PULSE';
-        vstest = 'Pulse Rate';
-        if pulse_nd = 'Y' then do;
-            vsorres = '';
-            vsorresu = '';
-            vsstat = 'NOT DONE';
-            vsreasnd = pulse_reason;
-        end;
-        else do;
-            vsorres = strip(put(pulse, best.));
-            vsorresu = 'beats/min';
-            vsstat = '';
-            vsreasnd = '';
-        end;
-        vscat = 'VITAL SIGNS';
-        vspos = upcase(strip(position));
-        output;
+    *-- Handle NOT DONE status and reason not done --;
+    if missing(VSORRES) or upcase(strip(VSORRES)) in ('ND' 'NOT DONE' 'NOT PERFORMED') then do;
+        VSSTAT = 'NOT DONE';
+        if upcase(strip(VSORRES)) in ('ND' 'NOT DONE' 'NOT PERFORMED') then VSREASND = strip(VSORRES);
+        VSORRES = '';
     end;
     
-    /* Respiratory Rate */
-    if not missing(resp) or resp_nd = 'Y' then do;
-        vstestcd = 'RESP';
-        vstest = 'Respiratory Rate';
-        if resp_nd = 'Y' then do;
-            vsorres = '';
-            vsorresu = '';
-            vsstat = 'NOT DONE';
-            vsreasnd = resp_reason;
-        end;
-        else do;
-            vsorres = strip(put(resp, best.));
-            vsorresu = 'breaths/min';
-            vsstat = '';
-            vsreasnd = '';
-        end;
-        vscat = 'VITAL SIGNS';
-        vspos = upcase(strip(position));
-        output;
+    *-- Derive VSSTRESC (character result in standard format) --;
+    if VSSTAT ne 'NOT DONE' then do;
+        VSSTRESC = strip(VSORRES);
+    end;
+    else VSSTRESC = '';
+    
+    *-- Derive VSSTRESN (numeric result) --;
+    if VSSTAT ne 'NOT DONE' and not missing(VSSTRESC) then do;
+        VSSTRESN = input(VSSTRESC, ?? best.);
     end;
     
-    /* Temperature */
-    if not missing(temp) or temp_nd = 'Y' then do;
-        vstestcd = 'TEMP';
-        vstest = 'Temperature';
-        if temp_nd = 'Y' then do;
-            vsorres = '';
-            vsorresu = '';
-            vsstat = 'NOT DONE';
-            vsreasnd = temp_reason;
-        end;
-        else do;
-            vsorres = strip(put(temp, best.));
-            vsorresu = strip(temp_unit); /* C or F from source */
-            vsstat = '';
-            vsreasnd = '';
-        end;
-        vscat = 'VITAL SIGNS';
-        vspos = '';
-        output;
+    *-- Derive standard units (same as original for this example) --;
+    if VSSTAT ne 'NOT DONE' then do;
+        VSSTRESU = VSORRESU;
     end;
     
-    /* Weight */
-    if not missing(weight) or weight_nd = 'Y' then do;
-        vstestcd = 'WEIGHT';
-        vstest = 'Weight';
-        if weight_nd = 'Y' then do;
-            vsorres = '';
-            vsorresu = '';
-            vsstat = 'NOT DONE';
-            vsreasnd = weight_reason;
-        end;
-        else do;
-            vsorres = strip(put(weight, best.));
-            vsorresu = strip(weight_unit); /* kg or lb from source */
-            vsstat = '';
-            vsreasnd = '';
-        end;
-        vscat = 'VITAL SIGNS';
-        vspos = '';
-        output;
-    end;
-    
-    /* Height */
-    if not missing(height) or height_nd = 'Y' then do;
-        vstestcd = 'HEIGHT';
-        vstest = 'Height';
-        if height_nd = 'Y' then do;
-            vsorres = '';
-            vsorresu = '';
-            vsstat = 'NOT DONE';
-            vsreasnd = height_reason;
-        end;
-        else do;
-            vsorres = strip(put(height, best.));
-            vsorresu = strip(height_unit); /* cm or in from source */
-            vsstat = '';
-            vsreasnd = '';
-        end;
-        vscat = 'VITAL SIGNS';
-        vspos = '';
-        output;
-    end;
-    
-    keep studyid usubjid vstestcd vstest vscat vsorres vsorresu 
-         vsstat vsreasnd visitnum visit vsdtc vspos rfstdtc vsdate vstime;
-run;
-
-/*-----------------------------------------------------------------------------
-  Step 3: Derive VSDTC in ISO 8601 format
------------------------------------------------------------------------------*/
-data vs_dtc;
-    set vs_vert;
-    
-    length vsdtc $19;
-    
-    /* Convert SAS date/datetime to ISO 8601 */
-    if not missing(vsdate) then do;
-        if not missing(vstime) then do;
-            /* Check if vstime is a time value or datetime value */
-            if vstime < 86400 then do;
-                /* vstime is a time value */
-                vsdtc = strip(put(vsdate, yymmdd10.)) || 'T' || put(vstime, time5.);
-            end;
-            else do;
-                /* vstime might be a datetime */
-                vsdtc = strip(put(datepart(vstime), yymmdd10.)) || 'T' || put(timepart(vstime), time5.);
-            end;
-        end;
-        else do;
-            vsdtc = put(vsdate, yymmdd10.);
-        end;
-    end;
-    else vsdtc = '';
-    
-    drop vsdate vstime;
-run;
-
-/*-----------------------------------------------------------------------------
-  Step 4: Derive standardized character and numeric results
------------------------------------------------------------------------------*/
-data vs_std;
-    set vs_dtc;
-    
-    length vsstresc $200 vsstresu $40;
-    
-    /* Derive VSSTRESC and VSSTRESN */
-    if vsstat ne 'NOT DONE' then do;
-        vsstresc = vsorres;
-        vsstresn = input(vsorres, ?? best.);
-        
-        /* Derive VSSTRESU with unit conversions */
-        if vstestcd in ('SYSBP', 'DIABP') then do;
-            vsstresu = 'mmHg';
-            /* No conversion needed - already in mmHg */
-        end;
-        else if vstestcd = 'PULSE' then do;
-            vsstresu = 'beats/min';
-            /* No conversion needed */
-        end;
-        else if vstestcd = 'RESP' then do;
-            vsstresu = 'breaths/min';
-            /* No conversion needed */
-        end;
-        else if vstestcd = 'TEMP' then do;
-            vsstresu = 'C';
-            /* Convert Fahrenheit to Celsius if needed */
-            if upcase(vsorresu) in ('F', 'FAHRENHEIT') then do;
-                vsstresn = round((vsstresn - 32) * 5/9, 0.1);
-                vsstresc = strip(put(vsstresn, 8.1));
-            end;
-        end;
-        else if vstestcd = 'WEIGHT' then do;
-            vsstresu = 'kg';
-            /* Convert pounds to kg if needed */
-            if upcase(vsorresu) in ('LB', 'LBS', 'POUNDS') then do;
-                vsstresn = round(vsstresn * 0.453592, 0.01);
-                vsstresc = strip(put(vsstresn, 8.2));
-            end;
-        end;
-        else if vstestcd = 'HEIGHT' then do;
-            vsstresu = 'cm';
-            /* Convert inches to cm if needed */
-            if upcase(vsorresu) in ('IN', 'INCH', 'INCHES') then do;
-                vsstresn = round(vsstresn * 2.54, 0.1);
-                vsstresc = strip(put(vsstresn, 8.1));
-            end;
-        end;
-    end;
-    else do;
-        vsstresc = '';
-        vsstresn = .;
-        vsstresu = '';
-    end;
-run;
-
-/*-----------------------------------------------------------------------------
-  Step 5: Derive study day (VSDY)
------------------------------------------------------------------------------*/
-data vs_dy;
-    set vs_std;
-    
-    /* Calculate study day relative to RFSTDTC */
-    if not missing(vsdtc) and not missing(rfstdtc) then do;
-        if length(vsdtc) >= 10 and length(rfstdtc) >= 10 then do;
-            _vsdt = input(substr(vsdtc,1,10), yymmdd10.);
-            _rfstdt = input(substr(rfstdtc,1,10), yymmdd10.);
-            
-            if not missing(_vsdt) and not missing(_rfstdt) then do;
-                if _vsdt >= _rfstdt then vsdy = _vsdt - _rfstdt + 1;
-                else vsdy = _vsdt - _rfstdt;
+    *-- Derive study day (VSDY) --;
+    if not missing(VSDTC) and not missing(RFSTDTC) then do;
+        if length(strip(VSDTC)) >= 10 and length(strip(RFSTDTC)) >= 10 then do;
+            _vsdate = input(substr(VSDTC,1,10), yymmdd10.);
+            _rfstdate = input(substr(RFSTDTC,1,10), yymmdd10.);
+            if not missing(_vsdate) and not missing(_rfstdate) then do;
+                if _vsdate >= _rfstdate then 
+                    VSDY = _vsdate - _rfstdate + 1;
+                else 
+                    VSDY = _vsdate - _rfstdate;
             end;
         end;
     end;
     
-    drop _vsdt _rfstdt rfstdtc;
+    drop SITEID SUBJID RFSTDTC _vsdate _rfstdate;
 run;
 
-/*-----------------------------------------------------------------------------
-  Step 6: Sort and derive sequence number
------------------------------------------------------------------------------*/
-proc sort data=vs_dy;
-    by studyid usubjid visitnum vsdtc vstestcd;
+*-- Sort by subject and visit --;
+proc sort data=vs_merge;
+    by USUBJID VSTESTCD VISITNUM VSDTC;
 run;
 
+*-- Derive VSSEQ --;
 data vs_seq;
-    set vs_dy;
-    by studyid usubjid;
+    set vs_merge;
+    by USUBJID;
     
-    retain vsseq;
+    retain VSSEQ;
     
-    if first.usubjid then vsseq = 0;
-    vsseq + 1;
+    if first.USUBJID then VSSEQ = 1;
+    else VSSEQ + 1;
 run;
 
-/*-----------------------------------------------------------------------------
-  Step 7: Assign DOMAIN and create final dataset with labels
------------------------------------------------------------------------------*/
+*-- Sort final dataset --;
+proc sort data=vs_seq;
+    by STUDYID USUBJID VSSEQ;
+run;
+
+*-- Create final VS domain with proper variable order and attributes --;
 data sdtm.vs;
-    length studyid $20 domain $2 usubjid $40 vstestcd $8 vstest $40 
-           vscat $40 vsorres $200 vsorresu $40 vsstresc $200 
-           vsstresu $40 vsstat $20 vsreasnd $200 visit $200 
-           vsdtc $19 vspos $20;
-    set vs_seq;
-    
-    domain = 'VS';
-    
-    /* Apply variable labels */
-    label
-        studyid  = 'Study Identifier'
-        domain   = 'Domain Abbreviation'
-        usubjid  = 'Unique Subject Identifier'
-        vsseq    = 'Sequence Number'
-        vstestcd = 'Vital Signs Test Short Name'
-        vstest   = 'Vital Signs Test Name'
-        vscat    = 'Category for Vital Signs'
-        vsorres  = 'Result or Finding in Original Units'
-        vsorresu = 'Original Units'
-        vsstresc = 'Character Result/Finding in Std Format'
-        vsstresn = 'Numeric Result/Finding in Standard Units'
-        vsstresu = 'Standard Units'
-        vsstat   = 'Completion Status'
-        vsreasnd = 'Reason Not Done'
-        visitnum = 'Visit Number'
-        visit    = 'Visit Name'
-        vsdtc    = 'Date/Time of Measurements'
-        vsdy     = 'Study Day of Vital Signs'
-        vspos    = 'Vital Signs Position of Subject'
+    attrib
+        STUDYID  length=$20   label='Study Identifier'
+        DOMAIN   length=$2    label='Domain Abbreviation'
+        USUBJID  length=$40   label='Unique Subject Identifier'
+        VSSEQ    length=8     label='Sequence Number'
+        VSTESTCD length=$8    label='Vital Signs Test Short Name'
+        VSTEST   length=$40   label='Vital Signs Test Name'
+        VSCAT    length=$40   label='Category for Vital Signs'
+        VSORRES  length=$200  label='Result or Finding in Original Units'
+        VSORRESU length=$40   label='Original Units'
+        VSSTRESC length=$200  label='Character Result/Finding in Std Format'
+        VSSTRESN length=8     label='Numeric Result/Finding in Standard Units'
+        VSSTRESU length=$40   label='Standard Units'
+        VSSTAT   length=$8    label='Completion Status'
+        VSREASND length=$200  label='Reason Not Done'
+        VISITNUM length=8     label='Visit Number'
+        VISIT    length=$40   label='Visit Name'
+        VSDTC    length=$20   label='Date/Time of Measurements'
+        VSDY     length=8     label='Study Day of Vital Signs'
+        VSPOS    length=$40   label='Vital Signs Position of Subject'
     ;
     
-    /* Keep only SDTM variables in specified order */
-    keep studyid domain usubjid vsseq vstestcd vstest vscat 
-         vsorres vsorresu vsstresc vsstresn vsstresu 
-         vsstat vsreasnd visitnum visit vsdtc vsdy vspos;
+    set vs_seq;
+    
+    keep STUDYID DOMAIN USUBJID VSSEQ VSTESTCD VSTEST VSCAT VSORRES VSORRESU 
+         VSSTRESC VSSTRESN VSSTRESU VSSTAT VSREASND VISITNUM VISIT VSDTC VSDY VSPOS;
 run;
 
-/*-----------------------------------------------------------------------------
-  Step 8: Final sort by specification
------------------------------------------------------------------------------*/
-proc sort data=sdtm.vs;
-    by studyid usubjid visitnum vsdtc vstestcd;
+*-- Generate summary report --;
+proc freq data=sdtm.vs;
+    tables VSTESTCD*VSTEST / list missing;
+    tables VSSTAT / missing;
+    title 'VS Domain: Frequency of Tests and Completion Status';
 run;
+
+proc means data=sdtm.vs n nmiss min max mean median;
+    var VSSTRESN VSDY;
+    class VSTESTCD;
+    title 'VS Domain: Summary Statistics for Numeric Results';
+run;
+
+title;
 
 /*-- END VS --*/
 

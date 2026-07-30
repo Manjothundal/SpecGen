@@ -16,51 +16,58 @@
 libname raw  'C:\sas_data\raw'  access=readonly;
 libname sdtm 'C:\sas_data\sdtm';
 
-/*==============================================================================
-  Program:      SUPPAE.sas
-  Description:  Create SUPPAE Supplemental Qualifiers for AE Domain
-  Input:        raw.ae (source data)
-                sdtm.ae (parent domain)
-  Output:       sdtm.suppae
-==============================================================================*/
-
 /*-- BEGIN SUPPAE --*/
+/*====================================================================================
+  Program:      suppae.sas
+  Description:  Create SUPPAE (Supplemental Qualifiers for AE) domain
+  Input:        raw.ae (source data)
+                sdtm.ae (parent domain with AESEQ)
+  Output:       sdtm.suppae
+====================================================================================*/
 
-* Read source data and merge with parent domain to get AESEQ;
+%let studyid = STUDY123;
+
+* Read parent domain to get AESEQ for matching;
+proc sort data=sdtm.ae(keep=studyid usubjid aeseq) 
+          out=ae_parent nodupkey;
+    by studyid usubjid aeseq;
+run;
+
+* Read source AE data;
 proc sort data=raw.ae out=raw_ae_sort;
-    by USUBJID AESTDTC AETERM;
+    by studyid usubjid;
 run;
 
-proc sort data=sdtm.ae out=ae_sort;
-    by USUBJID AESTDTC AETERM;
+* Merge source with parent to get AESEQ;
+proc sort data=ae_parent out=ae_parent_sort;
+    by studyid usubjid;
 run;
 
-* Create lookup dataset with AESEQ from parent domain;
-data ae_lookup;
-    merge raw_ae_sort (in=a)
-          ae_sort (in=b keep=STUDYID USUBJID AESEQ AESTDTC AETERM);
-    by USUBJID AESTDTC AETERM;
+data ae_with_seq;
+    merge raw_ae_sort(in=a)
+          ae_parent_sort(in=b);
+    by studyid usubjid;
     if a and b;
 run;
 
 * Transpose qualifier variables into QNAM/QVAL structure;
 data suppae_01;
-    set ae_lookup;
-    
-    length STUDYID $20
-           RDOMAIN $8
-           USUBJID $40
+    length STUDYID $20 
+           RDOMAIN $2 
+           USUBJID $40 
            IDVAR $8 
            IDVARVAL $200 
            QNAM $8 
-           QLABEL $40 
+           QLABEL $200 
            QVAL $200 
            QORIG $8 
            QEVAL $40;
     
+    set ae_with_seq;
+    
     RDOMAIN = 'AE';
     IDVAR = 'AESEQ';
-    IDVARVAL = put(AESEQ, best.);
+    IDVARVAL = put(AESEQ, 8.);
     QORIG = 'CRF';
     QEVAL = '';
     
@@ -72,7 +79,7 @@ data suppae_01;
         output;
     end;
     
-    * AESDTH - Led to Death;
+    * AESDTH - Results in Death;
     if not missing(AESDTH) then do;
         QNAM = 'AESDTH';
         QLABEL = 'Results in Death';
@@ -80,7 +87,7 @@ data suppae_01;
         output;
     end;
     
-    * AESHOSP - Led to Hospitalization;
+    * AESHOSP - Requires or Prolongs Hospitalization;
     if not missing(AESHOSP) then do;
         QNAM = 'AESHOSP';
         QLABEL = 'Requires or Prolongs Hospitalization';
@@ -88,7 +95,7 @@ data suppae_01;
         output;
     end;
     
-    * AETRTEM - Treatment Emergent;
+    * AETRTEM - Treatment Emergent Flag;
     if not missing(AETRTEM) then do;
         QNAM = 'AETRTEM';
         QLABEL = 'Treatment Emergent Flag';
@@ -99,31 +106,41 @@ data suppae_01;
     keep STUDYID RDOMAIN USUBJID IDVAR IDVARVAL QNAM QLABEL QVAL QORIG QEVAL;
 run;
 
-* Sort by key variables;
-proc sort data=suppae_01 out=sdtm.suppae;
+* Sort SUPPAE by key variables;
+proc sort data=suppae_01 
+          out=sdtm.suppae;
     by STUDYID RDOMAIN USUBJID IDVARVAL QNAM;
 run;
 
-* Apply variable labels and attributes;
+* Apply variable labels;
 data sdtm.suppae;
     set sdtm.suppae;
     
-    label STUDYID = 'Study Identifier'
-          RDOMAIN = 'Related Domain Abbreviation'
-          USUBJID = 'Unique Subject Identifier'
-          IDVAR = 'Identifying Variable'
+    label STUDYID  = 'Study Identifier'
+          RDOMAIN  = 'Related Domain Abbreviation'
+          USUBJID  = 'Unique Subject Identifier'
+          IDVAR    = 'Identifying Variable'
           IDVARVAL = 'Identifying Variable Value'
-          QNAM = 'Qualifier Variable Name'
-          QLABEL = 'Qualifier Variable Label'
-          QVAL = 'Data Value'
-          QORIG = 'Origin'
-          QEVAL = 'Evaluator';
+          QNAM     = 'Qualifier Variable Name'
+          QLABEL   = 'Qualifier Variable Label'
+          QVAL     = 'Data Value'
+          QORIG    = 'Origin'
+          QEVAL    = 'Evaluator';
 run;
 
-* Clean up temporary datasets;
-proc datasets library=work nolist;
-    delete raw_ae_sort ae_sort ae_lookup suppae_01;
+* Summary report;
+proc freq data=sdtm.suppae;
+    tables QNAM / nocum;
+    title "SUPPAE: Summary of Qualifier Variables";
+run;
+
+proc sql;
+    select count(distinct catx('|', studyid, usubjid, idvarval)) as Total_Parent_Records,
+           count(*) as Total_SUPPAE_Records
+    from sdtm.suppae;
 quit;
+
+title;
 
 /*-- END SUPPAE --*/
 
