@@ -2,8 +2,14 @@ from macro_lookup import load_catalog, find_macro
 
 catalog = load_catalog()
 
-def build_prompt(row, skip_macro=False):
-    """Turn one spec row into an instruction for the AI."""
+def build_prompt(row, skip_macro=False, context_vars=None):
+    """Turn one spec row into an instruction for the AI.
+
+    context_vars: override the "already available" variable description.
+    Default assumes SDTM source (DM, EX). Pass a BDS-specific string for
+    ADaM BDS domains (ADVS, ADLB, etc.) where the available columns are
+    PARAMCD/AVAL/BASE, not SDTM domain vars.
+    """
 
     format_line = ""
     fmt = str(row["Format"]).strip()
@@ -23,6 +29,8 @@ NOTE: This macro is validated and handles missing values. Adapt the call for thi
     else:
         macro_section = ""
 
+    available_vars = context_vars or "all needed SDTM variables (from DM, EX, etc.)"
+
     prompt = f"""You are a senior clinical SAS programmer.
 Write SAS 9.4 code to derive one ADaM variable.
 
@@ -34,7 +42,7 @@ Type: {row['Type']}, Length: {row['Length']}
 Rules:
 - Output ONLY the derivation logic statements (length, label, format, if/then, assignments).
 - Do NOT include data, set, merge, or run statements - the code will be inserted into an existing data step.
-- Assume all needed SDTM variables (from DM, EX, etc.) are already available in the step.
+- Assume {available_vars} are already available in the step.
 - Do NOT repeat the variable metadata (name, label, type, format, derivation rule) as comments. Output ONE brief comment line, then the code.
 - Do NOT add any explanation before or after the code.
 - Output plain SAS code only, no markdown fences.
@@ -53,3 +61,24 @@ Style rules:
 - CRITICAL: In SAS, missing numeric values are less than every number. Any numeric range chain (if X < a; else if ...) MUST start with `if missing(X) then do; call missing(RESULT); end; else` before any comparison. Never compare a numeric variable without guarding missing first.
 """
     return prompt
+
+
+# --- ANL01FL row for ADVS, since no hand-authored BDS spec exists ---
+ANL01FL_ROW = {
+    "Variable": "ANL01FL",
+    "Label": "Analysis Flag 01",
+    "Type": "Char",
+    "Length": "1",
+    "Format": "",
+    "Derivation": (
+        "Set to 'Y' if the record falls within the protocol-defined analysis "
+        "visit window and AVAL is not missing. Otherwise leave null."
+    ),
+}
+
+# Call it like this:
+#   prompt = build_prompt(
+#       ANL01FL_ROW,
+#       skip_macro=True,
+#       context_vars="PARAMCD, PARAM, AVAL, BASE, CHG, PCHG, VISIT, VISITNUM, USUBJID (from the ADVS reshape step)"
+#   )
