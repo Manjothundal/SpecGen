@@ -1,15 +1,16 @@
 """
 Build a sample annotated CRF (aCRF) PDF for testing the aCRF parser.
 
-8 pages covering 12 standard domains + SUPP domains:
+9 pages covering 13 standard domains + SUPP domains:
   Page 1: Demographics (DM + SUPPDM)
   Page 2: Vital Signs (VS + SUPPVS)
-  Page 3: Adverse Events (AE + SUPPAE)
-  Page 4: Concomitant Medications (CM + SUPPCM)
-  Page 5: Disposition (DS) + Medical History (MH)
-  Page 6: Protocol Deviations (DV) + ECG (EG + SUPPEG)
-  Page 7: Tumor Identification (TU) + Tumor Results (TR)
-  Page 8: Response (RS + SUPPRS)
+  Page 3: Laboratory (LB + SUPPLB)
+  Page 4: Adverse Events (AE + SUPPAE)
+  Page 5: Concomitant Medications (CM + SUPPCM)
+  Page 6: Disposition (DS) + Medical History (MH)
+  Page 7: Protocol Deviations (DV) + ECG (EG + SUPPEG)
+  Page 8: Tumor Identification (TU) + Tumor Results (TR)
+  Page 9: Response (RS + SUPPRS)
 """
 
 from reportlab.lib.pagesizes import letter
@@ -100,7 +101,7 @@ def draw_checkbox_field(c, y, label, options, annotation, codelist=None):
     return y - 28
 
 
-TOTAL_PAGES = 8
+TOTAL_PAGES = 9
 
 
 # ─── Page 1: Demographics ───────────────────────────────────────────
@@ -162,10 +163,36 @@ def page_vital_signs(c):
                             "SUPPVS.VSFAST", "NY")
 
 
-# ─── Page 3: Adverse Events ─────────────────────────────────────────
+# ─── Page 3: Laboratory ─────────────────────────────────────────────
+
+def page_labs(c):
+    draw_header(c, "Laboratory", 3, TOTAL_PAGES)
+    y = HEIGHT - 120
+    y = draw_section(c, y, "Visit Information")
+    y = draw_field(c, y, "Visit Name:", "LB.VISIT", codelist="VISIT")
+    y = draw_field(c, y, "Collection Date:", "LB.LBDTC")
+    y = draw_checkbox_field(c, y, "Fasting?:", ["Yes", "No"], "LB.LBFAST", "NY")
+    y = draw_section(c, y, "Chemistry")
+    for label, tc in [("Glucose (mmol/L):", "GLUC"),
+                      ("Creatinine (umol/L):", "CREAT"),
+                      ("ALT (U/L):", "ALT"),
+                      ("AST (U/L):", "AST"),
+                      ("Total Bilirubin (umol/L):", "BILI")]:
+        y = draw_field(c, y, label, "LB.LBSTRESN", codelist=f"LBTESTCD={tc}")
+    y = draw_section(c, y, "Hematology")
+    for label, tc in [("Hemoglobin (g/L):", "HGB"),
+                      ("White Blood Cells (10^9/L):", "WBC"),
+                      ("Platelets (10^9/L):", "PLAT")]:
+        y = draw_field(c, y, label, "LB.LBSTRESN", codelist=f"LBTESTCD={tc}")
+    y = draw_section(c, y, "Additional Lab Details")
+    y = draw_checkbox_field(c, y, "Clinically Significant?:", ["Yes", "No"],
+                            "SUPPLB.LBCLSIG", "NY")
+
+
+# ─── Page 4: Adverse Events ─────────────────────────────────────────
 
 def page_adverse_events(c):
-    draw_header(c, "Adverse Events", 3, TOTAL_PAGES)
+    draw_header(c, "Adverse Events", 4, TOTAL_PAGES)
     y = HEIGHT - 120
     y = draw_section(c, y, "Event Details")
     y = draw_field(c, y, "AE Term (verbatim):", "AE.AETERM", field_width=250)
@@ -194,10 +221,10 @@ def page_adverse_events(c):
                             "SUPPAE.AESDTH", "NY")
 
 
-# ─── Page 4: Concomitant Medications ─────────────────────────────────
+# ─── Page 5: Concomitant Medications ─────────────────────────────────
 
 def page_conmeds(c):
-    draw_header(c, "Concomitant Medications", 4, TOTAL_PAGES)
+    draw_header(c, "Concomitant Medications", 5, TOTAL_PAGES)
     y = HEIGHT - 120
     y = draw_section(c, y, "Medication Details")
     y = draw_field(c, y, "Medication Name (verbatim):", "CM.CMTRT", field_width=250)
@@ -222,10 +249,10 @@ def page_conmeds(c):
     y = draw_field(c, y, "Other Indication:", "SUPPCM.CMINDOTH", field_width=250)
 
 
-# ─── Page 5: Disposition + Medical History ───────────────────────────
+# ─── Page 6: Disposition + Medical History ───────────────────────────
 
 def page_disposition_medhist(c):
-    draw_header(c, "Disposition / Medical History", 5, TOTAL_PAGES)
+    draw_header(c, "Disposition / Medical History", 6, TOTAL_PAGES)
     y = HEIGHT - 120
 
     # DS - Disposition
@@ -250,10 +277,10 @@ def page_disposition_medhist(c):
     y = draw_checkbox_field(c, y, "Ongoing?:", ["Yes", "No"], "MH.MHENRF", "NY")
 
 
-# ─── Page 6: Protocol Deviations + ECG ──────────────────────────────
+# ─── Page 7: Protocol Deviations + ECG ──────────────────────────────
 
 def page_devs_ecg(c):
-    draw_header(c, "Protocol Deviations / ECG", 6, TOTAL_PAGES)
+    draw_header(c, "Protocol Deviations / ECG", 7, TOTAL_PAGES)
     y = HEIGHT - 120
 
     # DV - Protocol Deviations
@@ -282,10 +309,10 @@ def page_devs_ecg(c):
                             "SUPPEG.EGCLSIG", "NY")
 
 
-# ─── Page 7: Tumor Identification + Tumor Results ───────────────────
+# ─── Page 8: Tumor Identification + Tumor Results ───────────────────
 
 def page_tumor(c):
-    draw_header(c, "Tumor Assessment", 7, TOTAL_PAGES)
+    draw_header(c, "Tumor Assessment", 8, TOTAL_PAGES)
     y = HEIGHT - 120
 
     # TU - Tumor Identification
@@ -312,10 +339,10 @@ def page_tumor(c):
                             "TR.TREVAL", "EVAL")
 
 
-# ─── Page 8: Response ───────────────────────────────────────────────
+# ─── Page 9: Response ───────────────────────────────────────────────
 
 def page_response(c):
-    draw_header(c, "Disease Response", 8, TOTAL_PAGES)
+    draw_header(c, "Disease Response", 9, TOTAL_PAGES)
     y = HEIGHT - 120
 
     # RS - Response
@@ -350,6 +377,8 @@ def main():
     c.showPage()
     page_vital_signs(c)
     c.showPage()
+    page_labs(c)
+    c.showPage()
     page_adverse_events(c)
     c.showPage()
     page_conmeds(c)
@@ -365,8 +394,8 @@ def main():
 
     c.save()
     print(f"Sample aCRF written to {out}")
-    print(f"{TOTAL_PAGES} pages covering DM, VS, AE, CM, DS, MH, DV, EG, TU, TR, RS")
-    print("Plus SUPP domains: SUPPDM, SUPPVS, SUPPAE, SUPPCM, SUPPEG, SUPPRS")
+    print(f"{TOTAL_PAGES} pages covering DM, VS, LB, AE, CM, DS, MH, DV, EG, TU, TR, RS")
+    print("Plus SUPP domains: SUPPDM, SUPPVS, SUPPLB, SUPPAE, SUPPCM, SUPPEG, SUPPRS")
 
 
 if __name__ == "__main__":

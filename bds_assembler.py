@@ -120,7 +120,7 @@ run;"""
 
     program += wrap(f"{domain_code}_BASELINE", baseline_code)
     windows = build_visit_windows()
-    program += wrap("AWLO_AWHI", generate_awlo_awhi_sas(windows))
+    program += wrap("AWLO_AWHI", generate_awlo_awhi_sas(windows, domain=domain_code.lower()))
 
     # --- Analysis flag stub — ANL01FL logic is study/endpoint-specific,
     #     routed to the Writer/Improver/Reviewer pipeline like ADSL vars ---
@@ -135,9 +135,12 @@ run;"""
 
 
 if __name__ == "__main__":
-    # Auto-derive the PARAMCD mapping from the same acrf_metadata.xlsx
-    # already validated in sdtm_assembler.py — no hand-authored ADaM spec
-    # needed for a straightforward carry-forward domain like ADVS.
     acrf = pd.read_excel("acrf_metadata.xlsx", sheet_name="By Domain")
-    params = build_param_spec_from_acrf(acrf, sdtm_domain_code="VS", source_testcd_var="VSTESTCD")
-    print(generate_bds_domain("vs", params, "ADVS"))
+
+    # ADVS
+    vs_params = build_param_spec_from_acrf(acrf, sdtm_domain_code="VS", source_testcd_var="VSTESTCD")
+    print(generate_bds_domain("vs", vs_params, "ADVS"))
+
+    # ADLB
+    lb_params = build_param_spec_from_acrf(acrf, sdtm_domain_code="LB", source_testcd_var="LBTESTCD")
+    print(generate_bds_domain("lb", lb_params, "ADLB"))

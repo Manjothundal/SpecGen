@@ -36,14 +36,14 @@ def build_visit_windows(protocol_path="protocol_metadata.xlsx"):
     return windows
 
 
-def generate_awlo_awhi_sas(windows):
+def generate_awlo_awhi_sas(windows, domain="advs"):
     """Emit a SAS step that assigns AWLO/AWHI per VISITNUM via select/when."""
     when_lines = "\n".join(
         f'        when ({w["visitnum"]}) do; AWLO = {w["awlo"]}; AWHI = {w["awhi"]}; end;'
         for w in windows
     )
-    code = f"""data advs_windows;
-    set advs_base;
+    code = f"""data {domain}_windows;
+    set {domain}_base;
     length AWLO AWHI 8;
     select (VISITNUM);
 {when_lines}
