@@ -130,28 +130,26 @@ data adsl;
 /*-- BEGIN SEXN --*/
 /* Pattern: codelist_decode - consider adapting this macro call for SEXN: */
 /* %adsl_trtvar(inds=adsl, srcvar=ARM, trtvar=TRT01P, trtnvar=TRT01PN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2); */
-/* Derive SEXN as numeric code for SEX */
+/* SEXN: Sex (N) */
 length SEXN 8;
-label SEXN = 'Sex (N)';
-if SEX = 'M' then SEXN = 1;
-else if SEX = 'F' then SEXN = 2;
+label SEXN = "Sex (N)";
+if SEX = "M" then SEXN = 1;
+else if SEX = "F" then SEXN = 2;
 /*-- END SEXN --*/
 
 /*-- BEGIN RACEN --*/
 /* Pattern: codelist_decode - consider adapting this macro call for RACEN: */
 /* %adsl_trtvar(inds=adsl, srcvar=ARM, trtvar=TRT01P, trtnvar=TRT01PN, map=Placebo=0|Drug A 50mg=1|Drug A 100mg=2); */
-* Derive RACEN from RACE;
+/* Derive RACEN: Numeric code for RACE */
 length RACEN 8;
-label RACEN = "Race (N)";
+label RACEN = 'Race (N)';
 
-select (upcase(RACE));
-    when ("WHITE") RACEN = 1;
-    when ("BLACK OR AFRICAN AMERICAN") RACEN = 2;
-    when ("ASIAN") RACEN = 3;
-    when ("AMERICAN INDIAN OR ALASKA NATIVE") RACEN = 4;
-    when ("OTHER") RACEN = 5;
-    otherwise RACEN = .;
-end;
+if upcase(RACE) = 'WHITE' then RACEN = 1;
+else if upcase(RACE) = 'BLACK OR AFRICAN AMERICAN' then RACEN = 2;
+else if upcase(RACE) = 'ASIAN' then RACEN = 3;
+else if upcase(RACE) = 'AMERICAN INDIAN OR ALASKA NATIVE' then RACEN = 4;
+else if RACE ne '' then RACEN = 5;
+else RACEN = .;
 /*-- END RACEN --*/
 
 /*-- BEGIN BMIBLGR1 --*/
@@ -170,10 +168,11 @@ end;
 /*-- END TRT01AN --*/
 
 /*-- BEGIN TRTDURD --*/
-* Derive Total Treatment Duration (Days);
+/* Derive Total Treatment Duration (Days) */
 length TRTDURD 8;
-label TRTDURD = "Total Treatment Duration (Days)";
-if not missing(TRTEDT) and not missing(TRTSDT) then TRTDURD = TRTEDT - TRTSDT + 1;
+label TRTDURD = 'Total Treatment Duration (Days)';
+
+if nmiss(TRTSDT, TRTEDT) = 0 then TRTDURD = TRTEDT - TRTSDT + 1;
 else call missing(TRTDURD);
 /*-- END TRTDURD --*/
 
@@ -200,10 +199,9 @@ else call missing(TRTDURD);
 /*-- BEGIN PPROTFL --*/
 /* Pattern: condition_flag - consider adapting this macro call for PPROTFL: */
 /* %adsl_popflag(inds=adsl, flagvar=COMPFL, cond=EOSSTT="COMPLETED", label=Study Completion Flag); */
-/* PPROTFL: Per-Protocol Population Flag */
+* Derive Per-Protocol Population Flag;
 length PPROTFL $1;
 label PPROTFL = 'Per-Protocol Population Flag';
-
 if ITTFL = "Y" and EOSSTT = "COMPLETED" and COMPFL = "Y" then PPROTFL = "Y";
 else PPROTFL = "N";
 /*-- END PPROTFL --*/
@@ -229,11 +227,10 @@ else PPROTFL = "N";
 /* Derive Duration of Disease Group */
 length DURDSGR1 $20;
 label DURDSGR1 = "Duration of Disease Group";
-
-if DURDISM < 12 then DURDSGR1 = "<1 year";
-else if 12 <= DURDISM < 36 then DURDSGR1 = "1-<3 years";
-else if DURDISM >= 36 then DURDSGR1 = ">=3 years";
-else call missing(DURDSGR1);
+if DURDISM < 12 then DURDSGR1 = '<1 year';
+else if 12 <= DURDISM < 36 then DURDSGR1 = '1-<3 years';
+else if DURDISM >= 36 then DURDSGR1 = '>=3 years';
+else call missing(of DURDSGR1);
 /*-- END DURDSGR1 --*/
 
 /*-- BEGIN RANDDY --*/
