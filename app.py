@@ -31,6 +31,15 @@ import tempfile
 import threading
 from datetime import datetime
 
+# assembler.py's gen_block/improve_block/review_block print progress messages
+# (variable names, QC verdicts) that can include Unicode punctuation from
+# Claude's own responses. On Windows, stdout defaults to the console codepage
+# (cp1252), which can't encode that — printing it would crash whichever
+# request happened to be generating at the time with UnicodeEncodeError.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import pandas as pd
 import openpyxl
 from flask import Flask, render_template, request

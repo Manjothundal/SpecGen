@@ -38,8 +38,19 @@ Usage:
 
 import os
 import re
+import sys
 import argparse
 import openpyxl
+
+# Claude's responses (review verdicts, generated code) commonly contain
+# Unicode punctuation (em-dashes, curly quotes) that Windows' default console
+# codepage (cp1252) can't encode. Printing that text would otherwise crash
+# this entire subprocess with UnicodeEncodeError the moment any domain's
+# review happens to contain such a character — silently killing every
+# domain's generation, not just the one that triggered it.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from config import WRITER, REVIEWER, LOCAL_MODEL, API_MODEL
 from generator import generate_local, generate_api, review_sas
@@ -543,6 +554,7 @@ def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=Fa
     # Log the run
     try:
         log_run(
+            spec_file=xlsx_path,
             mode="sdtm_generate",
             writer_model=writer_model,
             improver_model=API_MODEL if use_api else "none",
@@ -620,6 +632,7 @@ def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=F
 
     try:
         log_run(
+            spec_file=xlsx_path,
             mode="sdtm_generate",
             writer_model=writer_model,
             improver_model=API_MODEL if use_api else "none",
