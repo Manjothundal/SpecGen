@@ -1,8 +1,8 @@
 # SpecGen
 
 Offline-first AI tool that generates clinical statistical programs
-(SAS today, R planned) from specifications, aCRF, SAP, and mock shells —
-and verifies the outputs.
+(SAS or R) from specifications, aCRF, SAP, and mock shells — and verifies
+the outputs.
 
 ## Architecture
 - Writer agent: local LLM via Ollama (qwen2.5-coder 7b / 14b) or Claude API
@@ -86,6 +86,57 @@ and verifies the outputs.
             the request included an uploaded spec (deliberate regenerate intent); the
             no-upload default path is now idempotent. Verified: re-running with
             --domain AE,DM and no --force skipped both instantly.
+      - [x] Piece 4: real 4-screen app (Spec -> Generate -> Review & sign off ->
+            Export & audit), matching docs/specgen_ui_mockup (1).html's concept for
+            everything except Compare & verify (Phase 9 — not started, a from-scratch
+            RTF/Word/PDF diff engine, out of scope for this pass).
+              - Mode switcher (Offline/Hybrid/API) now genuinely changes which model
+                writes/improves/reviews ADSL and SDTM (BDS stays deterministic either
+                way). Required fixing two real bugs to work at all:
+                  - generator.py did `from config import WRITER, REVIEWER` — binds the
+                    name at import time, so a per-request mode override would have
+                    silently done nothing. Switched to `import config` + explicit
+                    mode= param, same pattern as the existing language= threading.
+                  - improver.py's improve_block() called generate_code() (the WRITER
+                    role) instead of review_code() (the REVIEWER role) — a regression
+                    from the uncommitted R-port work found and committed earlier this
+                    session. In Hybrid mode this meant the "Improver" step was silently
+                    running on the local model instead of Claude, contradicting the
+                    README and the mockup. Confirmed the fix mattered: an ADSL run
+                    against the same spec went from 4 QC-flagged variables (pre-fix,
+                    validated during the Phase 8 pass above) to 0 (post-fix, this run).
+              - ADaM otype merges ADSL into the same output: uploaded files are sniffed
+                by sheet name ("By Domain" -> drives BDS, "Variables" -> drives ADSL);
+                either, both, or neither may be present, each falling back to its own
+                sample default. BDS datasets (ADVS/ADLB/ADEG/ADTR/ADAE/ADCM/ADRS/ADTTE)
+                are now spec-driven — generated only for SDTM domains actually present
+                in the ACRF metadata, instead of unconditionally always generating all
+                8 (previously would hard-crash if VS/LB/EG/TR were missing from a
+                custom upload). No more hardcoded "(8 datasets)" label.
+              - Review & sign off: ADSL is parsed into its existing per-variable
+                BEGIN/END blocks (no new parsing infra — those markers already existed
+                for spec_differ.py/spec_patcher.py) with QC PASS/FAIL badges; BDS/SDTM/
+                TLF are one block per file. Every block needs an explicit Approve
+                before Export unlocks. "Send back to Improver" re-runs Writer->
+                Improver->Reviewer for one flagged ADSL variable and re-splices it into
+                the stored program (fresh regex offsets each time, so re-generating one
+                block doesn't corrupt another edited earlier in the same run).
+              - Export & audit: Export writes files to disk (locked until 100%
+                approved) and reads runlog.csv for the audit table. "Commit to Git"
+                stages exactly the exported files (never `git add -A`), commits, and
+                pushes to origin/main for real — verified live: a real ADSL regeneration
+                was approved, exported, and committed+pushed through the app itself
+                (commit 18073bb).
+              - State is one in-memory RUN_STATE dict — a deliberate choice: this is a
+                single-operator local tool on Flask's synchronous dev server, so there's
+                only ever one run in flight; no session/DB layer was worth adding.
+              - Progress is synchronous by design (click Generate, wait, see the
+                finished result) — true live per-variable streaming would need a
+                background job + SSE/polling, deferred as a future enhancement.
+              - Known asymmetry: SDTM's pipeline only has a binary use_api flag (no
+                true Hybrid) — the Mode switcher maps Hybrid to the same behavior as
+                API for SDTM. Rearchitecting SDTM's pipeline to a real 3-mode model is
+                separate future scope.
 
 ## Open items (near-term)
 - Test against a fuller, realistic ADSL spec (60-100+ variables)
@@ -96,9 +147,13 @@ and verifies the outputs.
 - TRT01PN pattern hint shows SAFFL example instead of TRT01P — catalog suggestion needs variable-specific call
 
 ## Later ideas
-- Fuller desktop-grade UI (see docs/specgen_ui_mockup.html) — per-block sign-off
-  rail, audit trail view, compare screen; the basic browser version (dropdowns +
-  language toggle) is already live as Phase 10
+- Compare screen (see docs/specgen_ui_mockup (1).html) — the per-block sign-off
+  rail and audit trail view from that mockup are now real (Phase 10 piece 4);
+  Compare & verify is still just a mockup, waiting on Phase 9
+- True live per-variable generation progress (background job + SSE/polling),
+  instead of today's synchronous "click Generate, wait, see the result"
+- SDTM: a real 3-mode (Offline/Hybrid/API) pipeline instead of today's binary
+  use_api flag, so its Mode switcher stops collapsing Hybrid into API
 - Log checker: parse SAS .log, flag ERRORs / WARNINGs / NOTEs, suggest fixes
 - QC mode: generate independent verification code + PROC COMPARE harness
 - Define.xml support (read specs from define.xml; later write draft define.xml)

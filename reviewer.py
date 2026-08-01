@@ -86,7 +86,7 @@ No other text.
 """
 
 
-def review_block(code, known_vars, language=None):
+def review_block(code, known_vars, language=None, mode=None):
     """Return the model's one-line verdict on a code block."""
-    verdict = review_code(build_review_prompt(code, known_vars, language=language)).strip()
+    verdict = review_code(build_review_prompt(code, known_vars, language=language), mode=mode).strip()
     return verdict

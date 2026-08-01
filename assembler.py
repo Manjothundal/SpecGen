@@ -29,22 +29,26 @@ def known_variables(spec):
     return sorted(set(spec_vars + dm_vars + prestep_vars))
 
 
-def gen_block(row, skip_macro=False, language=None):
+def gen_block(row, skip_macro=False, language=None, writer_mode=None):
     """Generate one variable's derivation logic via the model."""
     print("Generating:", row["Variable"])
-    return clean(generate_code(build_prompt(row, skip_macro=skip_macro, language=language)))
+    return clean(generate_code(build_prompt(row, skip_macro=skip_macro, language=language), mode=writer_mode))
 
 
 # ---------------------------------------------------------------------------
 # Top-level: pick the language path
+#
+# writer_mode/reviewer_mode: explicit "local"|"api" overrides (e.g. the app's
+# Mode switcher — Offline/Hybrid/API map to a (writer_mode, reviewer_mode)
+# pair). None falls back to config.WRITER/config.REVIEWER, same as today.
 # ---------------------------------------------------------------------------
 
-def assemble_adsl(spec, derived, ex_summary, main_step, language=None):
+def assemble_adsl(spec, derived, ex_summary, main_step, language=None, writer_mode=None, reviewer_mode=None):
     language = (language or config.LANGUAGE).lower()
     if language == "sas":
-        return _assemble_adsl_sas(spec, derived, ex_summary, main_step)
+        return _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode, reviewer_mode)
     elif language == "r":
-        return _assemble_adsl_r(spec, derived, ex_summary, main_step)
+        return _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode, reviewer_mode)
     else:
         raise ValueError(f"Unknown language: {language!r} (expected 'sas' or 'r')")
 
@@ -53,7 +57,7 @@ def assemble_adsl(spec, derived, ex_summary, main_step, language=None):
 # SAS PATH — unchanged from the original assemble_adsl
 # ===========================================================================
 
-def _assemble_adsl_sas(spec, derived, ex_summary, main_step):
+def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None):
     parts = []
 
     # ---- Header
@@ -222,10 +226,10 @@ def _assemble_adsl_sas(spec, derived, ex_summary, main_step):
         else:
             # 2. Pattern match + generate
             pmatch = find_by_pattern(var, str(row["Derivation"]), catalog)
-            block = gen_block(row, language="sas")
+            block = gen_block(row, language="sas", writer_mode=writer_mode)
             print("   Improving:", var)
-            block = clean(improve_block(block, row, available, language="sas"))
-            verdict = review_block(block, available, language="sas")
+            block = clean(improve_block(block, row, available, language="sas", mode=reviewer_mode))
+            verdict = review_block(block, available, language="sas", mode=reviewer_mode)
             if verdict.startswith("FAIL"):
                 print("   QC:", verdict)
                 block = "/* QC FLAG: " + verdict + " */\n" + block
@@ -375,7 +379,7 @@ mh_summary <- mh |>
   )'''
 
 
-def _assemble_adsl_r(spec, derived, ex_summary, main_step):
+def _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None):
     parts = []
 
     # ---- Header + libraries
@@ -415,10 +419,10 @@ def _assemble_adsl_r(spec, derived, ex_summary, main_step):
 
         var = row["Variable"]
         # No macro branch in R (SAS-only catalog); every var goes Writer->Improver->Reviewer
-        block = gen_block(row, language="r")
+        block = gen_block(row, language="r", writer_mode=writer_mode)
         print("   Improving:", var)
-        block = clean(improve_block(block, row, available, language="r"))
-        verdict = review_block(block, available, language="r")
+        block = clean(improve_block(block, row, available, language="r", mode=reviewer_mode))
+        verdict = review_block(block, available, language="r", mode=reviewer_mode)
 
         # indent the derivation into the mutate() and wrap in R markers.
         # The mutate() argument separator MUST be a real comma on the code

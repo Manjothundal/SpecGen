@@ -1,4 +1,4 @@
-from generator import generate_code
+from generator import review_code
 import config
 
 
@@ -95,6 +95,13 @@ No explanation, no markdown fences.
 """
 
 
-def improve_block(code, row, known_vars, language=None):
-    """Return an improved version of a generated code block."""
-    return generate_code(build_improve_prompt(code, row, known_vars, language=language)).strip()
+def improve_block(code, row, known_vars, language=None, mode=None):
+    """Return an improved version of a generated code block.
+
+    Improve and Review share the REVIEWER-role model (config.REVIEWER, or the
+    explicit mode override) — Draft is the only step that uses WRITER. This
+    matches the documented three-mode architecture (Offline/Hybrid/API): in
+    Hybrid, Improve and Review both go to the API even though the Draft was
+    local.
+    """
+    return review_code(build_improve_prompt(code, row, known_vars, language=language), mode=mode).strip()
