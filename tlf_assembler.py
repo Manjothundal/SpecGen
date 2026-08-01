@@ -306,15 +306,214 @@ demog_table
 
 
 # ---------------------------------------------------------------------------
+# AE summary table (Table 14.3.x) — counts DISTINCT SUBJECTS per condition.
+# Two datasets: numerator from ADAE (TEAE flag + condition), denominator
+# (big-N) from ADSL population. One subject counted once per row.
+# ---------------------------------------------------------------------------
+
+def _generate_ae_sas(meta, rows):
+    denom = str(meta["denom_dataset"]).lower()      # adsl
+    numer = str(meta["numer_dataset"]).lower()      # adae
+    pop = meta["population"]                          # SAFFL
+    teae = meta["teae_flag"]                          # TRTEMFL
+    colvar = meta["column_var"]                       # TRT01A
+    add_total = str(meta.get("add_total_column", "YES")).upper() == "YES"
+    prog = []
+
+    total_sas = ("""
+data _den;
+    set _den _den(in=_t);
+    if _t then _ARM = "Total"; else _ARM = strip(""" + colvar + """);
+run;
+data _num;
+    set _num _num(in=_t);
+    if _t then _ARM = "Total"; else _ARM = strip(""" + colvar + """);
+run;""" if add_total else """
+data _den; set _den; _ARM = strip(""" + colvar + """); run;
+data _num; set _num; _ARM = strip(""" + colvar + """); run;""")
+
+    prog.append(f"""{BEGIN_SAS.format(var="TABLE_SETUP")}
+/* {meta.get('title1','')} */
+/* {meta.get('title2','')} */
+/* {meta.get('title3','')} */
+
+/* Denominator: safety-population subjects (one row per subject) */
+data _den;
+    set {denom};
+    where {pop} = "Y";
+    length _ARM $40;
+    keep USUBJID {colvar} _ARM;
+run;
+
+/* Numerator source: treatment-emergent AEs only */
+data _num;
+    set {numer};
+    where {teae} = "Y";
+    length _ARM $40;
+run;
+{total_sas}
+
+proc sql noprint;
+    create table _bign as
+    select _ARM, count(distinct USUBJID) as bigN
+    from _den group by _ARM;
+quit;
+{END_SAS.format(var="TABLE_SETUP")}""")
+
+    for _, r in rows.iterrows():
+        order = int(r["order"])
+        label = r["row_label"]
+        cond = str(r["condition"]).strip()
+        indent = int(r["indent"]) if not pd.isna(r["indent"]) else 0
+        is_heading = (cond == "" or cond.lower() == "nan") and indent == 0 and order == 5  # "by max severity" heading
+
+        # A heading row (no condition, not the baseline) prints label only.
+        if (cond == "" or cond.lower() == "nan") and label.lower().startswith("teae by"):
+            block = f"""/* {label} — heading row (no count) */
+data _ae_{order};
+    length grouplabel rowlabel $80 value $20;
+    ord = {order}; roworder = 0; indent = {indent};
+    rowlabel = "{label}"; _ARM = ""; value = "";
+    /* emit one placeholder per arm so the row spans columns */
+    stop;
+run;"""
+        else:
+            where_extra = "" if (cond == "" or cond.lower() == "nan") else f" and {cond}"
+            block = f"""/* {label} — distinct subjects with TEAE{(' meeting: ' + cond) if where_extra else ''} */
+proc sql noprint;
+    create table _n_{order} as
+    select _ARM, count(distinct USUBJID) as n
+    from _num
+    where 1{where_extra}
+    group by _ARM;
+quit;
+
+proc sort data=_n_{order}; by _ARM; run;
+data _ae_{order};
+    merge _n_{order} _bign;
+    by _ARM;
+    length grouplabel rowlabel $80 value $20;
+    ord = {order}; roworder = 1; indent = {indent};
+    rowlabel = "{label}";
+    if n = . then n = 0;
+    if bigN > 0 then value = strip(put(n,8.)) || " (" || strip(put(100*n/bigN,8.1)) || "%)";
+    else value = strip(put(n,8.));
+    keep ord roworder indent rowlabel _ARM value;
+run;"""
+        prog.append(f"{BEGIN_SAS.format(var='ROW'+str(order))}\n{block}\n{END_SAS.format(var='ROW'+str(order))}")
+
+    stack = " ".join(f"_ae_{int(r['order'])}" for _, r in rows.iterrows())
+    t1=meta.get("title1",""); t2=meta.get("title2",""); t3=meta.get("title3","")
+    fns = [meta.get(k,"") for k in ("footnote1","footnote2","footnote3") if meta.get(k,"")]
+    fn_stmts = "\n".join(f'footnote{i+1} "{f}";' for i,f in enumerate(fns))
+
+    prog.append(f"""{BEGIN_SAS.format(var="REPORT")}
+data _results; set {stack}; run;
+proc sort data=_results; by ord roworder _ARM; run;
+
+proc transpose data=_results out=_wide(drop=_name_) delimiter=_;
+    by ord roworder indent rowlabel;
+    id _ARM;
+    var value;
+run;
+proc sort data=_wide; by ord roworder; run;
+
+title1 "{t1}"; title2 "{t2}"; title3 "{t3}";
+{fn_stmts}
+
+proc report data=_wide nowd;
+    columns ord roworder indent rowlabel _all_;
+    define ord / order noprint;
+    define roworder / order noprint;
+    define indent / display noprint;
+    define rowlabel / display "Adverse Event Category";
+run;
+title; footnote;
+{END_SAS.format(var="REPORT")}""")
+
+    return "\n\n".join(prog) + "\n"
+
+
+def _generate_ae_r(meta, rows):
+    denom = str(meta["denom_dataset"]).lower()
+    numer = str(meta["numer_dataset"]).lower()
+    pop = meta["population"]; teae = meta["teae_flag"]; colvar = meta["column_var"]
+    add_total = str(meta.get("add_total_column","YES")).upper() == "YES"
+    prog = ["library(dplyr)", "library(tidyr)", "library(gt)", ""]
+
+    prog.append(f"""{BEGIN_R.format(var="TABLE_SETUP")}
+# {meta.get('title1','')} — {meta.get('title2','')}
+den0 <- {denom} |> filter({pop} == "Y") |> mutate(ARM = {colvar})
+num0 <- {numer} |> filter({teae} == "Y") |> mutate(ARM = {colvar})
+den <- den0{' |> bind_rows(mutate(den0, ARM = "Total"))' if add_total else ''}
+num <- num0{' |> bind_rows(mutate(num0, ARM = "Total"))' if add_total else ''}
+bigN <- den |> group_by(ARM) |> summarise(bigN = n_distinct(USUBJID), .groups="drop")
+{END_R.format(var="TABLE_SETUP")}""")
+
+    dnames = []
+    for _, r in rows.iterrows():
+        order = int(r["order"]); label = r["row_label"]
+        cond = str(r["condition"]).strip(); indent = int(r["indent"]) if not pd.isna(r["indent"]) else 0
+        dn = f"ae_{order}"; dnames.append(dn)
+        if (cond == "" or cond.lower()=="nan") and label.lower().startswith("teae by"):
+            block = f"""# {label} — heading row
+{dn} <- tibble(ARM = character(), rowlabel = character(), value = character(),
+              ord = integer(), roworder = integer(), indent = integer())
+{dn} <- bind_rows({dn}, tibble(ARM = NA_character_, rowlabel = "{label}",
+              value = NA_character_, ord = {order}L, roworder = 0L, indent = {indent}L))"""
+        else:
+            filt = "" if (cond=="" or cond.lower()=="nan") else f" |> filter({cond.replace('=','==').replace('====','==')})"
+            block = f"""# {label} — distinct subjects
+{dn} <- num{filt} |>
+  group_by(ARM) |>
+  summarise(n = n_distinct(USUBJID), .groups = "drop") |>
+  right_join(bigN, by = "ARM") |>
+  mutate(
+    n = ifelse(is.na(n), 0, n),
+    rowlabel = "{label}",
+    value = ifelse(bigN > 0, paste0(n, " (", formatC(100*n/bigN, format="f", digits=1), "%)"), as.character(n)),
+    ord = {order}L, roworder = 1L, indent = {indent}L
+  ) |>
+  select(ARM, rowlabel, value, ord, roworder, indent)"""
+        prog.append(f"{BEGIN_R.format(var='ROW'+str(order))}\n{block}\n{END_R.format(var='ROW'+str(order))}")
+
+    fns = [meta.get(k,"") for k in ("footnote1","footnote2","footnote3") if meta.get(k,"")]
+    src_notes = "\n".join(f'  tab_source_note("{f}") |>' for f in fns)
+    src_notes = src_notes.rstrip(" |>")
+    t1=meta.get("title1",""); t2=meta.get("title2","")
+
+    prog.append(f"""{BEGIN_R.format(var="REPORT")}
+report_long <- bind_rows({", ".join(dnames)}) |> arrange(ord, roworder, ARM)
+report_wide <- report_long |>
+  pivot_wider(id_cols = c(ord, roworder, indent, rowlabel),
+              names_from = ARM, values_from = value) |>
+  arrange(ord, roworder) |>
+  select(-ord, -roworder, -indent, -`NA`)
+
+ae_table <- report_wide |>
+  gt(rowname_col = "rowlabel") |>
+  tab_header(title = "{t1}", subtitle = "{t2}") |>
+{src_notes}
+
+ae_table
+{END_R.format(var="REPORT")}""")
+
+    return "\n\n".join(prog) + "\n"
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
 def generate_table(shell_path, language=None):
     language = (language or config.LANGUAGE).lower()
     meta, rows = _read_shell(shell_path)
-    if language == "r":
-        return _generate_demog_r(meta, rows)
-    return _generate_demog_sas(meta, rows)
+    # Table type is inferred from the shell: an AE-style shell names a
+    # numerator dataset + TEAE flag; a demographics shell does not.
+    is_ae = "numer_dataset" in meta and "teae_flag" in meta
+    if is_ae:
+        return _generate_ae_r(meta, rows) if language == "r" else _generate_ae_sas(meta, rows)
+    return _generate_demog_r(meta, rows) if language == "r" else _generate_demog_sas(meta, rows)
 
 
 if __name__ == "__main__":
