@@ -29,6 +29,7 @@ import glob
 import subprocess
 import sys
 import tempfile
+import threading
 from datetime import datetime
 
 import pandas as pd
@@ -78,6 +79,13 @@ RUN_STATE = {
 # requests (the Spec screen's upload should still apply when you later click
 # Generate, without re-uploading) — cleared only when a new upload replaces it.
 UPLOAD_DIR = tempfile.mkdtemp(prefix="specgen_run_")
+
+# Generation (especially SDTM with --force, or ADSL) can legitimately take
+# minutes with zero progress feedback in the UI — indistinguishable from
+# "stuck" to someone waiting on it. Without this, re-clicking Generate during
+# a slow run spawns ANOTHER overlapping sdtm_assembler.py/assemble_adsl call
+# on top of the first instead of just waiting for it.
+_GENERATE_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -442,28 +450,36 @@ def parse_spec():
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    otype = request.form.get("otype", RUN_STATE["otype"] or "adam")
-    lang = request.form.get("lang", RUN_STATE["lang"])
-    mode = request.form.get("mode", RUN_STATE["mode"])
-    RUN_STATE.update(otype=otype, lang=lang, mode=mode)
-    note = None
-    if otype == "sdtm" and lang == "r":
-        note = "SDTM generation is currently SAS-only; showing SAS programs."
+    if not _GENERATE_LOCK.acquire(blocking=False):
+        return _render("generate", note="A generation is already running — please wait for it "
+                                        "to finish instead of clicking Generate again. Large specs "
+                                        "with --force (an uploaded spec) can legitimately take "
+                                        "several minutes with no progress shown.")
+    try:
+        otype = request.form.get("otype", RUN_STATE["otype"] or "adam")
+        lang = request.form.get("lang", RUN_STATE["lang"])
+        mode = request.form.get("mode", RUN_STATE["mode"])
+        RUN_STATE.update(otype=otype, lang=lang, mode=mode)
+        note = None
+        if otype == "sdtm" and lang == "r":
+            note = "SDTM generation is currently SAS-only; showing SAS programs."
 
-    uploaded = _resolve_uploads(request.files.getlist("spec_file"))
-    adsl_context = None
-    if otype == "adam":
-        acrf_path, adsl_spec_path = _classify_adam_uploads(uploaded)
-        programs, adsl_context = generate_adam(lang, mode, acrf_path, adsl_spec_path)
-    elif otype == "tlf":
-        programs = generate_tlf(lang, shells=uploaded or None)
-    else:
-        programs = generate_sdtm(lang, mode, spec_path=uploaded[0] if uploaded else None)
+        uploaded = _resolve_uploads(request.files.getlist("spec_file"))
+        adsl_context = None
+        if otype == "adam":
+            acrf_path, adsl_spec_path = _classify_adam_uploads(uploaded)
+            programs, adsl_context = generate_adam(lang, mode, acrf_path, adsl_spec_path)
+        elif otype == "tlf":
+            programs = generate_tlf(lang, shells=uploaded or None)
+        else:
+            programs = generate_sdtm(lang, mode, spec_path=uploaded[0] if uploaded else None)
 
-    RUN_STATE["programs"] = programs
-    RUN_STATE["exported_files"] = []
-    RUN_STATE["last_commit"] = None
-    _rebuild_blocks(otype, programs, adsl_context)
+        RUN_STATE["programs"] = programs
+        RUN_STATE["exported_files"] = []
+        RUN_STATE["last_commit"] = None
+        _rebuild_blocks(otype, programs, adsl_context)
+    finally:
+        _GENERATE_LOCK.release()
 
     return _render("review", note=note)
 
@@ -546,4 +562,11 @@ def commit():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    # use_reloader=False: Werkzeug's file-watcher has repeatedly misfired in
+    # this environment (observed reloading mid-request over unrelated
+    # filesystem noise, once even over changes it claimed were inside
+    # site-packages/flask itself) — a reload kills the in-flight request's
+    # worker process without ever replying, which looks exactly like the
+    # browser being stuck loading forever. debug=True is kept for its error
+    # pages/tracebacks; only the auto-restart-on-file-change behavior is off.
+    app.run(debug=True, port=5000, use_reloader=False)
