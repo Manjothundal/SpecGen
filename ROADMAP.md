@@ -31,6 +31,18 @@ the outputs.
       - [x] 5a: aCRF parser (PDF/Word annotations → structured domain/variable metadata) — acrf_parser.py
       - [x] 5b: Draft SDTM spec from aCRF metadata (human reviews and completes before pipeline) — sdtm_spec_builder.py
       - [x] 5c: SDTM program generation from approved spec (new multi-row assembly mode) — sdtm_assembler.py, sdtm_programs/
+            SUPP-- domains (SUPPAE/SUPPCM/SUPPDM/SUPPEG/SUPPRS/SUPPVS) used to be
+            written as their own standalone program (suppae.sas, etc.) — a
+            separate SDTM "domain" in the code, but not a separate program in most
+            real SOPs, since it's a supplemental-qualifier view of the SAME
+            dataset built from the same source pull as its parent. Now
+            append_supp_domain() appends each SUPP-- domain's generated code into
+            its parent's own .sas file (e.g. SUPPAE lives inside ae.sas) instead
+            of writing suppae.sas; idempotency (skip-if-exists) now checks for the
+            SUPP domain's BEGIN/END marker inside the parent file rather than a
+            separate file's existence. Existing standalone SUPP files were merged
+            into their parents and removed (no regeneration needed — same content,
+            just relocated).
       - [x] 5d: TLF from SAP + mock shells — tlf_assembler.py, tlf_programs/ (demographics 14.1.1, AE summary 14.3.1)
 - [x] Phase 6: Update mode — CORE WORKING (differ + marker-based patcher)
       - spec_differ.py: v1 vs v2 comparison (new / changed / deleted / unchanged)

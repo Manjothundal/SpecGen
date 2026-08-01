@@ -14,7 +14,9 @@ Domain class determines the code structure:
   Interventions : one row per intervention (CM, EX) — read source, derive timing
   Findings   : one row per test per timepoint (VS, EG) — transpose or stack tests
   Findings About Events : one row per assessment (TU, TR, RS) — similar to Findings
-  SUPP--     : vertical QNAM/QVAL structure from parent domain
+  SUPP--     : vertical QNAM/QVAL structure from parent domain; appended into
+               the parent domain's own .sas file (e.g. SUPPAE lives inside
+               ae.sas), not written as a separate program
 
 Uses the existing three-agent pipeline:
   Writer (Ollama or API) --> Improver (API) --> Reviewer (API)
@@ -35,6 +37,7 @@ Usage:
 """
 
 import os
+import re
 import argparse
 import openpyxl
 
@@ -553,6 +556,83 @@ def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=Fa
     return output_file
 
 
+FOOTER_MARKER = "/*-- Final sort and output verification --*/"
+
+
+def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=False):
+    """Generate a SUPP-- domain and append its code into its PARENT domain's
+    .sas file (e.g. SUPPAE lives inside ae.sas) instead of writing a separate
+    program. SUPP-- is a supplemental-qualifier view of the same dataset, not
+    an independent domain — most SOPs build it in the same program as its
+    parent, since it shares the same source pull.
+
+    Skips (like generate_single_domain) if the parent file already has this
+    SUPP domain's /*-- BEGIN {supp_domain} --*/ marker, unless force=True, in
+    which case the old block is cut out and replaced with a fresh one.
+    """
+    parent = supp_domain.replace("SUPP", "")
+    parent_file = os.path.join(output_dir, f"{parent.lower()}.sas")
+    if not os.path.exists(parent_file):
+        print(f"  [{supp_domain}] Parent domain file {parent_file} not found — skipping")
+        return None
+
+    with open(parent_file, encoding="utf-8") as f:
+        parent_code = f.read()
+
+    begin_marker = f"/*-- BEGIN {supp_domain} --*/"
+    end_marker = f"/*-- END {supp_domain} --*/"
+    already_present = begin_marker in parent_code
+
+    if already_present and not force:
+        print(f"  [{supp_domain}] Skipping — already present in {parent_file} (use --force to regenerate)")
+        return parent_file
+
+    variables = read_domain_spec(xlsx_path, supp_domain)
+    if not variables:
+        print(f"  No variables found for domain {supp_domain}")
+        return None
+
+    code, writer_model = generate_domain_program(supp_domain, variables, use_api=use_api)
+    if not code:
+        print(f"  Failed to generate code for {supp_domain}")
+        return None
+
+    clean_code = code.strip()
+    if clean_code.startswith("```"):
+        clean_code = clean_code.split("\n", 1)[1]
+    if clean_code.endswith("```"):
+        clean_code = clean_code.rsplit("```", 1)[0]
+    clean_code = clean_code.strip()
+    supp_block = f"\n{clean_code}\n"
+
+    if already_present:  # force=True got us here — cut out the stale block first
+        pattern = re.compile(re.escape(begin_marker) + r".*?" + re.escape(end_marker), re.DOTALL)
+        parent_code = pattern.sub(clean_code, parent_code, count=1)
+    elif FOOTER_MARKER in parent_code:
+        parent_code = parent_code.replace(FOOTER_MARKER, supp_block + "\n" + FOOTER_MARKER, 1)
+    else:
+        parent_code = parent_code + supp_block
+
+    with open(parent_file, "w", encoding="utf-8") as f:
+        f.write(parent_code)
+
+    print(f"    Appended {supp_domain} into {parent_file} ({len(clean_code)} chars)")
+
+    try:
+        log_run(
+            mode="sdtm_generate",
+            writer_model=writer_model,
+            improver_model=API_MODEL if use_api else "none",
+            reviewer_model=API_MODEL if use_api else "none",
+            n_vars=len(variables),
+            output_file=parent_file,
+        )
+    except Exception as e:
+        print(f"    Warning: could not log run: {e}")
+
+    return parent_file
+
+
 def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, force=False):
     """
     Generate SAS programs for all domains in the spec.
@@ -590,9 +670,10 @@ def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, forc
         else:
             failed.append(domain)
 
-    # SUPP domains after (they reference parent domain)
+    # SUPP domains after (they reference parent domain) — appended into the
+    # parent domain's own .sas file, not written as a separate program
     for domain in supp_domains:
-        result = generate_single_domain(xlsx_path, domain, output_dir, use_api, force=force)
+        result = append_supp_domain(xlsx_path, domain, output_dir, use_api, force=force)
         if result:
             results[domain] = result
         else:
