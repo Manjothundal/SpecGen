@@ -1,0 +1,38 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SpecGen</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #1a2b3c; }
+    h1 { color: #1A3C6E; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+    label { font-weight: 600; margin-right: 8px; }
+    select, button { padding: 8px 14px; font-size: 14px; border-radius: 6px; }
+    button { background: #1A3C6E; color: white; border: none; cursor: pointer; }
+    button:hover { background: #142f57; }
+    pre { background: #0d1117; color: #c9d1d9; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+    .muted { color: #667; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>SpecGen</h1>
+  <p class="muted">Piece 1 - skeleton. Generates ADVS from sample metadata to prove the wiring.</p>
+  <div class="card">
+    <form method="post" action="/generate">
+      <label for="lang">Language:</label>
+      <select name="lang" id="lang">
+        <option value="sas" {% if lang == 'sas' %}selected{% endif %}>SAS</option>
+        <option value="r" {% if lang == 'r' %}selected{% endif %}>R</option>
+      </select>
+      <button type="submit">Generate ADVS</button>
+    </form>
+  </div>
+  {% if code %}
+  <div class="card">
+    <h3>Generated ADVS ({{ lang | upper }})</h3>
+    <pre>{{ code }}</pre>
+  </div>
+  {% endif %}
+</body>
+</html>
