@@ -25,7 +25,6 @@ Run:  python app.py   ->   http://127.0.0.1:5000
 
 import os
 import re
-import glob
 import subprocess
 import sys
 import tempfile
@@ -39,6 +38,7 @@ from werkzeug.utils import secure_filename
 
 import bds_assembler as bds
 import tlf_assembler as tlf
+import sdtm_assembler
 import config
 from assembler import assemble_adsl, gen_block, clean, known_variables, _r_add_comma
 from improver import improve_block
@@ -247,6 +247,15 @@ def generate_sdtm(lang, mode, spec_path=None):
     out = {}
     if not os.path.exists(spec_path):
         return {"(error)": f"{spec_path} not found in project folder."}
+
+    # Only read back domains actually defined in THIS spec — sdtm_programs/
+    # is a shared output folder reused across whichever spec was last run
+    # (sample or an uploaded one), so glob("*.sas") would mix in unrelated
+    # leftover files from a different spec's earlier run. SUPP-- domains
+    # don't have their own file (append_supp_domain merges them into their
+    # parent's), so only list the non-SUPP domains here.
+    domains = [d for d in sdtm_assembler.list_domains(spec_path) if not d.startswith("SUPP")]
+
     cmd = [sys.executable, "sdtm_assembler.py", spec_path]
     if mode == "offline":
         cmd.append("--offline")
@@ -256,10 +265,12 @@ def generate_sdtm(lang, mode, spec_path=None):
         subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
     except subprocess.CalledProcessError as e:
         return {"(error)": f"sdtm_assembler failed:\n{e.stderr}"}
-    for path in sorted(glob.glob(os.path.join("sdtm_programs", "*.sas"))):
-        name = os.path.splitext(os.path.basename(path))[0]
-        with open(path, encoding="utf-8") as f:
-            out[name] = f.read()
+
+    for domain in domains:
+        path = os.path.join("sdtm_programs", f"{domain.lower()}.sas")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                out[domain.lower()] = f.read()
     return out
 
 
@@ -443,7 +454,6 @@ def parse_spec():
     elif otype == "sdtm":
         spec_path = uploaded[0] if uploaded else SDTM_SPEC
         if os.path.exists(spec_path):
-            import sdtm_assembler
             domains = sdtm_assembler.list_domains(spec_path)
             routing["SDTM domains"] = {d: sdtm_assembler.get_domain_class(d) for d in domains}
     else:  # tlf
