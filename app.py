@@ -397,9 +397,13 @@ def index():
 
 @app.route("/parse", methods=["POST"])
 def parse_spec():
-    otype = request.form.get("otype", "adam")
-    lang = request.form.get("lang", "sas")
-    mode = request.form.get("mode", "hybrid")
+    # Fall back to whatever was already selected (RUN_STATE), not a hardcoded
+    # default — the Spec screen's own "Parse spec" form doesn't carry lang/mode
+    # fields, so defaulting to "sas"/"hybrid" here would silently wipe out a
+    # Language/Mode choice made via the modebar just before parsing.
+    otype = request.form.get("otype", RUN_STATE["otype"] or "adam")
+    lang = request.form.get("lang", RUN_STATE["lang"])
+    mode = request.form.get("mode", RUN_STATE["mode"])
     RUN_STATE.update(otype=otype, lang=lang, mode=mode)
 
     uploaded = _resolve_uploads(request.files.getlist("spec_file"))
