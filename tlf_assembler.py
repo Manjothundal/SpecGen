@@ -41,58 +41,150 @@ def _read_shell(shell_path):
 # ---------------------------------------------------------------------------
 
 def _generate_demog_sas(meta, rows):
-    src = str(meta["source_dataset"]).lower()          # adsl
-    pop = meta["population"]                            # SAFFL
-    colvar = meta["column_var"]                         # TRT01A
+    """
+    SAS demographics table with full REPORT assembly.
+
+    Strategy: each shell row appends standardized display lines (label + a
+    formatted value per treatment arm) into one stacked dataset _results,
+    keyed by (ord, roworder, rowlabel, colname, value). The REPORT block then
+    transposes colname->columns (one per arm + Total) and renders proc report.
+    """
+    src_ds = str(meta["source_dataset"]).lower()        # adsl
+    pop = meta["population"]                             # SAFFL
+    colvar = meta["column_var"]                          # TRT01A
+    add_total = str(meta.get("add_total_column", "YES")).upper() == "YES"
     prog = []
 
-    # Header comment
     prog.append(f"""{BEGIN_SAS.format(var="TABLE_SETUP")}
 /* {meta.get('title1','')} */
 /* {meta.get('title2','')} */
 /* {meta.get('title3','')} */
 
-/* Population: keep only {pop}='Y' */
+/* Population: keep only {pop}='Y'. If a Total column is wanted, stack a
+   copy of every record under a synthetic arm 'Total' so the same summary
+   code produces the Total automatically. */
 data _tab;
-    set {src};
+    set {src_ds};
     where {pop} = "Y";
 run;
+"""
+    + ("""
+data _tab;
+    set _tab _tab(in=_t);
+    length _ARM $40;
+    if _t then _ARM = "Total";
+    else _ARM = strip(""" + colvar + """);
+run;
+""" if add_total else """
+data _tab;
+    set _tab;
+    length _ARM $40;
+    _ARM = strip(""" + colvar + """);
+run;
+""")
+    + f"""proc sort data=_tab; by _ARM; run;
+
+/* denominator N per arm, for categorical percentages */
+proc sql noprint;
+    create table _bign as
+    select _ARM, count(distinct USUBJID) as bigN
+    from _tab group by _ARM;
+quit;
 {END_SAS.format(var="TABLE_SETUP")}""")
 
-    # One analysis block per shell row
+    ord_n = 0
     for _, r in rows.iterrows():
+        ord_n += 1
         var = r["adam_var"]
         label = r["label"]
         stat = r["stat_type"]
         dec = int(r["decimals"])
 
         if stat == "contn":
-            block = f"""/* {label} — continuous summary by {colvar} */
-proc means data=_tab n mean std median min max maxdec={dec} nway;
-    class {colvar};
+            block = f"""/* {label} — continuous, formatted display rows */
+proc means data=_tab noprint nway;
+    class _ARM;
     var {var};
-    output out=_c_{var}(drop=_type_ _freq_)
+    output out=_m_{var}(drop=_type_ _freq_)
            n=n mean=mean std=std median=median min=min max=max;
+run;
+
+data _r_{var};
+    set _m_{var};
+    length rowlabel $40 value $20;
+    ord = {ord_n};
+    grouplabel = "{label}";
+    roworder = 1; rowlabel = "n";            value = strip(put(n, 8.));        output;
+    roworder = 2; rowlabel = "Mean (SD)";    value = strip(put(mean, 8.{dec})) || " (" || strip(put(std, 8.{dec+1})) || ")"; output;
+    roworder = 3; rowlabel = "Median";       value = strip(put(median, 8.{dec})); output;
+    roworder = 4; rowlabel = "Min, Max";     value = strip(put(min, 8.{dec})) || ", " || strip(put(max, 8.{dec})); output;
+    keep ord grouplabel roworder rowlabel _ARM value;
 run;"""
         elif stat == "catn":
-            block = f"""/* {label} — categorical n (%) by {colvar} */
+            block = f"""/* {label} — categorical n (%) display rows */
 proc freq data=_tab noprint;
-    tables {colvar}*{var} / outpct out=_f_{var};
+    tables _ARM*{var} / out=_c_{var}(rename=(count=n));
+run;
+
+proc sort data=_c_{var}; by _ARM; run;
+data _c_{var};
+    merge _c_{var} _bign;
+    by _ARM;
+    length rowlabel $40 value $20;
+    ord = {ord_n};
+    grouplabel = "{label}";
+    roworder = 100 + rank({var});   /* order categories after group label */
+    rowlabel = strip(vvalue({var}));
+    if bigN > 0 then value = strip(put(n, 8.)) || " (" || strip(put(100*n/bigN, 8.1)) || "%)";
+    else value = strip(put(n, 8.));
+    keep ord grouplabel roworder rowlabel _ARM value;
 run;"""
         else:
-            block = f"/* {label} — unknown stat_type '{stat}', skipped */"
+            block = f"/* {label} — unknown stat_type '{stat}', skipped */\ndata _r_{var}; stop; run;"
 
         prog.append(f"{BEGIN_SAS.format(var=var)}\n{block}\n{END_SAS.format(var=var)}")
 
-    # Report assembly stub (real proc report layout is a later refinement)
+    # Stack all _r_/_c_ results, transpose arms to columns, proc report
+    stack_names = []
+    for _, r in rows.iterrows():
+        var = r["adam_var"]
+        stack_names.append(f"_r_{var}" if r["stat_type"] == "contn" else (f"_c_{var}" if r["stat_type"] == "catn" else f"_r_{var}"))
+    stack_list = " ".join(stack_names)
     fn1 = meta.get("footnote1", "")
     fn2 = meta.get("footnote2", "")
+    t1 = meta.get("title1",""); t2 = meta.get("title2",""); t3 = meta.get("title3","")
+
     prog.append(f"""{BEGIN_SAS.format(var="REPORT")}
-/* TODO: stack the per-variable summaries into the final display order,
-   transpose to one column per {colvar} (+ Total), and render via proc report.
-   Footnotes:
-     {fn1}
-     {fn2} */
+/* Stack every variable's display rows, then transpose _ARM to columns */
+data _results;
+    set {stack_list};
+run;
+
+proc sort data=_results; by ord roworder _ARM; run;
+
+proc transpose data=_results out=_wide(drop=_name_) delimiter=_;
+    by ord roworder grouplabel rowlabel;
+    id _ARM;
+    var value;
+run;
+
+proc sort data=_wide; by ord roworder; run;
+
+title1 "{t1}";
+title2 "{t2}";
+title3 "{t3}";
+footnote1 "{fn1}";
+footnote2 "{fn2}";
+
+proc report data=_wide nowd;
+    columns ord roworder grouplabel rowlabel _all_;
+    define ord      / order noprint;
+    define roworder / order noprint;
+    define grouplabel / order "Characteristic";
+    define rowlabel  / display " ";
+run;
+
+title; footnote;
 {END_SAS.format(var="REPORT")}""")
 
     return "\n\n".join(prog) + "\n"
@@ -103,30 +195,48 @@ run;"""
 # ---------------------------------------------------------------------------
 
 def _generate_demog_r(meta, rows):
-    src = str(meta["source_dataset"]).lower()
+    """
+    R demographics table with full REPORT assembly (parity with SAS).
+
+    Each variable builds a small tibble of display rows (grouplabel, rowlabel,
+    ARM, value). A Total arm is added by duplicating rows under ARM="Total".
+    REPORT binds them, pivots ARM to columns, and renders with gt.
+    """
+    src_ds = str(meta["source_dataset"]).lower()
     pop = meta["population"]
     colvar = meta["column_var"]
+    add_total = str(meta.get("add_total_column", "YES")).upper() == "YES"
     prog = []
     prog.append("library(dplyr)")
     prog.append("library(tidyr)")
+    prog.append("library(gt)")
     prog.append("")
 
+    total_line = (f'  bind_rows(mutate(tab0, ARM = "Total"))' if add_total else "")
     prog.append(f"""{BEGIN_R.format(var="TABLE_SETUP")}
 # {meta.get('title1','')} — {meta.get('title2','')}
-# Population: keep only {pop} == "Y"
-tab <- {src} |>
-  filter({pop} == "Y")
+# Population: keep only {pop} == "Y"; ARM = treatment arm, plus a Total copy.
+tab0 <- {src_ds} |>
+  filter({pop} == "Y") |>
+  mutate(ARM = {colvar})
+
+tab <- tab0{(' |>' + chr(10) + total_line) if add_total else ''}
+
+# denominator N per arm (distinct subjects) for categorical percentages
+bigN <- tab |> group_by(ARM) |> summarise(bigN = n_distinct(USUBJID), .groups = "drop")
 {END_R.format(var="TABLE_SETUP")}""")
 
+    ord_n = 0
+    disp_names = []
     for _, r in rows.iterrows():
-        var = r["adam_var"]
-        label = r["label"]
-        stat = r["stat_type"]
+        ord_n += 1
+        var = r["adam_var"]; label = r["label"]; stat = r["stat_type"]; dec = int(r["decimals"])
+        dname = f"d_{var}"; disp_names.append(dname)
 
         if stat == "contn":
-            block = f"""# {label} — continuous summary by {colvar}
-c_{var} <- tab |>
-  group_by({colvar}) |>
+            block = f"""# {label} — continuous display rows
+{dname} <- tab |>
+  group_by(ARM) |>
   summarise(
     n = sum(!is.na({var})),
     mean = mean({var}, na.rm = TRUE),
@@ -135,23 +245,61 @@ c_{var} <- tab |>
     min = min({var}, na.rm = TRUE),
     max = max({var}, na.rm = TRUE),
     .groups = "drop"
-  )"""
+  ) |>
+  mutate(
+    `n` = as.character(n),
+    `Mean (SD)` = paste0(formatC(mean, format="f", digits={dec}),
+                         " (", formatC(sd, format="f", digits={dec+1}), ")"),
+    `Median` = formatC(median, format="f", digits={dec}),
+    `Min, Max` = paste0(formatC(min, format="f", digits={dec}), ", ",
+                        formatC(max, format="f", digits={dec}))
+  ) |>
+  select(ARM, `n`, `Mean (SD)`, `Median`, `Min, Max`) |>
+  pivot_longer(-ARM, names_to = "rowlabel", values_to = "value") |>
+  mutate(ord = {ord_n}, grouplabel = "{label}",
+         roworder = match(rowlabel, c("n","Mean (SD)","Median","Min, Max")))"""
         elif stat == "catn":
-            block = f"""# {label} — categorical n (%) by {colvar}
-f_{var} <- tab |>
-  group_by({colvar}, {var}) |>
+            block = f"""# {label} — categorical n (%) display rows
+{dname} <- tab |>
+  group_by(ARM, {var}) |>
   summarise(n = n(), .groups = "drop") |>
-  group_by({colvar}) |>
-  mutate(pct = 100 * n / sum(n)) |>
-  ungroup()"""
+  left_join(bigN, by = "ARM") |>
+  mutate(
+    rowlabel = as.character({var}),
+    value = ifelse(bigN > 0,
+                   paste0(n, " (", formatC(100*n/bigN, format="f", digits=1), "%)"),
+                   as.character(n)),
+    ord = {ord_n}, grouplabel = "{label}",
+    roworder = 100 + as.integer(factor({var}))
+  ) |>
+  select(ARM, rowlabel, value, ord, grouplabel, roworder)"""
         else:
-            block = f"# {label} — unknown stat_type '{stat}', skipped"
+            block = f"# {label} — unknown stat_type '{stat}', skipped\n{dname} <- tibble()"
 
         prog.append(f"{BEGIN_R.format(var=var)}\n{block}\n{END_R.format(var=var)}")
 
+    bind_list = ", ".join(disp_names)
+    fn1 = meta.get("footnote1",""); fn2 = meta.get("footnote2","")
+    t1 = meta.get("title1",""); t2 = meta.get("title2",""); t3 = meta.get("title3","")
+
     prog.append(f"""{BEGIN_R.format(var="REPORT")}
-# TODO: bind the per-variable summaries in display order, pivot to one column
-# per {colvar} (+ Total), render with gt::gt() and the shell footnotes.
+# Bind all display rows, pivot ARM to columns, render with gt
+report_long <- bind_rows({bind_list}) |>
+  arrange(ord, roworder, ARM)
+
+report_wide <- report_long |>
+  pivot_wider(id_cols = c(ord, roworder, grouplabel, rowlabel),
+              names_from = ARM, values_from = value) |>
+  arrange(ord, roworder) |>
+  select(-ord, -roworder)
+
+demog_table <- report_wide |>
+  gt(groupname_col = "grouplabel", rowname_col = "rowlabel") |>
+  tab_header(title = "{t1}", subtitle = "{t2}") |>
+  tab_source_note("{fn1}") |>
+  tab_source_note("{fn2}")
+
+demog_table
 {END_R.format(var="REPORT")}""")
 
     return "\n\n".join(prog) + "\n"
