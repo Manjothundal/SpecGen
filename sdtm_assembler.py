@@ -503,8 +503,21 @@ run;
 
 # ── Main entry points ───────────────────────────────────────────────
 
-def generate_single_domain(xlsx_path, domain, output_dir, use_api=True):
-    """Generate the SAS program for one domain."""
+def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=False):
+    """Generate the SAS program for one domain.
+
+    By default, skips generation if output_dir/<domain>.sas already exists —
+    each Writer/Improver run is a fresh, non-deterministic draft, so
+    regenerating on every call would silently overwrite any hand-QC fix
+    applied to a prior draft (see ROADMAP.md Phase 10 piece 3). Pass
+    force=True to regenerate anyway (e.g. after a spec change).
+    """
+    domain_lower = domain.lower()
+    output_file = os.path.join(output_dir, f"{domain_lower}.sas")
+    if not force and os.path.exists(output_file):
+        print(f"  [{domain}] Skipping — {output_file} already exists (use --force to regenerate)")
+        return output_file
+
     variables = read_domain_spec(xlsx_path, domain)
     if not variables:
         print(f"  No variables found for domain {domain}")
@@ -519,8 +532,6 @@ def generate_single_domain(xlsx_path, domain, output_dir, use_api=True):
 
     # Write to file
     os.makedirs(output_dir, exist_ok=True)
-    domain_lower = domain.lower()
-    output_file = os.path.join(output_dir, f"{domain_lower}.sas")
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(program)
 
@@ -542,11 +553,16 @@ def generate_single_domain(xlsx_path, domain, output_dir, use_api=True):
     return output_file
 
 
-def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None):
+def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, force=False):
     """
     Generate SAS programs for all domains in the spec.
     Processes standard domains first, then SUPP domains
     (SUPP needs parent domain to exist first).
+
+    Domains whose output file already exists are skipped unless force=True
+    (see generate_single_domain) — repeated runs (e.g. every "Generate" click
+    in the web app) are idempotent by default instead of overwriting hand-QC
+    fixes with a fresh non-deterministic draft each time.
     """
     all_domains = list_domains(xlsx_path)
 
@@ -561,14 +577,14 @@ def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None):
     print(f"  Output: {output_dir}")
     print(f"  Standard domains ({len(std_domains)}): {', '.join(std_domains)}")
     print(f"  SUPP domains ({len(supp_domains)}): {', '.join(supp_domains)}")
-    print(f"  Mode: {'API' if use_api else 'Offline'}")
+    print(f"  Mode: {'API' if use_api else 'Offline'}{' (force regenerate)' if force else ''}")
 
     results = {}
     failed = []
 
     # Standard domains first
     for domain in std_domains:
-        result = generate_single_domain(xlsx_path, domain, output_dir, use_api)
+        result = generate_single_domain(xlsx_path, domain, output_dir, use_api, force=force)
         if result:
             results[domain] = result
         else:
@@ -576,7 +592,7 @@ def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None):
 
     # SUPP domains after (they reference parent domain)
     for domain in supp_domains:
-        result = generate_single_domain(xlsx_path, domain, output_dir, use_api)
+        result = generate_single_domain(xlsx_path, domain, output_dir, use_api, force=force)
         if result:
             results[domain] = result
         else:
@@ -609,13 +625,17 @@ if __name__ == "__main__":
                         help="Generate for a single domain (e.g. DM, AE, VS)")
     parser.add_argument("--offline", action="store_true",
                         help="Use local Ollama only, no API calls")
+    parser.add_argument("--force", action="store_true",
+                        help="Regenerate domains even if their output .sas file already "
+                             "exists (default: skip existing files, so hand-QC fixes "
+                             "aren't overwritten by a fresh draft)")
 
     args = parser.parse_args()
 
     if args.domain:
         domains = [d.strip().upper() for d in args.domain.split(",")]
         generate_all_domains(args.spec, args.output,
-                             use_api=not args.offline, domains=domains)
+                             use_api=not args.offline, domains=domains, force=args.force)
     else:
         generate_all_domains(args.spec, args.output,
-                             use_api=not args.offline)
+                             use_api=not args.offline, force=args.force)

@@ -291,7 +291,7 @@ def page_exclusion(c):
 # ─── Build the PDF ──────────────────────────────────────────────────
 
 def main():
-    out = "/home/claude/sample_protocol.pdf"
+    out = "sample_protocol.pdf"
     c = canvas.Canvas(out, pagesize=letter)
 
     page_synopsis(c)

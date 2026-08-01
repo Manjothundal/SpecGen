@@ -27,23 +27,65 @@ and verifies the outputs.
 - [x] Phase 4.5: Agentic RAG on the macro library
       - [x] Phase 4.5a: Macro catalog + plain retrieval (variable-level, 15 variables covered)
       - [x] Phase 4.5b: Agentic retrieval — Claude queries the catalog as a tool
-- [ ] Phase 5: SDTM + TLF generation
-      - 5a: aCRF parser (PDF/Word annotations → structured domain/variable metadata)
-      - 5b: Draft SDTM spec from aCRF metadata (human reviews and completes before pipeline)
-      - 5c: SDTM program generation from approved spec (new multi-row assembly mode)
-      - 5d: TLF from SAP + mock shells
+- [x] Phase 5: SDTM + TLF generation
+      - [x] 5a: aCRF parser (PDF/Word annotations → structured domain/variable metadata) — acrf_parser.py
+      - [x] 5b: Draft SDTM spec from aCRF metadata (human reviews and completes before pipeline) — sdtm_spec_builder.py
+      - [x] 5c: SDTM program generation from approved spec (new multi-row assembly mode) — sdtm_assembler.py, sdtm_programs/
+      - [x] 5d: TLF from SAP + mock shells — tlf_assembler.py, tlf_programs/ (demographics 14.1.1, AE summary 14.3.1)
 - [x] Phase 6: Update mode — CORE WORKING (differ + marker-based patcher)
       - spec_differ.py: v1 vs v2 comparison (new / changed / deleted / unchanged)
       - spec_patcher.py: replaces changed blocks via BEGIN/END markers, appends new, rebuilds keep
       - Open: log patch runs to runlog.csv; update catalog params instead of bypassing; em-dash encoding fix
 - [ ] Phase 7: Draft spec generation (aCRF + protocol + SAP -> proposed spec)
-- [ ] Phase 8: R output alongside SAS (admiral-style pipelines; language toggle)
+- [x] Phase 8: R output alongside SAS (admiral-style pipelines; language toggle)
+      - [x] ADaM BDS (ADVS/ADLB/ADEG/ADTR/ADAE/ADCM/ADRS/ADTTE) — bds_assembler.py, full parity via --lang
+      - [x] TLF (demographics, AE summary) — tlf_assembler.py
+      - [x] ADSL core Writer/Improver/Reviewer pipeline — generator.py/prompt_builder.py/
+            improver.py/reviewer.py/assembler.py ported (language="sas"|"r"); spec_parser.py
+            given a --lang flag to match. Ran end-to-end against adam_spec_full.xlsx (Hybrid
+            mode: local Writer, API Improver/Reviewer) -> adsl.R, 20 variables.
+            Found and fixed during validation:
+              - assembler.py bug: when the Writer produced only comments for a variable
+                (no code), the assembler emitted a bare "," instead of the column — invalid
+                mutate() call and a missing column at the final select(). Now emits a typed
+                NA stub instead.
+              - 5 of 20 generated blocks needed a hand QC pass after the Reviewer's own
+                pass (RACEN used ARM instead of RACE; DTHDT/RFICDT/DTHDY mixed Date and
+                NA_real_ types in case_when — R's case_when requires one type per branch,
+                unlike SAS; EOSDY referenced a nonexistent EXDTC column; DTHDY also mapped
+                pre-treatment deaths to NA instead of the correct negative day count).
+                Expected per the three-agent model — the Reviewer flags, a human fixes —
+                but confirms R output needs the same sign-off scrutiny as SAS, not less.
 - [ ] Phase 9: Compare & verify module
       - Output-to-output comparison: RTF, Word, PDF; full vs cut
       - Content-block alignment (not page-number based)
       - Output-to-mock-shell validation
       - Deterministic parsing and diffing (no AI in this module)
       - Findings written to the audit trail
+- [x] Phase 10: Web app (Flask UI) — app.py, templates/index.html
+      - [x] Piece 1: skeleton — generates ADVS (SAS/R) in the browser
+      - [x] Piece 2: Output dropdown (SDTM / ADaM / TLF) + language toggle, generates the
+            full set per output type, collapsible per-file view
+      - [x] Piece 3: file upload — one optional upload field, meaning changes with the
+            Output dropdown (ACRF metadata for ADaM, SDTM spec for SDTM, shell(s) for TLF,
+            multi-select for TLF); falls back to the sample inputs when nothing is
+            uploaded. Verified live: index page renders the field, ADaM/TLF/SDTM all
+            generate correctly with no upload, and ADaM with an uploaded file is
+            correctly picked up over the default.
+            Bug found and fixed during this test: generate_sdtm() re-ran
+            sdtm_assembler.py --offline on every request, regenerating ALL 19 domain
+            .sas files from scratch (fresh, non-deterministic local-LLM draft each
+            time) — not just the target spec's domains — silently overwriting any
+            hand-QC fix in sdtm_programs/ (e.g. the ae.sas fixes from the Phase 5c
+            validation pass; happened twice during testing, each a differently-broken
+            draft). ADaM/TLF didn't have this problem (they regenerate deterministically
+            from their inputs each time, so a fix belongs upstream in the input spec).
+            Fixed at the root: sdtm_assembler.py now skips a domain whose output file
+            already exists unless --force is passed (generate_single_domain/
+            generate_all_domains, new --force CLI flag). app.py passes --force only when
+            the request included an uploaded spec (deliberate regenerate intent); the
+            no-upload default path is now idempotent. Verified: re-running with
+            --domain AE,DM and no --force skipped both instantly.
 
 ## Open items (near-term)
 - Test against a fuller, realistic ADSL spec (60-100+ variables)
@@ -54,8 +96,9 @@ and verifies the outputs.
 - TRT01PN pattern hint shows SAFFL example instead of TRT01P — catalog suggestion needs variable-specific call
 
 ## Later ideas
-- Simple local UI (see docs/specgen_ui_mockup.html) — desktop app with mode
-  and language toggles, per-block sign-off rail, audit trail view, compare screen
+- Fuller desktop-grade UI (see docs/specgen_ui_mockup.html) — per-block sign-off
+  rail, audit trail view, compare screen; the basic browser version (dropdowns +
+  language toggle) is already live as Phase 10
 - Log checker: parse SAS .log, flag ERRORs / WARNINGs / NOTEs, suggest fixes
 - QC mode: generate independent verification code + PROC COMPARE harness
 - Define.xml support (read specs from define.xml; later write draft define.xml)

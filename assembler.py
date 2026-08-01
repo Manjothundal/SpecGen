@@ -1,8 +1,9 @@
-from generator import generate_sas
+from generator import generate_code
 from prompt_builder import build_prompt
 from reviewer import review_block
 from improver import improve_block
 from macro_lookup import load_catalog, find_macro, find_by_pattern
+import config
 
 catalog = load_catalog()
 # Variables derived as side effects of another variable's macro call
@@ -10,28 +11,49 @@ catalog = load_catalog()
 # e.g. %adsl_trtvar derives both TRT01P and TRT01PN in one call
 MACRO_SIDE_EFFECTS = {"AGEGR1N", "TRT01PN"}
 
+
 def clean(code):
-    """Remove markdown fences if the model added them anyway."""
-    return code.replace("```sas", "").replace("```", "").strip()
+    """Remove markdown fences (sas or r) if the model added them anyway."""
+    for fence in ("```sas", "```r", "```R", "```"):
+        code = code.replace(fence, "")
+    return code.strip()
+
 
 def known_variables(spec):
-    """All variables legitimately available inside the main data step."""
-    # variables the spec defines
+    """All variables legitimately available inside the main step (language-agnostic)."""
     spec_vars = list(spec["Variable"])
-    # SDTM columns arriving from DM
     dm_vars = ["STUDYID", "USUBJID", "SUBJID", "SITEID", "AGE", "AGEU",
                "SEX", "RACE", "ARM", "ARMCD", "ACTARM", "DTHFL", "RFSTDTC", "RFENDTC"]
-    # columns created by the pre-steps
     prestep_vars = ["TRTSDT", "TRTEDT", "TRT01A", "TRTEPSDT", "TRTEPEDT",
                     "RACEOTH", "COMPLT"]
     return sorted(set(spec_vars + dm_vars + prestep_vars))
 
-def gen_block(row, skip_macro=False):
+
+def gen_block(row, skip_macro=False, language=None):
     """Generate one variable's derivation logic via the model."""
     print("Generating:", row["Variable"])
-    return clean(generate_sas(build_prompt(row, skip_macro=skip_macro)))
+    return clean(generate_code(build_prompt(row, skip_macro=skip_macro, language=language)))
 
-def assemble_adsl(spec, derived, ex_summary, main_step):
+
+# ---------------------------------------------------------------------------
+# Top-level: pick the language path
+# ---------------------------------------------------------------------------
+
+def assemble_adsl(spec, derived, ex_summary, main_step, language=None):
+    language = (language or config.LANGUAGE).lower()
+    if language == "sas":
+        return _assemble_adsl_sas(spec, derived, ex_summary, main_step)
+    elif language == "r":
+        return _assemble_adsl_r(spec, derived, ex_summary, main_step)
+    else:
+        raise ValueError(f"Unknown language: {language!r} (expected 'sas' or 'r')")
+
+
+# ===========================================================================
+# SAS PATH — unchanged from the original assemble_adsl
+# ===========================================================================
+
+def _assemble_adsl_sas(spec, derived, ex_summary, main_step):
     parts = []
 
     # ---- Header
@@ -182,7 +204,7 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
     parts.append("  by usubjid;")
     parts.append("")
 
-   # main-step derived variables, in spec Order
+    # main-step derived variables, in spec Order
     available = known_variables(spec)
     for i, row in main_step.sort_values("Order").iterrows():
         # Skip variables already derived as macro side effects
@@ -200,10 +222,10 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
         else:
             # 2. Pattern match + generate
             pmatch = find_by_pattern(var, str(row["Derivation"]), catalog)
-            block = gen_block(row)
+            block = gen_block(row, language="sas")
             print("   Improving:", var)
-            block = clean(improve_block(block, row, available))
-            verdict = review_block(block, available)
+            block = clean(improve_block(block, row, available, language="sas"))
+            verdict = review_block(block, available, language="sas")
             if verdict.startswith("FAIL"):
                 print("   QC:", verdict)
                 block = "/* QC FLAG: " + verdict + " */\n" + block
@@ -224,5 +246,218 @@ def assemble_adsl(spec, derived, ex_summary, main_step):
     keep_list = " ".join(spec["Variable"])
     parts.append("  keep " + keep_list + ";")
     parts.append("run;")
+
+    return "\n".join(parts)
+
+
+# ===========================================================================
+# R PATH — plain tidyverse; mirrors the SAS ADSL stage for stage
+# ===========================================================================
+
+def _r_add_comma(line):
+    """Append the mutate() separator comma to a line of R, placing it BEFORE any
+    inline `#` comment (R would otherwise treat the comma as part of the comment
+    and swallow it). Quotes are respected so a `#` inside a string is ignored.
+    """
+    in_s = None  # current string delimiter, or None
+    hash_pos = None
+    for i, ch in enumerate(line):
+        if in_s:
+            if ch == in_s:
+                in_s = None
+        elif ch in ("'", '"'):
+            in_s = ch
+        elif ch == "#":
+            hash_pos = i
+            break
+    if hash_pos is None:
+        return line.rstrip() + ","
+    code, comment = line[:hash_pos], line[hash_pos:]
+    return code.rstrip() + ",  " + comment.rstrip()
+
+
+def _adsl_presteps_r():
+    """The 10 ADSL pre-steps ported to dplyr. Each mirrors its SAS pre-step.
+
+    Note vs SAS: SAS 'if first.usubjid' relies on the preceding proc sort, so
+    in R every 'take the first per subject' does an explicit arrange() before
+    slice(1) — R does not inherit sort order. Dates: SAS e8601da./yymmdd10.
+    both become as.Date(substr(x,1,10)); the datetime (e8601dt.) becomes
+    as.POSIXct.
+    """
+    return r'''# Pre-step 1: dosing records, earliest first
+ex_dosed <- ex |>
+  filter(EXDOSE > 0, EXSTDTC != "") |>
+  arrange(USUBJID, EXSTDTC)
+
+# Pre-step 2: treatment from the first dosing record
+ex_first <- ex_dosed |>
+  group_by(USUBJID) |>
+  slice(1) |>
+  ungroup() |>
+  transmute(USUBJID, TRT01A = EXTRT)
+
+# Pre-step 3: first and last dosing dates per subject
+ex_dates <- ex |>
+  filter(EXDOSE > 0) |>
+  group_by(USUBJID) |>
+  summarise(
+    TRTSDT  = min(as.Date(substr(EXSTDTC, 1, 10)), na.rm = TRUE),
+    TRTSDTM = min(as.POSIXct(EXSTDTC, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC"), na.rm = TRUE),
+    TRTEDT  = max(as.Date(substr(EXENDTC, 1, 10)), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Pre-step 4: transpose SUPPDM (tall) to one row per subject (wide)
+suppdm_w <- suppdm |>
+  select(USUBJID, QNAM, QVAL) |>
+  pivot_wider(names_from = QNAM, values_from = QVAL)
+
+# Pre-step 5: treatment epoch dates from SE (ETCD = TRT)
+se_epoch <- se |>
+  filter(ETCD == "TRT") |>
+  arrange(USUBJID, SESTDTC) |>
+  group_by(USUBJID) |>
+  slice(1) |>
+  ungroup() |>
+  transmute(
+    USUBJID,
+    TRTEPSDT = as.Date(substr(SESTDTC, 1, 10)),
+    TRTEPEDT = as.Date(substr(SEENDTC, 1, 10))
+  )
+
+# Pre-step 6: end-of-study disposition (DS)
+ds_summary <- ds |>
+  filter(DSCAT == "DISPOSITION EVENT", is.na(DSSCAT) | DSSCAT == "") |>
+  arrange(USUBJID, DSSTDTC) |>
+  group_by(USUBJID) |>
+  slice(1) |>
+  ungroup() |>
+  mutate(
+    EOSSTT   = if_else(DSDECOD == "COMPLETED", "COMPLETED", "DISCONTINUED"),
+    EOSDT    = as.Date(substr(DSSTDTC, 1, 10)),
+    DCSREAS  = if_else(EOSSTT == "DISCONTINUED", DSDECOD, NA_character_),
+    DCSREASP = if_else(EOSSTT == "DISCONTINUED", DSTERM,  NA_character_)
+  ) |>
+  select(USUBJID, EOSSTT, EOSDT, DCSREAS, DCSREASP)
+
+# Pre-step 7: treatment discontinuation date (DS, DSSCAT='STUDY TREATMENT')
+ds_trtdisc <- ds |>
+  filter(DSCAT == "DISPOSITION EVENT", DSSCAT == "STUDY TREATMENT", DSDECOD != "COMPLETED") |>
+  arrange(USUBJID, DSSTDTC) |>
+  group_by(USUBJID) |>
+  slice(1) |>
+  ungroup() |>
+  transmute(USUBJID, DCTDT = as.Date(substr(DSSTDTC, 1, 10)))
+
+# Pre-step 8: baseline vitals from VS (VSBLFL='Y')
+vs_summary <- vs |>
+  filter(VSBLFL == "Y", VSTESTCD %in% c("BMI", "HEIGHT", "WEIGHT")) |>
+  select(USUBJID, VSTESTCD, VSSTRESN) |>
+  pivot_wider(names_from = VSTESTCD, values_from = VSSTRESN) |>
+  rename(BMIBL = BMI, HEIGHTBL = HEIGHT, WEIGHTBL = WEIGHT)
+
+# Pre-step 9: CM existence flags
+cm_summary <- cm |>
+  group_by(USUBJID) |>
+  summarise(
+    CMFL   = if_else(any(CMCAT %in% c("PRIOR", "CONCOMITANT")), "Y", "N"),
+    CMINFL = if_else(any(CMCAT == "PRIOR"), "Y", "N"),
+    .groups = "drop"
+  )
+
+# Pre-step 10: MH existence flag
+mh_summary <- mh |>
+  group_by(USUBJID) |>
+  summarise(
+    MHFL = if_else(any(MHCAT == "PRIMARY DIAGNOSIS" & MHENRF == "ONGOING"), "Y", "N"),
+    .groups = "drop"
+  )'''
+
+
+def _assemble_adsl_r(spec, derived, ex_summary, main_step):
+    parts = []
+
+    # ---- Header + libraries
+    parts.append("# ********************************")
+    parts.append("# Program: adsl.R")
+    parts.append("# Generated by SpecGen (target = r)")
+    parts.append("# Plain tidyverse; same spec as adsl.sas (independent implementation)")
+    parts.append("# ********************************")
+    parts.append("library(dplyr)")
+    parts.append("library(tidyr)")
+    parts.append("")
+
+    # ---- 10 pre-steps
+    parts.append(_adsl_presteps_r())
+    parts.append("")
+
+    # ---- Main step: join all sources on USUBJID (== SAS merge by usubjid)
+    parts.append("# Main step: join DM with every pre-step summary")
+    parts.append("adsl <- dm |>")
+    parts.append("  left_join(ex_dates,   by = \"USUBJID\") |>")
+    parts.append("  left_join(ex_first,   by = \"USUBJID\") |>")
+    parts.append("  left_join(suppdm_w,   by = \"USUBJID\") |>")
+    parts.append("  left_join(se_epoch,   by = \"USUBJID\") |>")
+    parts.append("  left_join(ds_summary, by = \"USUBJID\") |>")
+    parts.append("  left_join(ds_trtdisc, by = \"USUBJID\") |>")
+    parts.append("  left_join(vs_summary, by = \"USUBJID\") |>")
+    parts.append("  left_join(cm_summary, by = \"USUBJID\") |>")
+    parts.append("  left_join(mh_summary, by = \"USUBJID\") |>")
+    parts.append("  mutate(")
+
+    # ---- main-step derived variables, in spec Order (each an inner mutate expr)
+    available = known_variables(spec)
+    for i, row in main_step.sort_values("Order").iterrows():
+        if row["Variable"] in MACRO_SIDE_EFFECTS:
+            print("Side effect (skipped):", row["Variable"])
+            continue
+
+        var = row["Variable"]
+        # No macro branch in R (SAS-only catalog); every var goes Writer->Improver->Reviewer
+        block = gen_block(row, language="r")
+        print("   Improving:", var)
+        block = clean(improve_block(block, row, available, language="r"))
+        verdict = review_block(block, available, language="r")
+
+        # indent the derivation into the mutate() and wrap in R markers.
+        # The mutate() argument separator MUST be a real comma on the code
+        # line — a trailing "#" comment would swallow a comma placed after it,
+        # so the comma goes on the last non-comment code line, before END.
+        raw_lines = block.splitlines()
+        indented = ["    " + ln for ln in raw_lines]
+        # find the last line that is actual code (not a pure # comment) to carry
+        # the mutate() separator comma
+        comma_idx = None
+        for i in range(len(indented) - 1, -1, -1):
+            if not indented[i].lstrip().startswith("#"):
+                comma_idx = i
+                break
+        if comma_idx is not None:
+            indented[comma_idx] = _r_add_comma(indented[comma_idx])
+        else:
+            # Writer produced no actual code, only comments (e.g. punted on an
+            # ambiguous derivation). A bare "," here would leave TWO commas in a
+            # row inside mutate() (a parse/argument error) and never create the
+            # {var} column, so the final select({var}) would fail with
+            # "object not found". Emit a typed NA stub instead: keeps the comma
+            # count correct and the column real, while making the gap visible.
+            na_value = "NA_character_" if str(row["Type"]).lower() == "text" else "NA_real_"
+            indented.append(f"    {var} = {na_value},  # WRITER PRODUCED NO CODE for this derivation")
+        body = "\n".join(indented)
+        wrapped = f"    # -- BEGIN {var} -- #\n{body}\n    # -- END {var} -- #"
+        if verdict.startswith("FAIL"):
+            print("   QC:", verdict)
+            wrapped = f"    # QC FLAG: {verdict}\n" + wrapped
+        parts.append(wrapped)
+
+    # ---- TRT01A fallback (== SAS: if missing then planned)
+    parts.append("    # TRT01A fallback: subjects never dosed take planned treatment")
+    parts.append("    TRT01A = if_else(is.na(TRT01A), TRT01P, TRT01A)")
+    parts.append("  ) |>")
+
+    # ---- keep only spec variables (SAS keep -> dplyr select)
+    keep_list = ", ".join(spec["Variable"])
+    parts.append(f"  select({keep_list})")
 
     return "\n".join(parts)
