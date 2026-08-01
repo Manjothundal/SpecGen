@@ -43,6 +43,18 @@ the outputs.
             separate file's existence. Existing standalone SUPP files were merged
             into their parents and removed (no regeneration needed — same content,
             just relocated).
+            SDTM generation gained a real R path: every prompt builder (DM, Events,
+            Interventions, Findings, Findings About Events, SUPP) now has an R
+            (tidyverse) variant alongside its SAS one, selected via a new --lang
+            flag (generate_domain_program/generate_single_domain/append_supp_domain/
+            generate_all_domains all thread language through); assemble_program's
+            header/footer differ by language (R gets no libname/proc steps); the
+            Improver prompt is language-aware too. app.py passes --lang through and
+            reads back .R files; the web UI's Language toggle is no longer
+            disabled for SDTM. Verified: Offline mode produces correctly-structured
+            (if rough, as expected for the local model) R; API mode produces
+            genuinely good tidyverse code (proper left_join/mutate/if_else/select,
+            correct row_number()-based --SEQ derivation).
       - [x] 5d: TLF from SAP + mock shells — tlf_assembler.py, tlf_programs/ (demographics 14.1.1, AE summary 14.3.1)
 - [x] Phase 6: Update mode — CORE WORKING (differ + marker-based patcher)
       - spec_differ.py: v1 vs v2 comparison (new / changed / deleted / unchanged)

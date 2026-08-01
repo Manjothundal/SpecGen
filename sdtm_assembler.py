@@ -146,8 +146,10 @@ def _var_table(variables):
     return "\n".join(lines)
 
 
-def build_dm_prompt(domain, variables):
+def build_dm_prompt(domain, variables, language="sas"):
     """Prompt for DM domain - one row per subject."""
+    if language == "r":
+        return _build_dm_prompt_r(domain, variables)
     var_table = _var_table(variables)
     return f"""You are a senior CDISC SDTM programmer. Generate a complete, production-quality SAS program
 for the {domain} (Demographics) domain.
@@ -175,8 +177,42 @@ Requirements:
 Generate the complete SAS program. No explanations, just the code."""
 
 
-def build_events_prompt(domain, variables):
+def _build_dm_prompt_r(domain, variables):
+    var_table = _var_table(variables)
+    return f"""You are a senior CDISC SDTM programmer working in R (tidyverse). Generate a complete,
+production-quality R script for the {domain} (Demographics) domain.
+
+SDTM specification for {domain}:
+{var_table}
+
+Requirements:
+- library(dplyr) at the top; read source data frames raw_dm, raw_ex (already in the R session,
+  do NOT read/import them from a file)
+- Set STUDYID, DOMAIN as constant columns
+- Derive USUBJID = paste(STUDYID, SITEID, SUBJID, sep = "-")
+- Map CRF fields to SDTM variables per the spec
+- Derive RFSTDTC (first dose date) and RFENDTC (last dose date) from raw_ex
+- Derive RFXSTDTC, RFXENDTC from exposure data
+- ARM and ARMCD from randomization/CRF; ACTARM/ACTARMCD derived or same as planned
+- Compute AGE from BRTHDTC and RFSTDTC if not directly collected
+- COUNTRY from site-level metadata
+- Assign the final result to a data frame named dm
+- Sort with arrange(STUDYID, USUBJID)
+- select() only the spec variables, in order, at the end — this is R's equivalent of a KEEP statement
+- R has no length/label/format statements — do NOT emit them; use a comment instead to note each
+  variable's label from the spec
+- For ISO 8601 date strings (--DTC variables), parse with as.Date(substr(dtc, 1, 10)) — do not
+  invent other date formats
+- Add clear comments for each derivation section
+- Use # -- BEGIN {domain} -- # and # -- END {domain} -- # markers around the main code block
+
+Generate the complete R script. No explanations, just the code, no markdown fences."""
+
+
+def build_events_prompt(domain, variables, language="sas"):
     """Prompt for Events domains (AE, DS, MH, DV) - one row per event."""
+    if language == "r":
+        return _build_events_prompt_r(domain, variables)
     var_table = _var_table(variables)
     domain_lower = domain.lower()
     prefix = domain[:2]
@@ -208,8 +244,47 @@ Requirements:
 Generate the complete SAS program. No explanations, just the code."""
 
 
-def build_interventions_prompt(domain, variables):
+def _build_events_prompt_r(domain, variables):
+    var_table = _var_table(variables)
+    domain_lower = domain.lower()
+    prefix = domain[:2]
+    return f"""You are a senior CDISC SDTM programmer working in R (tidyverse). Generate a complete,
+production-quality R script for the {domain} domain (Events class - one row per event per subject).
+
+SDTM specification for {domain}:
+{var_table}
+
+Requirements:
+- library(dplyr) at the top; read source data frames raw_{domain_lower} and dm (both already in the
+  R session, do NOT read/import them from a file)
+- Set DOMAIN = "{domain}"
+- Derive {prefix}SEQ as a sequence number within each subject: group_by(USUBJID) |>
+  mutate({prefix}SEQ = row_number()) — NA-safe, no proc-sort-then-first. equivalent needed
+- Derive USUBJID = paste(STUDYID, SITEID, SUBJID, sep = "-") or join from dm
+- Map --TERM, --DECOD from source verbatim and coded terms
+- Map --STDTC, --ENDTC from source start/end dates (ISO 8601 character format)
+- Derive --STDY, --ENDY as study day relative to RFSTDTC from dm
+- Derive EPOCH based on date relative to treatment period
+- Apply --BODSYS from MedDRA/WHO coding if applicable
+- Apply --CAT, --SCAT from source categories
+- Handle domain-specific variables (severity for AE, disposition terms for DS, etc.)
+- Assign the final result to a data frame named {domain_lower}
+- Sort with arrange(STUDYID, USUBJID, {prefix}SEQ)
+- select() only the spec variables, in order, at the end — this is R's equivalent of a KEEP statement
+- R has no length/label/format statements — do NOT emit them; use a comment instead to note each
+  variable's label from the spec
+- For ISO 8601 date strings (--DTC variables), parse with as.Date(substr(dtc, 1, 10)) — do not
+  invent other date formats
+- Add clear comments for each derivation section
+- Use # -- BEGIN {domain} -- # and # -- END {domain} -- # markers
+
+Generate the complete R script. No explanations, just the code, no markdown fences."""
+
+
+def build_interventions_prompt(domain, variables, language="sas"):
     """Prompt for Interventions domains (CM, EX) - one row per intervention."""
+    if language == "r":
+        return _build_interventions_prompt_r(domain, variables)
     var_table = _var_table(variables)
     domain_lower = domain.lower()
     prefix = domain[:2]
@@ -240,8 +315,47 @@ Requirements:
 Generate the complete SAS program. No explanations, just the code."""
 
 
-def build_findings_prompt(domain, variables):
+def _build_interventions_prompt_r(domain, variables):
+    var_table = _var_table(variables)
+    domain_lower = domain.lower()
+    prefix = domain[:2]
+    return f"""You are a senior CDISC SDTM programmer working in R (tidyverse). Generate a complete,
+production-quality R script for the {domain} domain (Interventions class - one row per
+intervention per subject).
+
+SDTM specification for {domain}:
+{var_table}
+
+Requirements:
+- library(dplyr) at the top; read source data frames raw_{domain_lower} and dm (both already in
+  the R session, do NOT read/import them from a file)
+- Set DOMAIN = "{domain}"
+- Derive {prefix}SEQ as a sequence number within each subject: group_by(USUBJID) |>
+  mutate({prefix}SEQ = row_number())
+- Derive USUBJID = paste(STUDYID, SITEID, SUBJID, sep = "-") or join from dm
+- Map --TRT (reported treatment name) and --DECOD (standardized name) from source
+- Map --DOSE, --DOSU, --DOSFRQ, --ROUTE from source dosing fields
+- Map --STDTC, --ENDTC from source start/end dates (ISO 8601 character format)
+- Derive --STDY, --ENDY as study day relative to RFSTDTC from dm
+- Derive EPOCH based on date relative to treatment period
+- Apply --CAT from source categories
+- Assign the final result to a data frame named {domain_lower}
+- Sort with arrange(STUDYID, USUBJID, {prefix}SEQ)
+- select() only the spec variables, in order, at the end — this is R's equivalent of a KEEP statement
+- R has no length/label/format statements — do NOT emit them; use a comment instead to note each
+  variable's label from the spec
+- For ISO 8601 date strings (--DTC variables), parse with as.Date(substr(dtc, 1, 10)) — do not
+  invent other date formats
+- Add clear comments for each derivation section
+- Use # -- BEGIN {domain} -- # and # -- END {domain} -- # markers
+
+Generate the complete R script. No explanations, just the code, no markdown fences."""
+
+
+def build_findings_prompt(domain, variables, language="sas"):
     """Prompt for Findings domains (VS, EG) - one row per test per timepoint."""
+    if language == "r":
+        return _build_findings_prompt_r(domain, variables)
     var_table = _var_table(variables)
     domain_lower = domain.lower()
     prefix = domain[:2]
@@ -276,8 +390,51 @@ Requirements:
 Generate the complete SAS program. No explanations, just the code."""
 
 
-def build_fae_prompt(domain, variables):
+def _build_findings_prompt_r(domain, variables):
+    var_table = _var_table(variables)
+    domain_lower = domain.lower()
+    prefix = domain[:2]
+    return f"""You are a senior CDISC SDTM programmer working in R (tidyverse). Generate a complete,
+production-quality R script for the {domain} domain (Findings class - one row per test per
+timepoint per subject).
+
+SDTM specification for {domain}:
+{var_table}
+
+Requirements:
+- library(dplyr), library(tidyr) at the top; read source data frame raw_{domain_lower} and dm
+  (both already in the R session, do NOT read/import them from a file)
+- Set DOMAIN = "{domain}"
+- Derive {prefix}SEQ as a sequence number within each subject: group_by(USUBJID) |>
+  mutate({prefix}SEQ = row_number())
+- Derive USUBJID = paste(STUDYID, SITEID, SUBJID, sep = "-") or join from dm
+- Each test parameter becomes one row: set {prefix}TESTCD and {prefix}TEST per measurement
+- If source is wide format (one column per test), pivot_longer() to vertical (one row per test)
+- If source is already vertical, map directly
+- Map {prefix}ORRES (original result as character), {prefix}ORRESU (original units) from source
+- Derive {prefix}STRESC (standardized character result) and {prefix}STRESN (numeric result)
+- Derive {prefix}STRESU (standard units) - apply unit conversions if needed
+- Map VISITNUM, VISIT from source visit data
+- Map {prefix}DTC from source collection date (ISO 8601 character format)
+- Derive {prefix}DY as study day relative to RFSTDTC from dm
+- Handle {prefix}STAT = "NOT DONE" and {prefix}REASND for missing measurements
+- Assign the final result to a data frame named {domain_lower}
+- Sort with arrange(STUDYID, USUBJID, {prefix}TESTCD, VISITNUM, {prefix}DTC)
+- select() only the spec variables, in order, at the end — this is R's equivalent of a KEEP statement
+- R has no length/label/format statements — do NOT emit them; use a comment instead to note each
+  variable's label from the spec
+- For ISO 8601 date strings (--DTC variables), parse with as.Date(substr(dtc, 1, 10)) — do not
+  invent other date formats
+- Add clear comments for each derivation section
+- Use # -- BEGIN {domain} -- # and # -- END {domain} -- # markers
+
+Generate the complete R script. No explanations, just the code, no markdown fences."""
+
+
+def build_fae_prompt(domain, variables, language="sas"):
     """Prompt for Findings About Events domains (TU, TR, RS)."""
+    if language == "r":
+        return _build_fae_prompt_r(domain, variables)
     var_table = _var_table(variables)
     domain_lower = domain.lower()
     prefix = domain[:2]
@@ -308,8 +465,45 @@ Requirements:
 Generate the complete SAS program. No explanations, just the code."""
 
 
-def build_supp_prompt(domain, variables):
+def _build_fae_prompt_r(domain, variables):
+    var_table = _var_table(variables)
+    domain_lower = domain.lower()
+    prefix = domain[:2]
+    return f"""You are a senior CDISC SDTM programmer working in R (tidyverse). Generate a complete,
+production-quality R script for the {domain} domain (Findings About Events class - tumor/response
+assessments).
+
+SDTM specification for {domain}:
+{var_table}
+
+Requirements:
+- library(dplyr) at the top; read source data frames raw_{domain_lower} and dm (both already in
+  the R session, do NOT read/import them from a file)
+- Set DOMAIN = "{domain}"
+- Derive {prefix}SEQ as a sequence number within each subject: group_by(USUBJID) |>
+  mutate({prefix}SEQ = row_number())
+- Derive USUBJID from dm (join)
+- Each assessment becomes one row: set {prefix}TESTCD and {prefix}TEST per measurement
+- Map {prefix}ORRES (original result), {prefix}STRESC, {prefix}STRESN from source
+- Map {prefix}EVAL (evaluator: INVESTIGATOR or INDEPENDENT ASSESSOR)
+- Map {prefix}LNKID for linking between TU/TR/RS domains
+- Map VISITNUM, VISIT, {prefix}DTC from source
+- Derive {prefix}DY relative to RFSTDTC from dm
+- Apply {prefix}CAT for assessment criteria (e.g. RECIST 1.1)
+- Assign the final result to a data frame named {domain_lower}
+- Sort with arrange(STUDYID, USUBJID, {prefix}TESTCD, VISITNUM, {prefix}DTC)
+- select() only the spec variables, in order, at the end — this is R's equivalent of a KEEP statement
+- R has no length/label/format statements — do NOT emit them; use a comment instead to note each
+  variable's label from the spec
+- Use # -- BEGIN {domain} -- # and # -- END {domain} -- # markers
+
+Generate the complete R script. No explanations, just the code, no markdown fences."""
+
+
+def build_supp_prompt(domain, variables, language="sas"):
     """Prompt for SUPP-- domains - vertical QNAM/QVAL structure."""
+    if language == "r":
+        return _build_supp_prompt_r(domain, variables)
     var_table = _var_table(variables)
     parent = domain.replace("SUPP", "")
     parent_lower = parent.lower()
@@ -363,39 +557,94 @@ Requirements:
 Generate the complete SAS program. No explanations, just the code."""
 
 
+def _build_supp_prompt_r(domain, variables):
+    var_table = _var_table(variables)
+    parent = domain.replace("SUPP", "")
+    parent_lower = parent.lower()
+
+    structural = [v for v in variables if v.get("Variable") in
+                  ("STUDYID", "RDOMAIN", "USUBJID", "IDVAR", "IDVARVAL",
+                   "QNAM", "QLABEL", "QVAL", "QORIG", "QEVAL")]
+    qualifiers = [v for v in variables if v.get("Variable") not in
+                  ("STUDYID", "RDOMAIN", "USUBJID", "IDVAR", "IDVARVAL",
+                   "QNAM", "QLABEL", "QVAL", "QORIG", "QEVAL")]
+
+    qual_list = []
+    for q in qualifiers:
+        qual_list.append(f"  QNAM='{q['Variable']}', QLABEL='{q.get('Label', q['Variable'])}'")
+
+    return f"""You are a senior CDISC SDTM programmer working in R (tidyverse). Generate a complete,
+production-quality R script for the {domain} supplemental qualifier domain.
+
+Parent domain: {parent}
+RDOMAIN = "{parent}"
+IDVAR = "{parent}SEQ"
+
+SUPP structure (fixed columns):
+{_var_table(structural)}
+
+Qualifier variables to transpose into QNAM/QVAL rows:
+{chr(10).join(qual_list)}
+
+Requirements:
+- library(dplyr), library(tidyr) at the top; read source data frame raw_{parent_lower} and the
+  already-built {parent_lower} data frame (for {parent}SEQ values), both already in the R session
+- For each qualifier variable, create one row per subject per parent record:
+  - STUDYID = study constant
+  - RDOMAIN = "{parent}"
+  - USUBJID = from parent
+  - IDVAR = "{parent}SEQ"
+  - IDVARVAL = as.character({parent}SEQ)
+  - QNAM = variable name (e.g. "{qualifiers[0]["Variable"] if qualifiers else "QVAR"}")
+  - QLABEL = variable label
+  - QVAL = the actual data value (always character)
+  - QORIG = "CRF"
+  - QEVAL = NA_character_ (unless evaluator-dependent)
+- Stack all qualifier rows together — pivot_longer() from wide qualifier columns to QNAM/QVAL rows,
+  or bind_rows() of one data frame per qualifier
+- Only keep rows where QVAL is non-missing (filter(!is.na(QVAL)))
+- Assign the final result to a data frame named {domain.lower()}
+- Sort with arrange(STUDYID, RDOMAIN, USUBJID, IDVAR, IDVARVAL, QNAM)
+- R has no length/label/format statements — do NOT emit them
+- Use # -- BEGIN {domain} -- # and # -- END {domain} -- # markers
+
+Generate the complete R script. No explanations, just the code, no markdown fences."""
+
+
 # ── Build prompt router ─────────────────────────────────────────────
 
-def build_domain_prompt(domain, variables):
+def build_domain_prompt(domain, variables, language="sas"):
     """Route to the correct prompt builder based on domain class."""
     dclass = get_domain_class(domain)
 
     if dclass == "DM":
-        return build_dm_prompt(domain, variables)
+        return build_dm_prompt(domain, variables, language)
     elif dclass == "Events":
-        return build_events_prompt(domain, variables)
+        return build_events_prompt(domain, variables, language)
     elif dclass == "Interventions":
-        return build_interventions_prompt(domain, variables)
+        return build_interventions_prompt(domain, variables, language)
     elif dclass == "Findings":
-        return build_findings_prompt(domain, variables)
+        return build_findings_prompt(domain, variables, language)
     elif dclass == "Findings About Events":
-        return build_fae_prompt(domain, variables)
+        return build_fae_prompt(domain, variables, language)
     elif dclass == "SUPP":
-        return build_supp_prompt(domain, variables)
+        return build_supp_prompt(domain, variables, language)
     else:
-        return build_events_prompt(domain, variables)
+        return build_events_prompt(domain, variables, language)
 
 
 # ── Three-agent pipeline ────────────────────────────────────────────
 
-def generate_domain_program(domain, variables, use_api=True):
+def generate_domain_program(domain, variables, use_api=True, language="sas"):
     """
-    Generate a complete SAS program for one SDTM domain
+    Generate a complete SAS or R program for one SDTM domain
     using the three-agent pipeline: Writer -> Improver -> Reviewer.
     """
     dclass = get_domain_class(domain)
-    prompt = build_domain_prompt(domain, variables)
+    prompt = build_domain_prompt(domain, variables, language)
+    lang_name = "R" if language == "r" else "SAS"
 
-    print(f"\n  [{domain}] Generating SAS program ({dclass}, {len(variables)} variables)")
+    print(f"\n  [{domain}] Generating {lang_name} program ({dclass}, {len(variables)} variables)")
 
     # Step 1: Writer
     print(f"    Writer: ", end="", flush=True)
@@ -417,7 +666,24 @@ def generate_domain_program(domain, variables, use_api=True):
     if use_api:
         print(f"    Improver: API ({API_MODEL})")
         var_names = [v["Variable"] for v in variables if v.get("Variable")]
-        improve_prompt = f"""You are a principal SAS programmer with 15+ years of CDISC SDTM experience.
+        if language == "r":
+            improve_prompt = f"""You are a principal R programmer (tidyverse) with 15+ years of CDISC SDTM experience.
+Review and improve this R script for the {domain} domain.
+
+The script must create all these variables: {', '.join(var_names)}
+
+Fix any issues:
+- Missing or incorrect variable derivations
+- Wrong types (character vs numeric, typed NA_character_/NA_real_)
+- Missing select() at the end restricting to the spec variables
+- Missing or incorrect sort order (arrange())
+- Hardcoded values that should be derived
+- Non-standard date handling (must parse ISO 8601 --DTC strings via as.Date(substr(x,1,10)))
+- Do NOT flag valid R for not looking like SAS (no run;, no length/label/format, no semicolons)
+
+Return ONLY the improved R code, no explanations, no markdown fences.""" + "\n\n" + draft
+        else:
+            improve_prompt = f"""You are a principal SAS programmer with 15+ years of CDISC SDTM experience.
 Review and improve this SAS program for the {domain} domain.
 
 The program must create all these variables: {', '.join(var_names)}
@@ -444,7 +710,6 @@ Return ONLY the improved SAS code, no explanations.""" + "\n\n" + draft
     # Step 3: Reviewer
     if use_api:
         print(f"    Reviewer: API ({API_MODEL})")
-        var_names = [v["Variable"] for v in variables if v.get("Variable")]
         review = review_sas(draft)
         if review:
             print(f"    Review: {review[:100]}...")
@@ -456,10 +721,10 @@ Return ONLY the improved SAS code, no explanations.""" + "\n\n" + draft
 
 # ── Program assembly ────────────────────────────────────────────────
 
-def assemble_program(domain, code, variables):
+def assemble_program(domain, code, variables, language="sas"):
     """
     Wrap the generated code in a standard SDTM program structure:
-    header comment, libname, code, proc contents.
+    header comment, libname/library, code, verification footer.
     """
     domain_lower = domain.lower()
     dclass = get_domain_class(domain)
@@ -468,7 +733,31 @@ def assemble_program(domain, code, variables):
     # Build variable list for the header
     var_names = [v["Variable"] for v in variables if v.get("Variable")]
 
-    header = f"""/*******************************************************************************
+    if language == "r":
+        ext = "R"
+        header = f"""# ********************************************************************
+# Program:    {domain_lower}.R
+# Domain:     {domain} ({dclass})
+# Purpose:    Create SDTM {domain} domain data frame
+# Variables:  {n_vars}
+# Generated:  SpecGen Phase 5c - SDTM Program Generation (target = r)
+#
+# Output:     {domain_lower} data frame ({domain} domain dataset)
+#
+# Variables:  {', '.join(var_names[:8])}
+#             {'...' if len(var_names) > 8 else ''}
+# ********************************************************************
+"""
+        footer = f"""
+# -- Verification -- #
+# glimpse({domain_lower})
+# table({domain_lower}$DOMAIN)
+
+# End of {domain_lower}.R
+"""
+    else:
+        ext = "sas"
+        header = f"""/*******************************************************************************
 * Program:    {domain_lower}.sas
 * Domain:     {domain} ({dclass})
 * Purpose:    Create SDTM {domain} domain dataset
@@ -486,8 +775,7 @@ def assemble_program(domain, code, variables):
 libname raw  'C:\\sas_data\\raw'  access=readonly;
 libname sdtm 'C:\\sas_data\\sdtm';
 """
-
-    footer = f"""
+        footer = f"""
 /*-- Final sort and output verification --*/
 proc sort data=sdtm.{domain_lower};
   by STUDYID USUBJID;
@@ -517,17 +805,18 @@ run;
 
 # ── Main entry points ───────────────────────────────────────────────
 
-def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=False):
-    """Generate the SAS program for one domain.
+def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=False, language="sas"):
+    """Generate the SAS or R program for one domain.
 
-    By default, skips generation if output_dir/<domain>.sas already exists —
+    By default, skips generation if output_dir/<domain>.<ext> already exists —
     each Writer/Improver run is a fresh, non-deterministic draft, so
     regenerating on every call would silently overwrite any hand-QC fix
     applied to a prior draft (see ROADMAP.md Phase 10 piece 3). Pass
     force=True to regenerate anyway (e.g. after a spec change).
     """
     domain_lower = domain.lower()
-    output_file = os.path.join(output_dir, f"{domain_lower}.sas")
+    ext = "R" if language == "r" else "sas"
+    output_file = os.path.join(output_dir, f"{domain_lower}.{ext}")
     if not force and os.path.exists(output_file):
         print(f"  [{domain}] Skipping — {output_file} already exists (use --force to regenerate)")
         return output_file
@@ -537,12 +826,12 @@ def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=Fa
         print(f"  No variables found for domain {domain}")
         return None
 
-    code, writer_model = generate_domain_program(domain, variables, use_api=use_api)
+    code, writer_model = generate_domain_program(domain, variables, use_api=use_api, language=language)
     if not code:
         print(f"  Failed to generate code for {domain}")
         return None
 
-    program = assemble_program(domain, code, variables)
+    program = assemble_program(domain, code, variables, language=language)
 
     # Write to file
     os.makedirs(output_dir, exist_ok=True)
@@ -568,22 +857,25 @@ def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=Fa
     return output_file
 
 
-FOOTER_MARKER = "/*-- Final sort and output verification --*/"
+SAS_FOOTER_MARKER = "/*-- Final sort and output verification --*/"
+R_FOOTER_MARKER = "# -- Verification -- #"
 
 
-def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=False):
+def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=False, language="sas"):
     """Generate a SUPP-- domain and append its code into its PARENT domain's
-    .sas file (e.g. SUPPAE lives inside ae.sas) instead of writing a separate
-    program. SUPP-- is a supplemental-qualifier view of the same dataset, not
-    an independent domain — most SOPs build it in the same program as its
-    parent, since it shares the same source pull.
+    output file (e.g. SUPPAE lives inside ae.sas/ae.R) instead of writing a
+    separate program. SUPP-- is a supplemental-qualifier view of the same
+    dataset, not an independent domain — most SOPs build it in the same
+    program as its parent, since it shares the same source pull.
 
     Skips (like generate_single_domain) if the parent file already has this
-    SUPP domain's /*-- BEGIN {supp_domain} --*/ marker, unless force=True, in
-    which case the old block is cut out and replaced with a fresh one.
+    SUPP domain's BEGIN marker, unless force=True, in which case the old
+    block is cut out and replaced with a fresh one.
     """
+    ext = "R" if language == "r" else "sas"
+    footer_marker = R_FOOTER_MARKER if language == "r" else SAS_FOOTER_MARKER
     parent = supp_domain.replace("SUPP", "")
-    parent_file = os.path.join(output_dir, f"{parent.lower()}.sas")
+    parent_file = os.path.join(output_dir, f"{parent.lower()}.{ext}")
     if not os.path.exists(parent_file):
         print(f"  [{supp_domain}] Parent domain file {parent_file} not found — skipping")
         return None
@@ -591,8 +883,12 @@ def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=F
     with open(parent_file, encoding="utf-8") as f:
         parent_code = f.read()
 
-    begin_marker = f"/*-- BEGIN {supp_domain} --*/"
-    end_marker = f"/*-- END {supp_domain} --*/"
+    if language == "r":
+        begin_marker = f"# -- BEGIN {supp_domain} -- #"
+        end_marker = f"# -- END {supp_domain} -- #"
+    else:
+        begin_marker = f"/*-- BEGIN {supp_domain} --*/"
+        end_marker = f"/*-- END {supp_domain} --*/"
     already_present = begin_marker in parent_code
 
     if already_present and not force:
@@ -604,7 +900,7 @@ def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=F
         print(f"  No variables found for domain {supp_domain}")
         return None
 
-    code, writer_model = generate_domain_program(supp_domain, variables, use_api=use_api)
+    code, writer_model = generate_domain_program(supp_domain, variables, use_api=use_api, language=language)
     if not code:
         print(f"  Failed to generate code for {supp_domain}")
         return None
@@ -620,8 +916,8 @@ def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=F
     if already_present:  # force=True got us here — cut out the stale block first
         pattern = re.compile(re.escape(begin_marker) + r".*?" + re.escape(end_marker), re.DOTALL)
         parent_code = pattern.sub(clean_code, parent_code, count=1)
-    elif FOOTER_MARKER in parent_code:
-        parent_code = parent_code.replace(FOOTER_MARKER, supp_block + "\n" + FOOTER_MARKER, 1)
+    elif footer_marker in parent_code:
+        parent_code = parent_code.replace(footer_marker, supp_block + "\n" + footer_marker, 1)
     else:
         parent_code = parent_code + supp_block
 
@@ -646,9 +942,9 @@ def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=F
     return parent_file
 
 
-def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, force=False):
+def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, force=False, language="sas"):
     """
-    Generate SAS programs for all domains in the spec.
+    Generate SAS or R programs for all domains in the spec.
     Processes standard domains first, then SUPP domains
     (SUPP needs parent domain to exist first).
 
@@ -668,6 +964,7 @@ def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, forc
     print(f"SpecGen Phase 5c: SDTM Program Generation")
     print(f"  Spec: {xlsx_path}")
     print(f"  Output: {output_dir}")
+    print(f"  Language: {'R' if language == 'r' else 'SAS'}")
     print(f"  Standard domains ({len(std_domains)}): {', '.join(std_domains)}")
     print(f"  SUPP domains ({len(supp_domains)}): {', '.join(supp_domains)}")
     print(f"  Mode: {'API' if use_api else 'Offline'}{' (force regenerate)' if force else ''}")
@@ -677,16 +974,16 @@ def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, forc
 
     # Standard domains first
     for domain in std_domains:
-        result = generate_single_domain(xlsx_path, domain, output_dir, use_api, force=force)
+        result = generate_single_domain(xlsx_path, domain, output_dir, use_api, force=force, language=language)
         if result:
             results[domain] = result
         else:
             failed.append(domain)
 
     # SUPP domains after (they reference parent domain) — appended into the
-    # parent domain's own .sas file, not written as a separate program
+    # parent domain's own output file, not written as a separate program
     for domain in supp_domains:
-        result = append_supp_domain(xlsx_path, domain, output_dir, use_api, force=force)
+        result = append_supp_domain(xlsx_path, domain, output_dir, use_api, force=force, language=language)
         if result:
             results[domain] = result
         else:
@@ -720,16 +1017,19 @@ if __name__ == "__main__":
     parser.add_argument("--offline", action="store_true",
                         help="Use local Ollama only, no API calls")
     parser.add_argument("--force", action="store_true",
-                        help="Regenerate domains even if their output .sas file already "
+                        help="Regenerate domains even if their output file already "
                              "exists (default: skip existing files, so hand-QC fixes "
                              "aren't overwritten by a fresh draft)")
+    parser.add_argument("--lang", choices=["sas", "r"], default="sas",
+                        help="Output language (default: sas)")
 
     args = parser.parse_args()
 
     if args.domain:
         domains = [d.strip().upper() for d in args.domain.split(",")]
         generate_all_domains(args.spec, args.output,
-                             use_api=not args.offline, domains=domains, force=args.force)
+                             use_api=not args.offline, domains=domains, force=args.force,
+                             language=args.lang)
     else:
         generate_all_domains(args.spec, args.output,
-                             use_api=not args.offline, force=args.force)
+                             use_api=not args.offline, force=args.force, language=args.lang)

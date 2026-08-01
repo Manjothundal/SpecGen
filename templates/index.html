@@ -166,9 +166,8 @@
         <span class="seglabel">Language</span>
         <div class="seg lang">
           <button type="submit" name="lang" value="sas" class="{{ 'on' if lang=='sas' or not lang else '' }}">SAS</button>
-          <button type="submit" name="lang" value="r" class="{{ 'on' if lang=='r' else '' }}" {% if otype == 'sdtm' %}disabled title="SDTM generation is SAS-only — no R path exists yet"{% endif %}>R</button>
+          <button type="submit" name="lang" value="r" class="{{ 'on' if lang=='r' else '' }}">R</button>
         </div>
-        {% if otype == 'sdtm' %}<span class="seglabel" style="text-transform:none;font-weight:400;color:var(--slate)">(SDTM is SAS-only)</span>{% endif %}
         <span class="privacy {{ mode or 'hybrid' }}">
           {% if mode == 'offline' %}Specs never leave this machine
           {% elif mode == 'api' %}Best quality · specs sent to API

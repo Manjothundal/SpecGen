@@ -237,9 +237,7 @@ def generate_tlf(lang, shells=None):
 
 
 def generate_sdtm(lang, mode, spec_path=None):
-    """Run sdtm_assembler.py as a subprocess, then read the .sas files back.
-    Note: SDTM generation is SAS-only in the current assembler; lang is ignored
-    here and we tell the user.
+    """Run sdtm_assembler.py as a subprocess, then read the .sas/.R files back.
 
     sdtm_assembler.py skips domains whose output file already exists unless
     --force is passed, so a hand-QC'd fix in sdtm_programs/ survives repeat
@@ -264,8 +262,9 @@ def generate_sdtm(lang, mode, spec_path=None):
     # don't have their own file (append_supp_domain merges them into their
     # parent's), so only list the non-SUPP domains here.
     domains = [d for d in sdtm_assembler.list_domains(spec_path) if not d.startswith("SUPP")]
+    ext = "R" if lang == "r" else "sas"
 
-    cmd = [sys.executable, "sdtm_assembler.py", spec_path]
+    cmd = [sys.executable, "sdtm_assembler.py", spec_path, "--lang", lang]
     if mode == "offline":
         cmd.append("--offline")
     if force:
@@ -276,7 +275,7 @@ def generate_sdtm(lang, mode, spec_path=None):
         return {"(error)": f"sdtm_assembler failed:\n{e.stderr}"}
 
     for domain in domains:
-        path = os.path.join("sdtm_programs", f"{domain.lower()}.sas")
+        path = os.path.join("sdtm_programs", f"{domain.lower()}.{ext}")
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
                 out[domain.lower()] = f.read()
@@ -442,8 +441,6 @@ def parse_spec():
     otype = request.form.get("otype", RUN_STATE["otype"] or "adam")
     lang = request.form.get("lang", RUN_STATE["lang"])
     mode = request.form.get("mode", RUN_STATE["mode"])
-    if otype == "sdtm":
-        lang = "sas"  # SDTM has no R path — keep RUN_STATE honest, not just the one-time note
     RUN_STATE.update(otype=otype, lang=lang, mode=mode)
 
     uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
@@ -491,9 +488,6 @@ def generate():
         lang = request.form.get("lang", RUN_STATE["lang"])
         mode = request.form.get("mode", RUN_STATE["mode"])
         note = None
-        if otype == "sdtm" and lang == "r":
-            note = "SDTM generation is currently SAS-only; showing SAS programs."
-            lang = "sas"  # keep RUN_STATE honest, not just this one response's note
         RUN_STATE.update(otype=otype, lang=lang, mode=mode)
 
         uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
