@@ -73,6 +73,7 @@ RUN_STATE = {
     "exported_files": [],
     "last_commit": None,
     "uploaded_paths": [],   # persists across the Spec -> Generate request boundary
+    "uploaded_for_otype": None,  # which otype uploaded_paths belongs to
 }
 
 # Uploads are saved here once per run and reused across the Spec -> Generate
@@ -105,12 +106,21 @@ def _save_uploads(files):
     return saved
 
 
-def _resolve_uploads(files):
+def _resolve_uploads(files, otype):
     """New files this request replace any previously uploaded ones; otherwise
-    reuse what's already stored in RUN_STATE from an earlier step."""
+    reuse what's already stored in RUN_STATE from an earlier step — but ONLY
+    if it was uploaded for the SAME otype. Without this, uploading a file for
+    one otype (e.g. an SDTM spec) then switching to another (e.g. TLF) would
+    silently hand that same file to the new otype's generator, which expects
+    a completely different sheet structure and crashes instead of falling
+    back to the sample defaults.
+    """
     new_uploads = _save_uploads(files)
     if new_uploads:
         RUN_STATE["uploaded_paths"] = new_uploads
+        RUN_STATE["uploaded_for_otype"] = otype
+    elif RUN_STATE.get("uploaded_for_otype") != otype:
+        return []
     return RUN_STATE["uploaded_paths"]
 
 
@@ -414,7 +424,7 @@ def parse_spec():
     mode = request.form.get("mode", RUN_STATE["mode"])
     RUN_STATE.update(otype=otype, lang=lang, mode=mode)
 
-    uploaded = _resolve_uploads(request.files.getlist("spec_file"))
+    uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
     routing = {}
     if otype == "adam":
         acrf_path, adsl_spec_path = _classify_adam_uploads(uploaded)
@@ -464,15 +474,22 @@ def generate():
         if otype == "sdtm" and lang == "r":
             note = "SDTM generation is currently SAS-only; showing SAS programs."
 
-        uploaded = _resolve_uploads(request.files.getlist("spec_file"))
+        uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
         adsl_context = None
-        if otype == "adam":
-            acrf_path, adsl_spec_path = _classify_adam_uploads(uploaded)
-            programs, adsl_context = generate_adam(lang, mode, acrf_path, adsl_spec_path)
-        elif otype == "tlf":
-            programs = generate_tlf(lang, shells=uploaded or None)
-        else:
-            programs = generate_sdtm(lang, mode, spec_path=uploaded[0] if uploaded else None)
+        try:
+            if otype == "adam":
+                acrf_path, adsl_spec_path = _classify_adam_uploads(uploaded)
+                programs, adsl_context = generate_adam(lang, mode, acrf_path, adsl_spec_path)
+            elif otype == "tlf":
+                programs = generate_tlf(lang, shells=uploaded or None)
+            else:
+                programs = generate_sdtm(lang, mode, spec_path=uploaded[0] if uploaded else None)
+        except Exception as e:
+            # An uploaded file can be almost anything (wrong sheet names, wrong
+            # shape, corrupted) — surface that as a normal in-app error instead
+            # of a raw Flask traceback page, and leave any earlier successful
+            # run's blocks/programs alone rather than partially overwriting them.
+            return _render("generate", note=f"Generation failed: {e}")
 
         RUN_STATE["programs"] = programs
         RUN_STATE["exported_files"] = []
