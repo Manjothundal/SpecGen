@@ -442,6 +442,8 @@ def parse_spec():
     otype = request.form.get("otype", RUN_STATE["otype"] or "adam")
     lang = request.form.get("lang", RUN_STATE["lang"])
     mode = request.form.get("mode", RUN_STATE["mode"])
+    if otype == "sdtm":
+        lang = "sas"  # SDTM has no R path — keep RUN_STATE honest, not just the one-time note
     RUN_STATE.update(otype=otype, lang=lang, mode=mode)
 
     uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
@@ -488,10 +490,11 @@ def generate():
         otype = request.form.get("otype", RUN_STATE["otype"] or "adam")
         lang = request.form.get("lang", RUN_STATE["lang"])
         mode = request.form.get("mode", RUN_STATE["mode"])
-        RUN_STATE.update(otype=otype, lang=lang, mode=mode)
         note = None
         if otype == "sdtm" and lang == "r":
             note = "SDTM generation is currently SAS-only; showing SAS programs."
+            lang = "sas"  # keep RUN_STATE honest, not just this one response's note
+        RUN_STATE.update(otype=otype, lang=lang, mode=mode)
 
         uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
         adsl_context = None

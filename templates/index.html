@@ -46,6 +46,7 @@
   .seg button:last-child{border-right:0;}
   .seg button.on{background:var(--teal); color:#fff; font-weight:600;}
   .seg.lang button.on{background:var(--ink);}
+  .seg button:disabled{cursor:not-allowed; color:#B9C6CE; background:#F4F7F9;}
   .seglabel{font-size:.72rem; color:var(--slate); text-transform:uppercase; letter-spacing:.06em; font-weight:700;}
   .privacy{font-size:.8rem; padding:5px 12px; border-radius:99px; font-weight:600;}
   .privacy.offline{background:#EFE9F8; color:var(--local);}
@@ -165,8 +166,9 @@
         <span class="seglabel">Language</span>
         <div class="seg lang">
           <button type="submit" name="lang" value="sas" class="{{ 'on' if lang=='sas' or not lang else '' }}">SAS</button>
-          <button type="submit" name="lang" value="r" class="{{ 'on' if lang=='r' else '' }}">R</button>
+          <button type="submit" name="lang" value="r" class="{{ 'on' if lang=='r' else '' }}" {% if otype == 'sdtm' %}disabled title="SDTM generation is SAS-only — no R path exists yet"{% endif %}>R</button>
         </div>
+        {% if otype == 'sdtm' %}<span class="seglabel" style="text-transform:none;font-weight:400;color:var(--slate)">(SDTM is SAS-only)</span>{% endif %}
         <span class="privacy {{ mode or 'hybrid' }}">
           {% if mode == 'offline' %}Specs never leave this machine
           {% elif mode == 'api' %}Best quality · specs sent to API
