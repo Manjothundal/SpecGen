@@ -17,157 +17,174 @@ libname raw  'C:\sas_data\raw'  access=readonly;
 libname sdtm 'C:\sas_data\sdtm';
 
 /*===========================================================================*/
-/* Program Name: SDTM_TR.sas                                                 */
-/* Description:  Create SDTM TR domain (Tumor Response Assessments)          */
-/* Domain:       TR (Findings About Events)                                  */
+/* Program Name: TR.sas                                                      */
+/* Description:  Create SDTM TR (Tumor/Lesion Results) Domain                */
 /*===========================================================================*/
 
 /*-- BEGIN TR --*/
 
-%let keepvars = STUDYID DOMAIN USUBJID TRSEQ TRTESTCD TRTEST TRCAT 
-                TRORRES TRSTRESC TRSTRESN TRSTRESU TREVAL TRLNKID 
-                VISITNUM VISIT TRDTC TRDY;
+****************************************************************************;
+** Read source TR data and merge with DM for subject-level variables      **;
+****************************************************************************;
 
-* Read DM domain for subject-level data;
-proc sort data=raw.dm out=dm(keep=STUDYID USUBJID RFSTDTC);
-    by STUDYID USUBJID;
+proc sort data=raw.dm(keep=usubjid studyid rfstdtc) out=dm nodupkey;
+    by usubjid;
 run;
 
-* Read raw TR data;
-data tr_raw;
-    set raw.tr;
+proc sort data=raw.tr out=tr_src;
+    by usubjid;
 run;
 
-* Sort raw TR data;
-proc sort data=tr_raw;
-    by STUDYID USUBJID;
-run;
-
-* Merge with DM and create TR domain;
-data tr_pre;
-    merge tr_raw(in=a)
+data tr_merged;
+    merge tr_src(in=a)
           dm(in=b);
-    by STUDYID USUBJID;
-    if a;
+    by usubjid;
+    if a and b;
+run;
+
+****************************************************************************;
+** Create TR domain                                                        **;
+****************************************************************************;
+
+data sdtm.tr;
+    set tr_merged;
+    by usubjid;
     
-    length STUDYID $20 DOMAIN $2 USUBJID $40 TRTESTCD $8 TRTEST $40 
-           TRCAT $200 TRORRES $200 TRSTRESC $200 TRSTRESU $20 
-           TREVAL $40 TRLNKID $200 VISIT $200 TRDTC $20;
+    length STUDYID      $20
+           DOMAIN       $2
+           USUBJID      $40
+           TRSEQ        8
+           TRTESTCD     $8
+           TRTEST       $40
+           TRCAT        $40
+           TRORRES      $200
+           TRSTRESC     $200
+           TRSTRESN     8
+           TRSTRESU     $40
+           TREVAL       $40
+           TRLNKID      $40
+           VISITNUM     8
+           VISIT        $40
+           TRDTC        $20
+           TRDY         8;
     
-    * Set domain;
+    ** Retain sequence counter **;
+    retain TRSEQ;
+    if first.usubjid then TRSEQ = 0;
+    TRSEQ + 1;
+    
+    ** Set Domain **;
     DOMAIN = 'TR';
     
-    * Map test code and test name;
-    TRTESTCD = upcase(strip(TRTESTCD));
-    TRTEST = strip(TRTEST);
+    ** STUDYID and USUBJID from DM **;
+    STUDYID = studyid;
+    USUBJID = usubjid;
     
-    * Map category;
-    TRCAT = strip(TRCAT);
+    ** Test Code and Test Name **;
+    TRTESTCD = upcase(strip(trtestcd));
+    TRTEST = strip(trtest);
     
-    * Map original results;
-    TRORRES = strip(TRORRES);
+    ** Category **;
+    if not missing(trcat) then TRCAT = strip(trcat);
     
-    * Derive character result in standard format;
-    if not missing(TRORRES) then TRSTRESC = strip(TRORRES);
-    else TRSTRESC = '';
+    ** Original Result **;
+    TRORRES = strip(trorres);
     
-    * Derive numeric result;
-    if not missing(TRSTRESN) then TRSTRESN = TRSTRESN;
-    else if not missing(TRORRES) and notdigit(compress(TRORRES)) = 0 then 
-        TRSTRESN = input(TRORRES, ?best.);
+    ** Standard Character Result **;
+    TRSTRESC = strip(trorres);
     
-    * Map standard units;
-    TRSTRESU = strip(TRSTRESU);
-    
-    * Map evaluator;
-    TREVAL = strip(TREVAL);
-    
-    * Map link ID;
-    TRLNKID = strip(TRLNKID);
-    
-    * Map visit information;
-    if not missing(VISITNUM) then VISITNUM = VISITNUM;
-    VISIT = strip(VISIT);
-    
-    * Map date/time of collection (ISO 8601);
-    TRDTC = strip(TRDTC);
-    
-    * Derive study day;
-    if not missing(TRDTC) and not missing(RFSTDTC) and 
-       length(strip(TRDTC)) >= 10 and length(strip(RFSTDTC)) >= 10 then do;
-        length trdtc_num rfstdtc_num 8;
-        trdtc_num = input(substr(strip(TRDTC),1,10), ??yymmdd10.);
-        rfstdtc_num = input(substr(strip(RFSTDTC),1,10), ??yymmdd10.);
-        
-        if not missing(trdtc_num) and not missing(rfstdtc_num) then do;
-            if trdtc_num >= rfstdtc_num then 
-                TRDY = trdtc_num - rfstdtc_num + 1;
-            else 
-                TRDY = trdtc_num - rfstdtc_num;
-        end;
-        
-        drop trdtc_num rfstdtc_num;
+    ** Numeric Result **;
+    if not missing(trstresn) then TRSTRESN = trstresn;
+    else if not missing(trorres) and anydigit(strip(trorres)) then do;
+        TRSTRESN = input(compress(trorres, , 'kd'), best.);
     end;
     
-    * Drop RFSTDTC as it's not part of TR domain;
-    drop RFSTDTC;
+    ** Standard Units **;
+    if not missing(trstresu) then TRSTRESU = strip(trstresu);
+    
+    ** Evaluator **;
+    if not missing(treval) then do;
+        if upcase(strip(treval)) = 'INVESTIGATOR' then TREVAL = 'INVESTIGATOR';
+        else if upcase(strip(treval)) in ('INDEPENDENT' 'INDEPENDENT ASSESSOR' 'INDEPENDENT REVIEW') 
+            then TREVAL = 'INDEPENDENT ASSESSOR';
+        else TREVAL = strip(treval);
+    end;
+    
+    ** Link ID **;
+    if not missing(trlnkid) then TRLNKID = strip(trlnkid);
+    
+    ** Visit Number **;
+    if not missing(visitnum) then VISITNUM = visitnum;
+    
+    ** Visit Name **;
+    if not missing(visit) then VISIT = strip(visit);
+    
+    ** Date/Time of Collection **;
+    if not missing(trdtc) then TRDTC = strip(trdtc);
+    
+    ** Derive Study Day **;
+    if not missing(trdtc) and not missing(rfstdtc) then do;
+        if length(strip(trdtc)) >= 10 and length(strip(rfstdtc)) >= 10 then do;
+            _trdt = input(substr(strip(trdtc), 1, 10), ??yymmdd10.);
+            _rfstdt = input(substr(strip(rfstdtc), 1, 10), ??yymmdd10.);
+            if not missing(_trdt) and not missing(_rfstdt) then do;
+                if _trdt >= _rfstdt then TRDY = _trdt - _rfstdt + 1;
+                else TRDY = _trdt - _rfstdt;
+            end;
+        end;
+    end;
+    
+    ** Apply Labels **;
+    label STUDYID   = "Study Identifier"
+          DOMAIN    = "Domain Abbreviation"
+          USUBJID   = "Unique Subject Identifier"
+          TRSEQ     = "Sequence Number"
+          TRTESTCD  = "Tumor/Lesion Result Short Name"
+          TRTEST    = "Tumor/Lesion Result Name"
+          TRCAT     = "Category for Tumor/Lesion"
+          TRORRES   = "Result or Finding in Original Units"
+          TRSTRESC  = "Character Result/Finding in Std Format"
+          TRSTRESN  = "Numeric Result/Finding in Standard Units"
+          TRSTRESU  = "Standard Units"
+          TREVAL    = "Evaluator"
+          TRLNKID   = "Link ID"
+          VISITNUM  = "Visit Number"
+          VISIT     = "Visit Name"
+          TRDTC     = "Date/Time of Collection"
+          TRDY      = "Study Day of Collection";
+    
+    ** Keep only required variables **;
+    keep STUDYID DOMAIN USUBJID TRSEQ TRTESTCD TRTEST TRCAT TRORRES 
+         TRSTRESC TRSTRESN TRSTRESU TREVAL TRLNKID VISITNUM VISIT 
+         TRDTC TRDY;
+    
+    ** Drop temporary variables **;
+    drop _trdt _rfstdt rfstdtc;
 run;
 
-* Sort for TRSEQ assignment;
-proc sort data=tr_pre;
-    by STUDYID USUBJID TRTESTCD VISITNUM TRDTC TRLNKID;
-run;
+****************************************************************************;
+** Sort TR domain                                                          **;
+****************************************************************************;
 
-* Assign sequence number;
-data tr_seq;
-    set tr_pre;
-    by STUDYID USUBJID;
-    
-    retain TRSEQ;
-    
-    if first.USUBJID then TRSEQ = 1;
-    else TRSEQ + 1;
-run;
-
-* Apply labels and create final dataset;
-data sdtm.tr;
-    retain &keepvars;
-    set tr_seq;
-    
-    label
-        STUDYID  = "Study Identifier"
-        DOMAIN   = "Domain Abbreviation"
-        USUBJID  = "Unique Subject Identifier"
-        TRSEQ    = "Sequence Number"
-        TRTESTCD = "Tumor Response Test Short Name"
-        TRTEST   = "Tumor Response Test Name"
-        TRCAT    = "Category for Tumor Response"
-        TRORRES  = "Result or Finding in Original Units"
-        TRSTRESC = "Character Result/Finding in Std Format"
-        TRSTRESN = "Numeric Result/Finding in Standard Units"
-        TRSTRESU = "Standard Units"
-        TREVAL   = "Evaluator"
-        TRLNKID  = "Link ID"
-        VISITNUM = "Visit Number"
-        VISIT    = "Visit Name"
-        TRDTC    = "Date/Time of Collection"
-        TRDY     = "Study Day of Collection"
-    ;
-    
-    keep &keepvars;
-run;
-
-* Final sort;
 proc sort data=sdtm.tr;
-    by STUDYID USUBJID TRSEQ;
+    by STUDYID USUBJID TRLNKID TRTESTCD VISITNUM TRDTC TRSEQ;
 run;
 
-* Generate contents and print first 10 records;
-proc contents data=sdtm.tr varnum;
+****************************************************************************;
+** Generate summary report                                                 **;
+****************************************************************************;
+
+proc freq data=sdtm.tr;
+    tables TRTESTCD*TRTEST TRCAT TREVAL / list missing;
+    title "TR Domain - Frequency Summary";
 run;
 
-proc print data=sdtm.tr(obs=10) label;
+proc means data=sdtm.tr n nmiss min max mean median;
+    var TRSTRESN VISITNUM TRDY;
+    title "TR Domain - Numeric Variable Summary";
 run;
+
+title;
 
 /*-- END TR --*/
 

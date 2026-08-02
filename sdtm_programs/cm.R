@@ -12,10 +12,10 @@
 # ********************************************************************
 
 # ==============================================================================
-# Program: CM Domain Derivation
-# Purpose: Create SDTM CM (Concomitant Medications) domain
-# Inputs:  raw_cm, dm
-# Output:  cm
+# Program:       cm.R
+# Description:   SDTM CM (Concomitant Medications) Domain Derivation
+# Study:         [Study Name]
+# Domain:        CM (Interventions Class)
 # ==============================================================================
 
 library(dplyr)
@@ -23,130 +23,119 @@ library(dplyr)
 # -- BEGIN CM --
 
 # ==============================================================================
-# Read source data (assumed to be already loaded in session)
-# raw_cm: Source concomitant medications data
-# dm: Demographics domain for USUBJID and reference dates
+# Read source data
 # ==============================================================================
+# Assumes raw_cm and dm are already loaded in the R session
 
 # ==============================================================================
-# Derive USUBJID and merge reference dates from DM
+# Derive USUBJID from DM domain
 # ==============================================================================
 cm <- raw_cm %>%
   left_join(
-    dm %>% select(STUDYID, USUBJID, RFSTDTC, RFXSTDTC, RFXENDTC),
-    by = c("STUDYID", "USUBJID"),
-    relationship = "many-to-one"
-  ) %>%
-  mutate(
-    # Domain Abbreviation
-    DOMAIN = "CM",
-    
-    # Reported Name of Treatment
-    CMTRT = CMTRT,
-    
-    # Standardized Treatment Name
-    CMDECOD = if_else(!is.na(CMDECOD), CMDECOD, CMTRT),
-    
-    # Category for Intervention
-    CMCAT = CMCAT,
-    
-    # Dose per Administration
-    CMDOSE = as.numeric(CMDOSE),
-    
-    # Dose Units
-    CMDOSU = CMDOSU,
-    
-    # Dosing Frequency per Interval
-    CMDOSFRQ = CMDOSFRQ,
-    
-    # Route of Administration
-    CMROUTE = CMROUTE,
-    
-    # Start Date/Time of Intervention (ISO 8601)
-    CMSTDTC = CMSTDTC,
-    
-    # End Date/Time of Intervention (ISO 8601)
-    CMENDTC = CMENDTC,
-    
-    # ATC Class
-    CMCLAS = CMCLAS,
-    
-    # Indication
-    CMINDC = CMINDC,
-    
-    # Ongoing at Screening
-    CMONGO = CMONGO
+    dm %>% select(STUDYID, USUBJID, SITEID, SUBJID, RFSTDTC),
+    by = c("STUDYID", "SITEID", "SUBJID")
   )
 
 # ==============================================================================
-# Derive study days (--STDY, --ENDY) relative to RFSTDTC
-# Study Day = (Date - RFSTDTC) + 1 if Date >= RFSTDTC
-#           = (Date - RFSTDTC) if Date < RFSTDTC
+# Assign DOMAIN
 # ==============================================================================
 cm <- cm %>%
+  mutate(DOMAIN = "CM")
+
+# ==============================================================================
+# Map reported and standardized treatment names
+# ==============================================================================
+# CMTRT: Reported Name of Treatment
+# CMDECOD: Standardized Treatment Name
+cm <- cm %>%
   mutate(
-    # Parse reference start date
-    RFSTDTC_date = as.Date(substr(RFSTDTC, 1, 10)),
-    
-    # Parse CM start date
-    CMSTDTC_date = if_else(
-      !is.na(CMSTDTC) & nchar(CMSTDTC) >= 10,
-      as.Date(substr(CMSTDTC, 1, 10)),
-      as.Date(NA_character_)
-    ),
-    
-    # Parse CM end date
-    CMENDTC_date = if_else(
-      !is.na(CMENDTC) & nchar(CMENDTC) >= 10,
-      as.Date(substr(CMENDTC, 1, 10)),
-      as.Date(NA_character_)
-    ),
-    
-    # Study Day of Start of Intervention
+    CMTRT = if_else(!is.na(CMTRT), as.character(CMTRT), NA_character_),
+    CMDECOD = if_else(!is.na(CMDECOD), as.character(CMDECOD), NA_character_)
+  )
+
+# ==============================================================================
+# Map dosing information
+# ==============================================================================
+# CMDOSE: Dose per Administration
+# CMDOSU: Dose Units (UNIT codelist)
+# CMDOSFRQ: Dosing Frequency per Interval (FREQ codelist)
+# CMROUTE: Route of Administration (ROUTE codelist)
+cm <- cm %>%
+  mutate(
+    CMDOSE = if_else(!is.na(CMDOSE), as.numeric(CMDOSE), NA_real_),
+    CMDOSU = if_else(!is.na(CMDOSU), as.character(CMDOSU), NA_character_),
+    CMDOSFRQ = if_else(!is.na(CMDOSFRQ), as.character(CMDOSFRQ), NA_character_),
+    CMROUTE = if_else(!is.na(CMROUTE), as.character(CMROUTE), NA_character_)
+  )
+
+# ==============================================================================
+# Map start and end dates (ISO 8601 format)
+# ==============================================================================
+# CMSTDTC: Start Date/Time of Intervention
+# CMENDTC: End Date/Time of Intervention
+cm <- cm %>%
+  mutate(
+    CMSTDTC = if_else(!is.na(CMSTDTC), as.character(CMSTDTC), NA_character_),
+    CMENDTC = if_else(!is.na(CMENDTC), as.character(CMENDTC), NA_character_)
+  )
+
+# ==============================================================================
+# Derive study day relative to RFSTDTC
+# ==============================================================================
+# CMSTDY: Study Day of Start of Intervention
+# CMENDY: Study Day of End of Intervention
+# Study day calculation: if date >= RFSTDTC then (date - RFSTDTC) + 1
+#                        if date < RFSTDTC then (date - RFSTDTC)
+cm <- cm %>%
+  mutate(
     CMSTDY = case_when(
-      is.na(CMSTDTC_date) | is.na(RFSTDTC_date) ~ NA_real_,
-      CMSTDTC_date >= RFSTDTC_date ~ as.numeric(CMSTDTC_date - RFSTDTC_date) + 1,
-      TRUE ~ as.numeric(CMSTDTC_date - RFSTDTC_date)
+      is.na(CMSTDTC) | is.na(RFSTDTC) ~ NA_real_,
+      as.Date(substr(CMSTDTC, 1, 10)) >= as.Date(substr(RFSTDTC, 1, 10)) ~ 
+        as.numeric(as.Date(substr(CMSTDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10))) + 1,
+      TRUE ~ as.numeric(as.Date(substr(CMSTDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10)))
     ),
-    
-    # Study Day of End of Intervention
     CMENDY = case_when(
-      is.na(CMENDTC_date) | is.na(RFSTDTC_date) ~ NA_real_,
-      CMENDTC_date >= RFSTDTC_date ~ as.numeric(CMENDTC_date - RFSTDTC_date) + 1,
-      TRUE ~ as.numeric(CMENDTC_date - RFSTDTC_date)
+      is.na(CMENDTC) | is.na(RFSTDTC) ~ NA_real_,
+      as.Date(substr(CMENDTC, 1, 10)) >= as.Date(substr(RFSTDTC, 1, 10)) ~ 
+        as.numeric(as.Date(substr(CMENDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10))) + 1,
+      TRUE ~ as.numeric(as.Date(substr(CMENDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10)))
     )
   )
 
 # ==============================================================================
-# Derive EPOCH based on timing relative to treatment period
+# Derive EPOCH based on date relative to treatment period
 # ==============================================================================
+# EPOCH: Epoch
+# Logic: Assign epoch based on timing of intervention relative to study phases
+# This is a simplified derivation; adjust based on study-specific epoch definitions
 cm <- cm %>%
   mutate(
-    RFXSTDTC_date = if_else(
-      !is.na(RFXSTDTC) & nchar(RFXSTDTC) >= 10,
-      as.Date(substr(RFXSTDTC, 1, 10)),
-      as.Date(NA_character_)
-    ),
-    RFXENDTC_date = if_else(
-      !is.na(RFXENDTC) & nchar(RFXENDTC) >= 10,
-      as.Date(substr(RFXENDTC, 1, 10)),
-      as.Date(NA_character_)
-    ),
-    
-    # Epoch derivation
     EPOCH = case_when(
-      is.na(CMSTDTC_date) ~ NA_character_,
-      !is.na(RFXSTDTC_date) & CMSTDTC_date < RFXSTDTC_date ~ "SCREENING",
-      !is.na(RFXSTDTC_date) & !is.na(RFXENDTC_date) & 
-        CMSTDTC_date >= RFXSTDTC_date & CMSTDTC_date <= RFXENDTC_date ~ "TREATMENT",
-      !is.na(RFXENDTC_date) & CMSTDTC_date > RFXENDTC_date ~ "FOLLOW-UP",
+      !is.na(CMSTDY) & CMSTDY < 1 ~ "SCREENING",
+      !is.na(CMSTDY) & CMSTDY >= 1 ~ "TREATMENT",
       TRUE ~ NA_character_
     )
   )
 
 # ==============================================================================
-# Derive CMSEQ as sequence number within each subject
+# Map category and other fields
 # ==============================================================================
+# CMCAT: Category for Intervention
+# CMCLAS: ATC Class
+# CMINDC: Indication
+# CMONGO: Ongoing at Screening?: Yes No (NY codelist)
+cm <- cm %>%
+  mutate(
+    CMCAT = if_else(!is.na(CMCAT), as.character(CMCAT), NA_character_),
+    CMCLAS = if_else(!is.na(CMCLAS), as.character(CMCLAS), NA_character_),
+    CMINDC = if_else(!is.na(CMINDC), as.character(CMINDC), NA_character_),
+    CMONGO = if_else(!is.na(CMONGO), as.character(CMONGO), NA_character_)
+  )
+
+# ==============================================================================
+# Derive CMSEQ (sequence number within subject)
+# ==============================================================================
+# CMSEQ: Sequence Number
 cm <- cm %>%
   arrange(STUDYID, USUBJID, CMSTDTC, CMTRT) %>%
   group_by(USUBJID) %>%
@@ -154,15 +143,10 @@ cm <- cm %>%
   ungroup()
 
 # ==============================================================================
-# Sort by STUDYID, USUBJID, CMSEQ
+# Sort and select final variables in specification order
 # ==============================================================================
 cm <- cm %>%
-  arrange(STUDYID, USUBJID, CMSEQ)
-
-# ==============================================================================
-# Select and order final variables per specification
-# ==============================================================================
-cm <- cm %>%
+  arrange(STUDYID, USUBJID, CMSEQ) %>%
   select(
     STUDYID,
     DOMAIN,
@@ -187,53 +171,46 @@ cm <- cm %>%
 
 # -- END CM --
 
+# ==============================================================================
+# End of Program
+# ==============================================================================
+
+
 # -- BEGIN SUPPCM -- #
 
-# Define qualifier variable metadata
-qual_vars <- tribble(
-  ~QNAM,       ~QLABEL,
-  "CMINDOTH",  "Other Indication",
-  "CMPREVFL",  "Prior Medication"
-)
-
-# Merge raw_cm with cm to get CMSEQ
-cm_with_qual <- raw_cm %>%
-  inner_join(
-    cm %>% select(STUDYID, USUBJID, CMTRT, CMSTDTC, CMSEQ),
-    by = c("STUDYID", "USUBJID", "CMTRT", "CMSTDTC")
+# Merge CM with raw_cm to get qualifier variables
+cm_with_qualifiers <- cm %>%
+  select(STUDYID, USUBJID, CMSEQ) %>%
+  left_join(
+    raw_cm %>% select(USUBJID, CMSEQ, CMINDOTH, CMPREVFL),
+    by = c("USUBJID", "CMSEQ")
   )
 
-# Create SUPPCM by pivoting qualifier variables to QNAM/QVAL
-suppcm <- cm_with_qual %>%
-  select(STUDYID, USUBJID, CMSEQ, all_of(qual_vars$QNAM)) %>%
+# Pivot qualifier variables into QNAM/QVAL structure
+suppcm <- cm_with_qualifiers %>%
   pivot_longer(
-    cols = all_of(qual_vars$QNAM),
+    cols = c(CMINDOTH, CMPREVFL),
     names_to = "QNAM",
     values_to = "QVAL"
   ) %>%
   filter(!is.na(QVAL) & QVAL != "") %>%
-  left_join(qual_vars, by = "QNAM") %>%
   mutate(
     RDOMAIN = "CM",
     IDVAR = "CMSEQ",
     IDVARVAL = as.character(CMSEQ),
+    QLABEL = case_when(
+      QNAM == "CMINDOTH" ~ "Other Indication",
+      QNAM == "CMPREVFL" ~ "Prior Medication?: Yes No",
+      TRUE ~ NA_character_
+    ),
     QVAL = as.character(QVAL),
     QORIG = "CRF",
-    QEVAL = NA_character_
+    QEVAL = NA_character_,
+    CMINDOTH = NA_character_,
+    CMPREVFL = NA_character_
   ) %>%
-  arrange(STUDYID, RDOMAIN, USUBJID, IDVAR, IDVARVAL, QNAM) %>%
-  select(
-    STUDYID,
-    RDOMAIN,
-    USUBJID,
-    IDVAR,
-    IDVARVAL,
-    QNAM,
-    QLABEL,
-    QVAL,
-    QORIG,
-    QEVAL
-  )
+  arrange(USUBJID, IDVARVAL, QNAM) %>%
+  select(STUDYID, RDOMAIN, USUBJID, IDVAR, IDVARVAL, QNAM, QLABEL, QVAL, QORIG, QEVAL, CMINDOTH, CMPREVFL)
 
 # -- END SUPPCM -- #
 

@@ -17,187 +17,378 @@ libname raw  'C:\sas_data\raw'  access=readonly;
 libname sdtm 'C:\sas_data\sdtm';
 
 /*=======================================================================================
-  Program:      VS_SDTM.sas
-  Description:  Create SDTM VS (Vital Signs) domain
-  Input:        raw.vs, raw.dm
-  Output:       sdtm.vs
+  Program Name    : sdtm_vs.sas
+  Study           : [Study Name]
+  Author          : [Author Name]
+  Date Created    : [Date]
+  Description     : Create SDTM VS (Vital Signs) domain from raw data
+  Input Datasets  : raw.vs, sdtm.dm
+  Output Dataset  : sdtm.vs
 =======================================================================================*/
 
 /*-- BEGIN VS --*/
 
-*-- Read in DM data for USUBJID, STUDYID, and RFSTDTC --;
-proc sort data=raw.dm out=dm_for_vs;
-    by STUDYID SITEID SUBJID;
+*-----------------------------------------------------------------------------*
+* Step 1: Read DM dataset for reference dates and subject identifiers
+*-----------------------------------------------------------------------------*;
+proc sort data=sdtm.dm(keep=studyid usubjid rfstdtc) out=dm nodupkey;
+    by usubjid;
 run;
 
-data dm_for_vs;
-    set dm_for_vs;
-    keep STUDYID SITEID SUBJID USUBJID RFSTDTC;
-run;
-
-*-- Read and transpose source VS data to vertical format --;
+*-----------------------------------------------------------------------------*
+* Step 2: Read raw VS data and transpose if needed (assuming wide format)
+*-----------------------------------------------------------------------------*;
 data vs_raw;
     set raw.vs;
-run;
-
-*-- Check if data is in wide format and transpose if needed --;
-*-- Assume raw.vs contains: STUDYID, SITEID, SUBJID, VISITNUM, VISIT, VSDTC, VSPOS,
-   and vital signs parameters (SYSBP, DIABP, PULSE, TEMP, RESP, WEIGHT, HEIGHT) --;
-
-proc transpose data=vs_raw out=vs_vert(rename=(col1=VSORRES _NAME_=VSTESTCD));
-    by STUDYID SITEID SUBJID VISITNUM VISIT VSDTC VSPOS;
-    var SYSBP DIABP PULSE TEMP RESP WEIGHT HEIGHT;
-run;
-
-*-- Merge with DM to get USUBJID and RFSTDTC --;
-proc sort data=vs_vert;
-    by STUDYID SITEID SUBJID;
-run;
-
-data vs_merge;
-    length STUDYID $20 DOMAIN $2 USUBJID $40 VSTESTCD $8 VSTEST $40 VSCAT $40
-           VSORRES $200 VSORRESU $40 VSSTRESC $200 VSSTRESN 8 VSSTRESU $40
-           VSSTAT $8 VSREASND $200 VISITNUM 8 VISIT $40 VSDTC $20 VSDY 8 VSPOS $40;
     
-    merge vs_vert(in=a)
-          dm_for_vs(in=b);
-    by STUDYID SITEID SUBJID;
+    * Keep relevant variables from raw data;
+    * Assuming raw structure includes: STUDYID, SITEID, SUBJID, VISIT, VISITNUM, 
+      VSDAT, VSTIM, VSPOS, SYSBP, DIABP, PULSE, RESP, TEMP, WEIGHT, HEIGHT, etc.;
+run;
+
+*-----------------------------------------------------------------------------*
+* Step 3: Transpose wide format to vertical (one row per test per timepoint)
+*-----------------------------------------------------------------------------*;
+data vs_vertical;
+    set vs_raw;
+    
+    length VSTESTCD $8 VSTEST $40 VSORRES $200 VSORRESU $40 VSPOS_FINAL $40;
+    
+    * Derive USUBJID if not already present;
+    length USUBJID $40;
+    if missing(usubjid) then usubjid = catx('-', studyid, siteid, subjid);
+    
+    * Create position variable;
+    VSPOS_FINAL = vspos;
+    
+    * Systolic Blood Pressure;
+    if not missing(sysbp) then do;
+        VSTESTCD = 'SYSBP';
+        VSTEST = 'Systolic Blood Pressure';
+        VSORRES = strip(put(sysbp, best.));
+        VSORRESU = 'mmHg';
+        output;
+    end;
+    else if sysbp = . and not missing(vsreasnd) then do;
+        VSTESTCD = 'SYSBP';
+        VSTEST = 'Systolic Blood Pressure';
+        VSORRES = '';
+        VSORRESU = 'mmHg';
+        output;
+    end;
+    
+    * Diastolic Blood Pressure;
+    if not missing(diabp) then do;
+        VSTESTCD = 'DIABP';
+        VSTEST = 'Diastolic Blood Pressure';
+        VSORRES = strip(put(diabp, best.));
+        VSORRESU = 'mmHg';
+        output;
+    end;
+    else if diabp = . and not missing(vsreasnd) then do;
+        VSTESTCD = 'DIABP';
+        VSTEST = 'Diastolic Blood Pressure';
+        VSORRES = '';
+        VSORRESU = 'mmHg';
+        output;
+    end;
+    
+    * Pulse/Heart Rate;
+    if not missing(pulse) then do;
+        VSTESTCD = 'PULSE';
+        VSTEST = 'Pulse Rate';
+        VSORRES = strip(put(pulse, best.));
+        VSORRESU = 'beats/min';
+        output;
+    end;
+    else if pulse = . and not missing(vsreasnd) then do;
+        VSTESTCD = 'PULSE';
+        VSTEST = 'Pulse Rate';
+        VSORRES = '';
+        VSORRESU = 'beats/min';
+        output;
+    end;
+    
+    * Respiratory Rate;
+    if not missing(resp) then do;
+        VSTESTCD = 'RESP';
+        VSTEST = 'Respiratory Rate';
+        VSORRES = strip(put(resp, best.));
+        VSORRESU = 'breaths/min';
+        output;
+    end;
+    else if resp = . and not missing(vsreasnd) then do;
+        VSTESTCD = 'RESP';
+        VSTEST = 'Respiratory Rate';
+        VSORRES = '';
+        VSORRESU = 'breaths/min';
+        output;
+    end;
+    
+    * Temperature;
+    if not missing(temp) then do;
+        VSTESTCD = 'TEMP';
+        VSTEST = 'Temperature';
+        VSORRES = strip(put(temp, best.));
+        VSORRESU = 'C';
+        output;
+    end;
+    else if temp = . and not missing(vsreasnd) then do;
+        VSTESTCD = 'TEMP';
+        VSTEST = 'Temperature';
+        VSORRES = '';
+        VSORRESU = 'C';
+        output;
+    end;
+    
+    * Weight;
+    if not missing(weight) then do;
+        VSTESTCD = 'WEIGHT';
+        VSTEST = 'Weight';
+        VSORRES = strip(put(weight, best.));
+        VSORRESU = 'kg';
+        output;
+    end;
+    else if weight = . and not missing(vsreasnd) then do;
+        VSTESTCD = 'WEIGHT';
+        VSTEST = 'Weight';
+        VSORRES = '';
+        VSORRESU = 'kg';
+        output;
+    end;
+    
+    * Height;
+    if not missing(height) then do;
+        VSTESTCD = 'HEIGHT';
+        VSTEST = 'Height';
+        VSORRES = strip(put(height, best.));
+        VSORRESU = 'cm';
+        output;
+    end;
+    else if height = . and not missing(vsreasnd) then do;
+        VSTESTCD = 'HEIGHT';
+        VSTEST = 'Height';
+        VSORRES = '';
+        VSORRESU = 'cm';
+        output;
+    end;
+    
+    keep usubjid studyid vstestcd vstest vsorres vsorresu visitnum visit 
+         vsdat vstim vspos_final vsreasnd;
+run;
+
+*-----------------------------------------------------------------------------*
+* Step 4: Merge with DM for reference start date
+*-----------------------------------------------------------------------------*;
+proc sort data=vs_vertical;
+    by usubjid;
+run;
+
+data vs_merged;
+    merge vs_vertical(in=a)
+          dm(in=b);
+    by usubjid;
     if a;
     
-    *-- If USUBJID is not in source data, derive it --;
-    if missing(USUBJID) then USUBJID = catx('-', STUDYID, SITEID, SUBJID);
+    length DOMAIN $2 VSCAT $40 VSSTRESC $200 VSSTRESU $40 
+           VSDTC $20 VSSTAT $8;
     
-    *-- Set DOMAIN --;
+    * Set domain;
     DOMAIN = 'VS';
     
-    *-- Set VSCAT --;
+    * Set category;
     VSCAT = 'VITAL SIGNS';
     
-    *-- Map VSTESTCD to VSTEST --;
-    select (upcase(VSTESTCD));
-        when ('SYSBP')   VSTEST = 'Systolic Blood Pressure';
-        when ('DIABP')   VSTEST = 'Diastolic Blood Pressure';
-        when ('PULSE')   VSTEST = 'Pulse Rate';
-        when ('TEMP')    VSTEST = 'Temperature';
-        when ('RESP')    VSTEST = 'Respiratory Rate';
-        when ('WEIGHT')  VSTEST = 'Weight';
-        when ('HEIGHT')  VSTEST = 'Height';
-        otherwise        VSTEST = VSTESTCD;
+    * Create date/time of collection in ISO 8601 format;
+    if not missing(vsdat) then do;
+        if not missing(vstim) then 
+            VSDTC = put(vsdat, yymmdd10.) || 'T' || put(vstim, time5.);
+        else 
+            VSDTC = put(vsdat, yymmdd10.);
     end;
+    else VSDTC = '';
     
-    *-- Derive original units --;
-    select (upcase(VSTESTCD));
-        when ('SYSBP', 'DIABP') VSORRESU = 'mmHg';
-        when ('PULSE')          VSORRESU = 'beats/min';
-        when ('TEMP')           VSORRESU = 'C';
-        when ('RESP')           VSORRESU = 'breaths/min';
-        when ('WEIGHT')         VSORRESU = 'kg';
-        when ('HEIGHT')         VSORRESU = 'cm';
-        otherwise               VSORRESU = '';
-    end;
-    
-    *-- Handle NOT DONE status and reason not done --;
-    if missing(VSORRES) or upcase(strip(VSORRES)) in ('ND' 'NOT DONE' 'NOT PERFORMED') then do;
+    * Derive completion status and handle not done;
+    if missing(vsorres) and not missing(vsreasnd) then do;
         VSSTAT = 'NOT DONE';
-        if upcase(strip(VSORRES)) in ('ND' 'NOT DONE' 'NOT PERFORMED') then VSREASND = strip(VSORRES);
-        VSORRES = '';
+    end;
+    else do;
+        VSSTAT = '';
     end;
     
-    *-- Derive VSSTRESC (character result in standard format) --;
-    if VSSTAT ne 'NOT DONE' then do;
-        VSSTRESC = strip(VSORRES);
-    end;
+    * Derive standardized character result;
+    if VSSTAT ne 'NOT DONE' then VSSTRESC = vsorres;
     else VSSTRESC = '';
     
-    *-- Derive VSSTRESN (numeric result) --;
-    if VSSTAT ne 'NOT DONE' and not missing(VSSTRESC) then do;
-        VSSTRESN = input(VSSTRESC, ?? best.);
+    * Derive standard units (same as original for this example);
+    VSSTRESU = vsorresu;
+    
+    * Derive numeric result;
+    VSSTRESN = .;
+    if not missing(vsorres) and VSSTAT ne 'NOT DONE' then do;
+        VSSTRESN = input(vsorres, ?? best.);
     end;
     
-    *-- Derive standard units (same as original for this example) --;
-    if VSSTAT ne 'NOT DONE' then do;
-        VSSTRESU = VSORRESU;
+    * Apply unit conversions if needed;
+    * Example: Convert temperature from F to C if needed;
+    if vstestcd = 'TEMP' and upcase(vsorresu) = 'F' and not missing(VSSTRESN) then do;
+        VSSTRESN = (VSSTRESN - 32) * 5/9;
+        VSSTRESU = 'C';
+        VSSTRESC = strip(put(VSSTRESN, 8.1));
     end;
     
-    *-- Derive study day (VSDY) --;
-    if not missing(VSDTC) and not missing(RFSTDTC) then do;
-        if length(strip(VSDTC)) >= 10 and length(strip(RFSTDTC)) >= 10 then do;
-            _vsdate = input(substr(VSDTC,1,10), yymmdd10.);
-            _rfstdate = input(substr(RFSTDTC,1,10), yymmdd10.);
-            if not missing(_vsdate) and not missing(_rfstdate) then do;
-                if _vsdate >= _rfstdate then 
-                    VSDY = _vsdate - _rfstdate + 1;
-                else 
-                    VSDY = _vsdate - _rfstdate;
-            end;
+    * Derive study day;
+    VSDY = .;
+    if not missing(vsdat) and not missing(rfstdtc) then do;
+        _rfstdt = input(scan(rfstdtc,1,'T'), ?? yymmdd10.);
+        if not missing(_rfstdt) then do;
+            if vsdat >= _rfstdt then
+                VSDY = vsdat - _rfstdt + 1;
+            else
+                VSDY = vsdat - _rfstdt;
         end;
     end;
     
-    drop SITEID SUBJID RFSTDTC _vsdate _rfstdate;
+    * Rename position variable;
+    VSPOS = vspos_final;
+    
+    drop rfstdtc vsdat vstim vspos_final _rfstdt;
 run;
 
-*-- Sort by subject and visit --;
-proc sort data=vs_merge;
-    by USUBJID VSTESTCD VISITNUM VSDTC;
+*-----------------------------------------------------------------------------*
+* Step 5: Derive sequence number
+*-----------------------------------------------------------------------------*;
+proc sort data=vs_merged;
+    by studyid usubjid vstestcd visitnum vsdtc;
 run;
 
-*-- Derive VSSEQ --;
 data vs_seq;
-    set vs_merge;
-    by USUBJID;
+    set vs_merged;
+    by studyid usubjid;
     
     retain VSSEQ;
     
-    if first.USUBJID then VSSEQ = 1;
-    else VSSEQ + 1;
+    if first.usubjid then VSSEQ = 0;
+    VSSEQ + 1;
 run;
 
-*-- Sort final dataset --;
-proc sort data=vs_seq;
-    by STUDYID USUBJID VSSEQ;
-run;
-
-*-- Create final VS domain with proper variable order and attributes --;
+*-----------------------------------------------------------------------------*
+* Step 6: Final dataset with proper attributes and sort order
+*-----------------------------------------------------------------------------*;
 data sdtm.vs;
-    attrib
-        STUDYID  length=$20   label='Study Identifier'
-        DOMAIN   length=$2    label='Domain Abbreviation'
-        USUBJID  length=$40   label='Unique Subject Identifier'
-        VSSEQ    length=8     label='Sequence Number'
-        VSTESTCD length=$8    label='Vital Signs Test Short Name'
-        VSTEST   length=$40   label='Vital Signs Test Name'
-        VSCAT    length=$40   label='Category for Vital Signs'
-        VSORRES  length=$200  label='Result or Finding in Original Units'
-        VSORRESU length=$40   label='Original Units'
-        VSSTRESC length=$200  label='Character Result/Finding in Std Format'
-        VSSTRESN length=8     label='Numeric Result/Finding in Standard Units'
-        VSSTRESU length=$40   label='Standard Units'
-        VSSTAT   length=$8    label='Completion Status'
-        VSREASND length=$200  label='Reason Not Done'
-        VISITNUM length=8     label='Visit Number'
-        VISIT    length=$40   label='Visit Name'
-        VSDTC    length=$20   label='Date/Time of Measurements'
-        VSDY     length=8     label='Study Day of Vital Signs'
-        VSPOS    length=$40   label='Vital Signs Position of Subject'
+    retain
+        STUDYID
+        DOMAIN
+        USUBJID
+        VSSEQ
+        VSTESTCD
+        VSTEST
+        VSCAT
+        VSORRES
+        VSORRESU
+        VSSTRESC
+        VSSTRESN
+        VSSTRESU
+        VSSTAT
+        VSREASND
+        VISITNUM
+        VISIT
+        VSDTC
+        VSDY
+        VSPOS;
+    
+    * Set variable lengths explicitly;
+    length
+        STUDYID  $20
+        DOMAIN   $2
+        USUBJID  $40
+        VSSEQ    8
+        VSTESTCD $8
+        VSTEST   $40
+        VSCAT    $40
+        VSORRES  $200
+        VSORRESU $40
+        VSSTRESC $200
+        VSSTRESN 8
+        VSSTRESU $40
+        VSSTAT   $8
+        VSREASND $200
+        VISITNUM 8
+        VISIT    $40
+        VSDTC    $20
+        VSDY     8
+        VSPOS    $40
     ;
     
     set vs_seq;
     
-    keep STUDYID DOMAIN USUBJID VSSEQ VSTESTCD VSTEST VSCAT VSORRES VSORRESU 
-         VSSTRESC VSSTRESN VSSTRESU VSSTAT VSREASND VISITNUM VISIT VSDTC VSDY VSPOS;
+    * Apply labels;
+    label
+        STUDYID  = "Study Identifier"
+        DOMAIN   = "Domain Abbreviation"
+        USUBJID  = "Unique Subject Identifier"
+        VSSEQ    = "Sequence Number"
+        VSTESTCD = "Vital Signs Test Short Name"
+        VSTEST   = "Vital Signs Test Name"
+        VSCAT    = "Category for Vital Signs"
+        VSORRES  = "Result or Finding in Original Units"
+        VSORRESU = "Original Units"
+        VSSTRESC = "Character Result/Finding in Std Format"
+        VSSTRESN = "Numeric Result/Finding in Standard Units"
+        VSSTRESU = "Standard Units"
+        VSSTAT   = "Completion Status"
+        VSREASND = "Reason Not Done"
+        VISITNUM = "Visit Number"
+        VISIT    = "Visit Name"
+        VSDTC    = "Date/Time of Vital Signs"
+        VSDY     = "Study Day of Vital Signs"
+        VSPOS    = "Vital Signs Position of Subject"
+    ;
+    
+    * Keep only required variables;
+    keep
+        STUDYID
+        DOMAIN
+        USUBJID
+        VSSEQ
+        VSTESTCD
+        VSTEST
+        VSCAT
+        VSORRES
+        VSORRESU
+        VSSTRESC
+        VSSTRESN
+        VSSTRESU
+        VSSTAT
+        VSREASND
+        VISITNUM
+        VISIT
+        VSDTC
+        VSDY
+        VSPOS
+    ;
 run;
 
-*-- Generate summary report --;
+*-----------------------------------------------------------------------------*
+* Step 7: Final sort by STUDYID USUBJID VSTESTCD VISITNUM VSDTC VSSEQ
+*-----------------------------------------------------------------------------*;
+proc sort data=sdtm.vs;
+    by studyid usubjid vstestcd visitnum vsdtc vsseq;
+run;
+
+*-----------------------------------------------------------------------------*
+* Step 8: Create summary report
+*-----------------------------------------------------------------------------*;
 proc freq data=sdtm.vs;
-    tables VSTESTCD*VSTEST / list missing;
-    tables VSSTAT / missing;
-    title 'VS Domain: Frequency of Tests and Completion Status';
+    tables vstestcd*vstest / list missing;
+    tables vsstat / missing;
+    title "VS Domain - Frequency of Tests and Completion Status";
 run;
 
-proc means data=sdtm.vs n nmiss min max mean median;
-    var VSSTRESN VSDY;
-    class VSTESTCD;
-    title 'VS Domain: Summary Statistics for Numeric Results';
+proc means data=sdtm.vs n nmiss min max mean std;
+    var vsstresn vsdy;
+    class vstestcd;
+    title "VS Domain - Numeric Results Summary";
 run;
 
 title;
@@ -207,83 +398,127 @@ title;
 
 /*-- BEGIN SUPPVS --*/
 
-*---------------------------------------------------------------------------*
-| Program Name    : suppvs.sas                                             |
-| Purpose         : Create SUPPVS (Supplemental Qualifiers for VS) Domain  |
-| CDISC Version   : SDTM 3.2                                              |
-| Input           : raw.vs, sdtm.VS                                        |
-| Output          : sdtm.SUPPVS                                            |
-| Parent Domain   : VS                                                     |
-*---------------------------------------------------------------------------*;
+*----------------------------------------------------------------*
+* Program: suppvs.sas
+* Purpose: Create SUPPVS supplemental qualifiers domain
+* Domain:  SUPPVS (Supplemental Qualifiers for VS)
+*----------------------------------------------------------------*;
 
-** Merge source data with parent domain to get VSSEQ **;
-data work.vs_source;
-    merge raw.vs(in=a)
-          sdtm.vs(in=b keep=studyid usubjid vstestcd vsdtc vsseq);
-    by studyid usubjid vstestcd vsdtc;
+*----------------------------------------------------------------*
+* Step 1: Merge parent VS source with SDTM VS to get VSSEQ
+*----------------------------------------------------------------*;
+proc sort data=raw.vs out=vs_raw;
+    by studyid usubjid vstestcd visitnum vstptnum;
+run;
+
+proc sort data=sdtm.vs out=vs_sdtm(keep=studyid usubjid vstestcd visitnum vstptnum vsseq);
+    by studyid usubjid vstestcd visitnum vstptnum;
+run;
+
+data vs_combined;
+    merge vs_raw(in=a)
+          vs_sdtm(in=b);
+    by studyid usubjid vstestcd visitnum vstptnum;
     if a and b;
 run;
 
-** Transpose qualifier variables into QNAM/QVAL structure **;
-data work.suppvs_pre;
-    length STUDYID $20 RDOMAIN $2 USUBJID $40 IDVAR $8 IDVARVAL $200 
-           QNAM $8 QLABEL $40 QVAL $200 QORIG $8 QEVAL $40;
-    set work.vs_source;
+*----------------------------------------------------------------*
+* Step 2: Transpose qualifier variables into QNAM/QVAL structure
+*----------------------------------------------------------------*;
+data suppvs_all;
+    set vs_combined;
     
-    ** Set common variables **;
+    length STUDYID $200
+           RDOMAIN $8
+           USUBJID $200
+           IDVAR $8
+           IDVARVAL $200
+           QNAM $8
+           QLABEL $200
+           QVAL $200
+           QORIG $8
+           QEVAL $200;
+    
     RDOMAIN = 'VS';
     IDVAR = 'VSSEQ';
-    IDVARVAL = put(VSSEQ, best.);
-    QORIG = 'CRF';
-    QEVAL = '';
+    IDVARVAL = put(vsseq, best.);
     
-    ** VSCLSIG - Clinically Significant **;
-    if not missing(VSCLSIG) then do;
+    * VSCLSIG - Clinically Significant *;
+    if not missing(vsclsig) then do;
         QNAM = 'VSCLSIG';
         QLABEL = 'Clinically Significant';
-        QVAL = strip(VSCLSIG);
+        QVAL = strip(vsclsig);
+        QORIG = 'CRF';
+        QEVAL = '';
         output;
     end;
     
-    ** VSFAST - Fasting **;
-    if not missing(VSFAST) then do;
+    * VSFAST - Fasting Status *;
+    if not missing(vsfast) then do;
         QNAM = 'VSFAST';
         QLABEL = 'Fasting Status';
-        QVAL = strip(VSFAST);
+        QVAL = strip(vsfast);
+        QORIG = 'CRF';
+        QEVAL = '';
         output;
     end;
     
-    ** VSLOC - Location of Measurement **;
-    if not missing(VSLOC) then do;
+    * VSLOC - Location of Measurement *;
+    if not missing(vsloc) then do;
         QNAM = 'VSLOC';
         QLABEL = 'Location of Vital Signs Measurement';
-        QVAL = strip(VSLOC);
+        QVAL = strip(vsloc);
+        QORIG = 'CRF';
+        QEVAL = '';
         output;
     end;
     
-    keep STUDYID RDOMAIN USUBJID IDVAR IDVARVAL QNAM QLABEL QVAL QORIG QEVAL;
+    keep studyid rdomain usubjid idvar idvarval qnam qlabel qval qorig qeval;
+run;
+
+*----------------------------------------------------------------*
+* Step 3: Apply variable attributes and sort
+*----------------------------------------------------------------*;
+data sdtm.suppvs;
+    retain STUDYID RDOMAIN USUBJID IDVAR IDVARVAL QNAM QLABEL QVAL QORIG QEVAL;
     
-    label STUDYID  = 'Study Identifier'
-          RDOMAIN  = 'Related Domain Abbreviation'
-          USUBJID  = 'Unique Subject Identifier'
-          IDVAR    = 'Identifying Variable'
+    length STUDYID $200
+           RDOMAIN $8
+           USUBJID $200
+           IDVAR $8
+           IDVARVAL $200
+           QNAM $8
+           QLABEL $200
+           QVAL $200
+           QORIG $8
+           QEVAL $200;
+    
+    set suppvs_all;
+    
+    * Ensure QVAL is non-missing *;
+    if not missing(qval);
+    
+    label STUDYID = 'Study Identifier'
+          RDOMAIN = 'Related Domain Abbreviation'
+          USUBJID = 'Unique Subject Identifier'
+          IDVAR = 'Identifying Variable'
           IDVARVAL = 'Identifying Variable Value'
-          QNAM     = 'Qualifier Variable Name'
-          QLABEL   = 'Qualifier Variable Label'
-          QVAL     = 'Data Value'
-          QORIG    = 'Origin'
-          QEVAL    = 'Evaluator';
+          QNAM = 'Qualifier Variable Name'
+          QLABEL = 'Qualifier Variable Label'
+          QVAL = 'Data Value'
+          QORIG = 'Origin'
+          QEVAL = 'Evaluator';
 run;
 
-** Sort and create final dataset **;
-proc sort data=work.suppvs_pre 
-          out=sdtm.suppvs(label='Supplemental Qualifiers for Vital Signs');
-    by STUDYID RDOMAIN USUBJID IDVARVAL QNAM;
+proc sort data=sdtm.suppvs;
+    by studyid rdomain usubjid idvarval qnam;
 run;
 
-** Clean up work datasets **;
+*----------------------------------------------------------------*
+* Step 4: Cleanup temporary datasets
+*----------------------------------------------------------------*;
 proc datasets library=work nolist;
-    delete vs_source suppvs_pre;
+    delete vs_raw vs_sdtm vs_combined suppvs_all;
 quit;
 
 /*-- END SUPPVS --*/

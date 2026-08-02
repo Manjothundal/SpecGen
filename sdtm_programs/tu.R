@@ -11,77 +11,117 @@
 #             ...
 # ********************************************************************
 
-# ==============================================================================
-# Program: TU Domain - Tumor/Response Assessments
-# Description: Create SDTM TU domain from raw tumor assessment data
-# CDISC SDTM Version: 3.4
-# ==============================================================================
-
 library(dplyr)
 
 # -- BEGIN TU -- #
 
-# Read source data (raw_tu and dm already loaded in session)
+# Tumor/Lesion Identification Domain (TU)
+# Findings About Events class - tumor/response assessments
 
-# Create TU domain
 tu <- raw_tu %>%
   # Join with DM to get USUBJID and RFSTDTC
   left_join(
     dm %>% select(SUBJID, USUBJID, RFSTDTC, STUDYID),
-    by = "SUBJID"
+    by = c("SUBJID", "STUDYID")
   ) %>%
-  # Assign domain and derive variables
+  # Set DOMAIN
+  mutate(DOMAIN = "TU") %>%
+  # Map assessment test codes and test names
   mutate(
-    STUDYID = STUDYID,
-    DOMAIN = "TU",
-    TUTESTCD = TUTESTCD,
-    TUTEST = TUTEST,
-    TUCAT = TUCAT,
-    TUORRES = TUORRES,
-    
-    # Derive character result in standard format
-    TUSTRESC = case_when(
-      !is.na(TUORRES) ~ as.character(TUORRES),
-      TRUE ~ NA_character_
+    TUTESTCD = case_when(
+      !is.na(TUORRES_DIAM) ~ "DIAMETER",
+      !is.na(TUORRES_LDIAX) ~ "LDIAX",
+      !is.na(TUORRES_PDIAX) ~ "PDIAX",
+      !is.na(TUORRES_SADIAM) ~ "SADIAM",
+      TRUE ~ TUTESTCD
     ),
-    
-    # Derive numeric result
-    TUSTRESN = case_when(
-      !is.na(TUORRES) & grepl("^-?[0-9]+(\\.[0-9]+)?$", trimws(as.character(TUORRES))) ~ as.numeric(TUORRES),
-      TRUE ~ NA_real_
-    ),
-    
-    TUSTRESU = TUSTRESU,
-    TUEVAL = TUEVAL,
-    TULNKID = TULNKID,
-    VISITNUM = VISITNUM,
-    VISIT = VISIT,
-    TUDTC = TUDTC,
-    
-    # Derive study day
-    TUDY = case_when(
-      !is.na(TUDTC) & !is.na(RFSTDTC) ~ as.numeric(
-        as.Date(substr(TUDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10))
-      ) + if_else(
-        as.Date(substr(TUDTC, 1, 10)) >= as.Date(substr(RFSTDTC, 1, 10)),
-        1L,
-        0L
-      ),
-      TRUE ~ NA_real_
-    ),
-    
-    TULAT = TULAT,
-    TULOC = TULOC,
-    TUMETHOD = TUMETHOD
+    TUTEST = case_when(
+      TUTESTCD == "DIAMETER" ~ "Diameter",
+      TUTESTCD == "LDIAX" ~ "Longest Diameter",
+      TUTESTCD == "PDIAX" ~ "Perpendicular Diameter",
+      TUTESTCD == "SADIAM" ~ "Sum of Diameters",
+      TRUE ~ TUTEST
+    )
   ) %>%
-  # Derive sequence number within subject
+  # Map TUORRES from source
+  mutate(
+    TUORRES = case_when(
+      TUTESTCD == "DIAMETER" ~ as.character(TUORRES_DIAM),
+      TUTESTCD == "LDIAX" ~ as.character(TUORRES_LDIAX),
+      TUTESTCD == "PDIAX" ~ as.character(TUORRES_PDIAX),
+      TUTESTCD == "SADIAM" ~ as.character(TUORRES_SADIAM),
+      TRUE ~ TUORRES
+    )
+  ) %>%
+  # Derive TUSTRESC (character result in standard format)
+  mutate(
+    TUSTRESC = TUORRES
+  ) %>%
+  # Derive TUSTRESN (numeric result)
+  mutate(
+    TUSTRESN = as.numeric(TUSTRESC)
+  ) %>%
+  # Assign TUSTRESU (standard units)
+  mutate(
+    TUSTRESU = case_when(
+      TUTESTCD %in% c("DIAMETER", "LDIAX", "PDIAX", "SADIAM") ~ "mm",
+      TRUE ~ TUSTRESU
+    )
+  ) %>%
+  # Map TUEVAL (evaluator)
+  mutate(
+    TUEVAL = case_when(
+      !is.na(EVALUATOR) & toupper(EVALUATOR) == "INV" ~ "INVESTIGATOR",
+      !is.na(EVALUATOR) & toupper(EVALUATOR) == "IRC" ~ "INDEPENDENT ASSESSOR",
+      !is.na(EVALUATOR) & toupper(EVALUATOR) == "INVESTIGATOR" ~ "INVESTIGATOR",
+      !is.na(EVALUATOR) & toupper(EVALUATOR) == "INDEPENDENT ASSESSOR" ~ "INDEPENDENT ASSESSOR",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  # Map TULNKID (link ID for linking TU/TR/RS)
+  mutate(
+    TULNKID = if_else(!is.na(LNKID), as.character(LNKID), NA_character_)
+  ) %>%
+  # Map VISITNUM and VISIT
+  mutate(
+    VISITNUM = as.numeric(VISITNUM),
+    VISIT = as.character(VISIT)
+  ) %>%
+  # Map TUDTC (date/time of collection)
+  mutate(
+    TUDTC = as.character(TUDTC)
+  ) %>%
+  # Derive TUDY (study day relative to RFSTDTC)
+  mutate(
+    TUDY = case_when(
+      !is.na(TUDTC) & !is.na(RFSTDTC) ~ 
+        as.numeric(as.Date(substr(TUDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10))) + 
+        if_else(as.Date(substr(TUDTC, 1, 10)) >= as.Date(substr(RFSTDTC, 1, 10)), 1, 0),
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  # Map TUCAT (category for assessment)
+  mutate(
+    TUCAT = if_else(!is.na(TUCAT), as.character(TUCAT), "RECIST 1.1")
+  ) %>%
+  # Map TULAT (laterality)
+  mutate(
+    TULAT = if_else(!is.na(TULAT), as.character(TULAT), NA_character_)
+  ) %>%
+  # Map TULOC (tumor location)
+  mutate(
+    TULOC = if_else(!is.na(TULOC), as.character(TULOC), NA_character_)
+  ) %>%
+  # Map TUMETHOD (method of assessment)
+  mutate(
+    TUMETHOD = if_else(!is.na(TUMETHOD), as.character(TUMETHOD), NA_character_)
+  ) %>%
+  # Sort and derive TUSEQ (sequence number within subject)
+  arrange(STUDYID, USUBJID, TUTESTCD, VISITNUM, TUDTC, TULNKID) %>%
   group_by(USUBJID) %>%
-  arrange(USUBJID, TUTESTCD, VISITNUM, TUDTC) %>%
   mutate(TUSEQ = row_number()) %>%
   ungroup() %>%
-  # Sort final dataset
-  arrange(STUDYID, USUBJID, TUSEQ) %>%
-  # Select only specification variables in order
+  # Select only spec variables in order
   select(
     STUDYID,
     DOMAIN,

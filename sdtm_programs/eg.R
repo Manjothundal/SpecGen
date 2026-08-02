@@ -12,9 +12,8 @@
 # ********************************************************************
 
 # ==============================================================================
-# Program: eg.R
-# Purpose: Create SDTM EG domain (ECG findings) from raw data
-# SDTM version: 3.2
+# SDTM EG Domain (ECG Data)
+# Production R Script
 # ==============================================================================
 
 # Load required libraries
@@ -24,127 +23,173 @@ library(tidyr)
 # -- BEGIN EG -- #
 
 # ==============================================================================
-# Variable labels (metadata - R does not enforce):
-# STUDYID   : Study Identifier
-# EGSEQ     : Sequence Number
-# USUBJID   : Unique Subject Identifier
-# DOMAIN    : Domain Abbreviation
-# EGTESTCD  : Short Name of Measurement
-# EGTEST    : Name of Measurement
-# EGCAT     : Category for Findings
-# EGORRES   : Result or Finding in Original Units
-# EGORRESU  : Original Units
-# EGSTRESC  : Character Result in Std Format
-# EGSTRESN  : Numeric Result in Standard Units
-# EGSTRESU  : Standard Units
-# EGSTAT    : Completion Status
-# EGREASND  : Reason Not Performed
-# VISITNUM  : Visit Number
-# VISIT     : Visit Name
-# EGDTC     : Date/Time of Collection
-# EGDY      : Study Day of Collection
-# EGEVAL    : Overall Interpretation
+# 1. RESHAPE AND PREPARE SOURCE DATA
 # ==============================================================================
 
-# ==============================================================================
-# Step 1: Prepare Demographics data for derivations
-# ==============================================================================
-
-dm_subset <- dm %>%
-  select(STUDYID, USUBJID, RFSTDTC)
-
-# ==============================================================================
-# Step 2: Transform raw EG data from wide to long format (if needed)
-# ==============================================================================
-
-# Check if raw_eg is in wide or vertical format
-# Assuming wide format with columns like: STUDYID, SITEID, SUBJID, VISIT, VISITNUM,
-# EGDTC, HR, QT, QTC, RR, PR, QRS, EGEVAL, EGREASND, etc.
-
-# Define test parameter mappings
-test_params <- tribble(
-  ~test_col,  ~EGTESTCD, ~EGTEST,              ~EGORRESU,     ~EGSTRESU,
-  "HR",       "HR",      "Heart Rate",         "beats/min",   "beats/min",
-  "QT",       "QT",      "QT Duration",        "msec",        "msec",
-  "QTC",      "QTCF",    "QTcF Duration",      "msec",        "msec",
-  "RR",       "RR",      "RR Duration",        "msec",        "msec",
-  "PR",       "PR",      "PR Duration",        "msec",        "msec",
-  "QRS",      "QRS",     "QRS Duration",       "msec",        "msec"
-)
-
-# Pivot raw data from wide to long format
 eg_long <- raw_eg %>%
+  {if (!"USUBJID" %in% names(.)) {
+    left_join(., 
+              dm %>% select(STUDYID, USUBJID, any_of(c("SUBJID", "SITEID")), RFSTDTC),
+              by = intersect(names(.), c("STUDYID", "SUBJID", "SITEID")))
+  } else {
+    left_join(., 
+              dm %>% select(USUBJID, STUDYID, RFSTDTC),
+              by = c("USUBJID", "STUDYID"))
+  }} %>%
   pivot_longer(
-    cols = any_of(test_params$test_col),
-    names_to = "test_col",
-    values_to = "EGORRES_RAW",
-    values_transform = list(EGORRES_RAW = as.character)
-  ) %>%
-  # Join test parameter mappings
-  left_join(test_params, by = "test_col") %>%
-  # Remove rows where test column was not present and no reason not done
-  filter(!is.na(EGORRES_RAW) | !is.na(EGREASND))
-
-# ==============================================================================
-# Step 3: Derive core SDTM variables
-# ==============================================================================
-
-eg_core <- eg_long %>%
-  # Derive USUBJID if not present
-  mutate(
-    USUBJID = if("USUBJID" %in% names(.)) USUBJID else paste(STUDYID, SITEID, SUBJID, sep = "-"),
-    DOMAIN = "EG"
-  ) %>%
-  # Map original results and units
-  mutate(
-    EGORRES = as.character(EGORRES_RAW),
-    EGCAT = "ECG"
-  ) %>%
-  # Derive standardized character result
-  mutate(
-    EGSTRESC = if_else(!is.na(EGORRES), as.character(EGORRES), NA_character_)
-  ) %>%
-  # Derive numeric result
-  mutate(
-    EGSTRESN = if_else(!is.na(EGORRES), suppressWarnings(as.numeric(EGORRES)), NA_real_)
-  ) %>%
-  # Derive completion status
-  mutate(
-    EGSTAT = if_else(is.na(EGORRES) & !is.na(EGREASND), "NOT DONE", NA_character_),
-    EGREASND = if_else(!is.na(EGREASND), as.character(EGREASND), NA_character_)
+    cols = matches("^(HR|QT|QTC|RR|PR|QRS|QTCB|QTCF)$", ignore.case = FALSE),
+    names_to = "EGTESTCD",
+    values_to = "EGORRES_NUM",
+    values_drop_na = FALSE
   )
 
 # ==============================================================================
-# Step 4: Merge with DM to derive study day
+# 2. ASSIGN DOMAIN AND TEST METADATA
 # ==============================================================================
 
-eg_with_dm <- eg_core %>%
-  left_join(dm_subset, by = c("STUDYID", "USUBJID")) %>%
-  # Derive study day (EGDY)
+eg <- eg_long %>%
   mutate(
-    EGDY = if_else(
-      !is.na(EGDTC) & !is.na(RFSTDTC) & EGDTC != "" & RFSTDTC != "",
-      as.numeric(as.Date(substr(EGDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10))) +
-        if_else(as.Date(substr(EGDTC, 1, 10)) >= as.Date(substr(RFSTDTC, 1, 10)), 1L, 0L),
-      NA_real_
+    DOMAIN = "EG",
+    
+    EGTEST = case_when(
+      EGTESTCD == "HR"    ~ "Heart Rate",
+      EGTESTCD == "QT"    ~ "QT Duration",
+      EGTESTCD == "QTC"   ~ "QT Corrected",
+      EGTESTCD == "QTCB"  ~ "QT Corrected Bazett",
+      EGTESTCD == "QTCF"  ~ "QT Corrected Fridericia",
+      EGTESTCD == "RR"    ~ "RR Duration",
+      EGTESTCD == "PR"    ~ "PR Duration",
+      EGTESTCD == "QRS"   ~ "QRS Duration",
+      TRUE ~ EGTESTCD
+    ),
+    
+    EGCAT = "ECG",
+    
+    EGORRES = as.character(EGORRES_NUM),
+    
+    EGORRESU = case_when(
+      EGTESTCD == "HR"    ~ "beats/min",
+      EGTESTCD %in% c("QT", "QTC", "QTCB", "QTCF", "RR", "PR", "QRS") ~ "msec",
+      TRUE ~ NA_character_
     )
   )
 
 # ==============================================================================
-# Step 5: Derive sequence number
+# 3. DERIVE STANDARDIZED RESULTS (EGSTRESC, EGSTRESN, EGSTRESU)
 # ==============================================================================
 
-eg_with_seq <- eg_with_dm %>%
+eg <- eg %>%
+  mutate(
+    EGSTRESC = EGORRES,
+    
+    EGSTRESN = case_when(
+      !is.na(EGORRES_NUM) ~ as.numeric(EGORRES_NUM),
+      !is.na(EGORRES) & EGORRES != "" ~ suppressWarnings(as.numeric(EGORRES)),
+      TRUE ~ NA_real_
+    ),
+    
+    EGSTRESU = EGORRESU
+  )
+
+# ==============================================================================
+# 4. HANDLE COMPLETION STATUS AND REASON NOT DONE
+# ==============================================================================
+
+eg <- eg %>%
+  mutate(
+    EGSTAT = case_when(
+      is.na(EGORRES) | EGORRES == "" ~ "NOT DONE",
+      TRUE ~ NA_character_
+    ),
+    
+    EGREASND = if ("EGREASND" %in% names(.)) {
+      case_when(
+        EGSTAT == "NOT DONE" ~ EGREASND,
+        TRUE ~ NA_character_
+      )
+    } else {
+      NA_character_
+    }
+  )
+
+# ==============================================================================
+# 5. MAP VISIT INFORMATION
+# ==============================================================================
+
+eg <- eg %>%
+  mutate(
+    VISITNUM = if ("VISITNUM" %in% names(.)) {
+      as.numeric(VISITNUM)
+    } else if ("VISIT" %in% names(.)) {
+      as.numeric(gsub("\\D", "", VISIT))
+    } else {
+      NA_real_
+    },
+    
+    VISIT = if ("VISIT" %in% names(.)) {
+      as.character(VISIT)
+    } else {
+      NA_character_
+    }
+  )
+
+# ==============================================================================
+# 6. MAP TIMING VARIABLES
+# ==============================================================================
+
+eg <- eg %>%
+  mutate(
+    EGDTC = if ("EGDTC" %in% names(.)) {
+      as.character(EGDTC)
+    } else if ("EG_DATE" %in% names(.)) {
+      as.character(EG_DATE)
+    } else if ("EGDAT" %in% names(.)) {
+      as.character(EGDAT)
+    } else {
+      NA_character_
+    }
+  ) %>%
+  mutate(
+    EGDY = case_when(
+      !is.na(EGDTC) & !is.na(RFSTDTC) ~ {
+        eg_date <- as.Date(substr(EGDTC, 1, 10))
+        rfst_date <- as.Date(substr(RFSTDTC, 1, 10))
+        diff <- as.numeric(eg_date - rfst_date)
+        if_else(diff >= 0, diff + 1, diff)
+      },
+      TRUE ~ NA_real_
+    )
+  )
+
+# ==============================================================================
+# 7. MAP EVALUATOR/INTERPRETATION (if available in source)
+# ==============================================================================
+
+eg <- eg %>%
+  mutate(
+    EGEVAL = if ("EGEVAL" %in% names(.)) {
+      as.character(EGEVAL)
+    } else {
+      NA_character_
+    }
+  )
+
+# ==============================================================================
+# 8. DERIVE SEQUENCE NUMBER
+# ==============================================================================
+
+eg <- eg %>%
   arrange(STUDYID, USUBJID, EGTESTCD, VISITNUM, EGDTC) %>%
   group_by(USUBJID) %>%
   mutate(EGSEQ = row_number()) %>%
   ungroup()
 
 # ==============================================================================
-# Step 6: Select and order final variables per specification
+# 9. FINAL SORT AND SELECT VARIABLES PER SPEC
 # ==============================================================================
 
-eg <- eg_with_seq %>%
+eg <- eg %>%
+  arrange(STUDYID, USUBJID, EGSEQ) %>%
   select(
     STUDYID,
     EGSEQ,
@@ -165,48 +210,50 @@ eg <- eg_with_seq %>%
     EGDTC,
     EGDY,
     EGEVAL
-  ) %>%
-  # Final sort
-  arrange(STUDYID, USUBJID, EGSEQ)
+  )
 
 # -- END EG -- #
 
 # ==============================================================================
-# End of program
+# END OF SCRIPT
 # ==============================================================================
+
 
 # -- BEGIN SUPPEG -- #
 
-# Merge EG and raw_eg to get both EGSEQ and qualifier variables
-suppeg_source <- eg %>%
+# Create SUPPEG supplemental qualifier domain
+suppeg <- eg %>%
+  # Select key variables needed for SUPP domain
   select(STUDYID, USUBJID, EGSEQ) %>%
   left_join(
-    raw_eg %>% select(STUDYID, USUBJID, any_of(c("EGCLSIG"))),
+    raw_eg %>% select(STUDYID, USUBJID, EGCLSIG),
     by = c("STUDYID", "USUBJID")
-  )
-
-# Define qualifier metadata
-qualifier_metadata <- tribble(
-  ~QNAM,      ~QLABEL,                              ~QORIG, ~QEVAL,
-  "EGCLSIG",  "Clinically Significant?: Yes No",    "CRF",  NA_character_
-)
-
-# Transpose qualifier variables to long format
-suppeg <- suppeg_source %>%
-  pivot_longer(
-    cols = all_of(qualifier_metadata$QNAM),
-    names_to = "QNAM",
-    values_to = "QVAL"
   ) %>%
-  filter(!is.na(QVAL)) %>%
-  left_join(qualifier_metadata, by = "QNAM") %>%
+  # Create SUPPEG structure with qualifier variables
   mutate(
     RDOMAIN = "EG",
     IDVAR = "EGSEQ",
-    IDVARVAL = as.character(EGSEQ),
-    QVAL = as.character(QVAL)
+    IDVARVAL = as.character(EGSEQ)
   ) %>%
-  arrange(STUDYID, RDOMAIN, USUBJID, IDVAR, IDVARVAL, QNAM) %>%
+  # Pivot qualifier variables to long format
+  pivot_longer(
+    cols = c(EGCLSIG),
+    names_to = "QNAM",
+    values_to = "QVAL",
+    values_transform = as.character
+  ) %>%
+  # Add QLABEL based on QNAM
+  mutate(
+    QLABEL = case_when(
+      QNAM == "EGCLSIG" ~ "Clinically Significant",
+      TRUE ~ NA_character_
+    ),
+    QORIG = "CRF",
+    QEVAL = NA_character_
+  ) %>%
+  # Filter out missing QVAL
+  filter(!is.na(QVAL) & QVAL != "") %>%
+  # Select final variables in correct order
   select(
     STUDYID,
     RDOMAIN,
@@ -219,7 +266,9 @@ suppeg <- suppeg_source %>%
     QORIG,
     QEVAL,
     EGCLSIG
-  )
+  ) %>%
+  # Sort as specified
+  arrange(STUDYID, RDOMAIN, USUBJID, IDVAR, IDVARVAL, QNAM)
 
 # -- END SUPPEG -- #
 

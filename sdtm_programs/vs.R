@@ -12,10 +12,28 @@
 # ********************************************************************
 
 # ==============================================================================
-# Program:      vs.R
-# Description:  Create SDTM VS (Vital Signs) domain
-# Input:        raw_vs, dm (already in R session)
-# Output:       vs
+# SDTM VS Domain - Vital Signs
+# ==============================================================================
+# Variable labels (R does not support SAS-style labels/lengths; listed here for reference):
+# STUDYID:  Study Identifier
+# VSSEQ:    Sequence Number
+# USUBJID:  Unique Subject Identifier
+# DOMAIN:   Domain Abbreviation
+# VSTESTCD: Short Name of Measurement
+# VSTEST:   Name of Measurement
+# VSCAT:    Category for Findings
+# VSORRES:  Result or Finding in Original Units
+# VSORRESU: Original Units
+# VSSTRESC: Character Result in Std Format
+# VSSTRESN: Numeric Result in Standard Units
+# VSSTRESU: Standard Units
+# VSSTAT:   Completion Status
+# VSREASND: Reason Not Performed
+# VISITNUM: Visit Number
+# VISIT:    Visit Name
+# VSDTC:    Date/Time of Collection
+# VSDY:     Study Day of Collection
+# VSPOS:    Position: Sitting Standing Supine
 # ==============================================================================
 
 library(dplyr)
@@ -24,181 +42,136 @@ library(tidyr)
 # -- BEGIN VS -- #
 
 # ==============================================================================
-# Derive VS domain
+# 1. Prepare DM for merging (get USUBJID and RFSTDTC)
 # ==============================================================================
 
-# ------------------------------------------------------------------------------
-# Assume raw_vs is in wide format with columns:
-# STUDYID, SITEID, SUBJID, VISITNUM, VISIT, VS_DATE, VSPOS,
-# SYSBP, DIABP, HR, TEMP, RESP, WEIGHT, HEIGHT, etc.
-# Each vital sign parameter is in a separate column
-# If raw_vs is already vertical, skip pivot_longer and map directly
-# ------------------------------------------------------------------------------
+dm_subset <- dm %>%
+  select(STUDYID, USUBJID, RFSTDTC)
 
-# Check if raw_vs needs to be pivoted (example assumes wide format)
-# Pivot longer to get one row per test per timepoint per subject
-vs_long <- raw_vs %>%
-  pivot_longer(
-    cols = matches("^(SYSBP|DIABP|HR|TEMP|RESP|WEIGHT|HEIGHT)$"),
-    names_to = "VSTESTCD",
-    values_to = "VSORRES_RAW",
-    values_drop_na = FALSE
-  )
+# ==============================================================================
+# 2. Derive USUBJID
+#    Assumes raw_vs contains columns: STUDYID, SITEID, SUBJID, VISIT, 
+#    VISITNUM, VSDTC, VSTESTCD, VSORRES, VSORRESU, VSPOS, VSREASND
+# ==============================================================================
 
-# ------------------------------------------------------------------------------
-# Derive USUBJID
-# ------------------------------------------------------------------------------
-vs1 <- vs_long %>%
+vs_base <- raw_vs %>%
   mutate(
     USUBJID = paste(STUDYID, SITEID, SUBJID, sep = "-")
   )
 
-# ------------------------------------------------------------------------------
-# Set DOMAIN
-# ------------------------------------------------------------------------------
-vs2 <- vs1 %>%
-  mutate(DOMAIN = "VS")
+# ==============================================================================
+# 3. Map test codes and test names
+#    Create standardized VSTESTCD and VSTEST mappings
+# ==============================================================================
 
-# ------------------------------------------------------------------------------
-# Map VSTESTCD to VSTEST (full test name)
-# ------------------------------------------------------------------------------
-vs3 <- vs2 %>%
+test_mapping <- tribble(
+  ~VSTESTCD, ~VSTEST,           ~VSSTRESU,
+  "SYSBP",   "Systolic Blood Pressure",   "mmHg",
+  "DIABP",   "Diastolic Blood Pressure",  "mmHg",
+  "PULSE",   "Pulse Rate",                "beats/min",
+  "TEMP",    "Temperature",               "C",
+  "RESP",    "Respiratory Rate",          "breaths/min",
+  "WEIGHT",  "Weight",                    "kg",
+  "HEIGHT",  "Height",                    "cm"
+)
+
+vs_mapped <- vs_base %>%
+  left_join(test_mapping, by = "VSTESTCD") %>%
+  filter(!is.na(VSTEST))  # Remove unmapped tests
+
+# ==============================================================================
+# 4. Set DOMAIN and VSCAT
+# ==============================================================================
+
+vs_mapped <- vs_mapped %>%
   mutate(
-    VSTEST = case_when(
-      VSTESTCD == "SYSBP"  ~ "Systolic Blood Pressure",
-      VSTESTCD == "DIABP"  ~ "Diastolic Blood Pressure",
-      VSTESTCD == "HR"     ~ "Heart Rate",
-      VSTESTCD == "TEMP"   ~ "Temperature",
-      VSTESTCD == "RESP"   ~ "Respiratory Rate",
-      VSTESTCD == "WEIGHT" ~ "Weight",
-      VSTESTCD == "HEIGHT" ~ "Height",
-      TRUE ~ as.character(VSTESTCD)
+    DOMAIN = "VS",
+    VSCAT = "VITAL SIGNS"
+  )
+
+# ==============================================================================
+# 5. Derive VSORRES, VSSTRESC, VSSTRESN, VSSTAT
+#    Handle NOT DONE cases
+# ==============================================================================
+
+vs_mapped <- vs_mapped %>%
+  mutate(
+    # Original result as character
+    VSORRES = as.character(VSORRES),
+    
+    # Determine completion status
+    VSSTAT = case_when(
+      is.na(VSORRES) | trimws(as.character(VSORRES)) == "" ~ "NOT DONE",
+      TRUE ~ NA_character_
+    ),
+    
+    # Standardized character result
+    VSSTRESC = case_when(
+      VSSTAT == "NOT DONE" ~ NA_character_,
+      TRUE ~ as.character(VSORRES)
+    ),
+    
+    # Numeric result in standard units
+    VSSTRESN = case_when(
+      VSSTAT == "NOT DONE" ~ NA_real_,
+      TRUE ~ as.numeric(VSORRES)
     )
   )
 
-# ------------------------------------------------------------------------------
-# Set VSCAT (Category for Findings)
-# ------------------------------------------------------------------------------
-vs4 <- vs3 %>%
-  mutate(VSCAT = "VITAL SIGNS")
+# ==============================================================================
+# 6. Handle reason not done
+#    Use VSREASND from raw_vs; set to NA if VSSTAT is not "NOT DONE"
+# ==============================================================================
 
-# ------------------------------------------------------------------------------
-# Derive VSORRES (original result as character)
-# ------------------------------------------------------------------------------
-vs5 <- vs4 %>%
-  mutate(VSORRES = as.character(VSORRES_RAW))
-
-# ------------------------------------------------------------------------------
-# Derive VSORRESU (original units)
-# ------------------------------------------------------------------------------
-vs6 <- vs5 %>%
+vs_mapped <- vs_mapped %>%
   mutate(
-    VSORRESU = case_when(
-      VSTESTCD == "SYSBP"  ~ "mmHg",
-      VSTESTCD == "DIABP"  ~ "mmHg",
-      VSTESTCD == "HR"     ~ "beats/min",
-      VSTESTCD == "TEMP"   ~ "C",
-      VSTESTCD == "RESP"   ~ "breaths/min",
-      VSTESTCD == "WEIGHT" ~ "kg",
-      VSTESTCD == "HEIGHT" ~ "cm",
+    VSREASND = case_when(
+      VSSTAT == "NOT DONE" ~ as.character(VSREASND),
       TRUE ~ NA_character_
     )
   )
 
-# ------------------------------------------------------------------------------
-# Derive VSSTRESC (standardized character result)
-# ------------------------------------------------------------------------------
-vs7 <- vs6 %>%
-  mutate(VSSTRESC = VSORRES)
+# ==============================================================================
+# 7. Merge with DM to get RFSTDTC for study day calculation
+# ==============================================================================
 
-# ------------------------------------------------------------------------------
-# Derive VSSTRESN (numeric result in standard units)
-# ------------------------------------------------------------------------------
-vs8 <- vs7 %>%
-  mutate(VSSTRESN = suppressWarnings(as.numeric(VSORRES)))
+vs_merged <- vs_mapped %>%
+  left_join(dm_subset, by = c("STUDYID", "USUBJID"))
 
-# ------------------------------------------------------------------------------
-# Derive VSSTRESU (standard units - same as original for this example)
-# Apply unit conversions if needed
-# ------------------------------------------------------------------------------
-vs9 <- vs8 %>%
-  mutate(VSSTRESU = VSORRESU)
+# ==============================================================================
+# 8. Derive VSDY (Study Day)
+#    VSDY = Date of Collection - RFSTDTC + 1 (if on or after), or 
+#           Date of Collection - RFSTDTC (if before)
+# ==============================================================================
 
-# ------------------------------------------------------------------------------
-# Derive VSSTAT (Completion Status) and VSREASND (Reason Not Done)
-# If VSORRES is missing/blank, set VSSTAT = "NOT DONE"
-# ------------------------------------------------------------------------------
-vs10 <- vs9 %>%
-  mutate(
-    VSSTAT = if_else(is.na(VSORRES) | VSORRES == "", "NOT DONE", NA_character_),
-    VSREASND = if_else(VSSTAT == "NOT DONE", "NOT PERFORMED", NA_character_)
-  )
-
-# ------------------------------------------------------------------------------
-# Map VISITNUM and VISIT from source
-# ------------------------------------------------------------------------------
-vs11 <- vs10 %>%
-  mutate(
-    VISITNUM = as.numeric(VISITNUM),
-    VISIT = as.character(VISIT)
-  )
-
-# ------------------------------------------------------------------------------
-# Map VSDTC (Date/Time of Collection in ISO 8601 format)
-# Assume VS_DATE is the source date variable
-# ------------------------------------------------------------------------------
-vs12 <- vs11 %>%
-  mutate(
-    VSDTC = as.character(VS_DATE)
-  )
-
-# ------------------------------------------------------------------------------
-# Derive VSDY (Study Day of Collection)
-# Join dm to get RFSTDTC (Reference Start Date)
-# ------------------------------------------------------------------------------
-dm_sub <- dm %>%
-  select(USUBJID, RFSTDTC)
-
-vs13 <- vs12 %>%
-  left_join(dm_sub, by = "USUBJID") %>%
+vs_merged <- vs_merged %>%
   mutate(
     VSDY = case_when(
-      !is.na(VSDTC) & !is.na(RFSTDTC) ~ {
+      is.na(VSDTC) | is.na(RFSTDTC) ~ NA_real_,
+      TRUE ~ {
         vs_date <- as.Date(substr(VSDTC, 1, 10))
         rf_date <- as.Date(substr(RFSTDTC, 1, 10))
         diff <- as.numeric(vs_date - rf_date)
-        if_else(vs_date >= rf_date, diff + 1, diff)
-      },
-      TRUE ~ NA_real_
+        if_else(diff >= 0, diff + 1, diff)
+      }
     )
-  ) %>%
-  select(-RFSTDTC)
+  )
 
-# ------------------------------------------------------------------------------
-# Map VSPOS (Position during vital signs collection)
-# ------------------------------------------------------------------------------
-vs14 <- vs13 %>%
-  mutate(VSPOS = if_else(!is.na(VSPOS), as.character(VSPOS), NA_character_))
+# ==============================================================================
+# 9. Derive VSSEQ within each subject
+# ==============================================================================
 
-# ------------------------------------------------------------------------------
-# Derive VSSEQ (Sequence Number within subject)
-# ------------------------------------------------------------------------------
-vs15 <- vs14 %>%
+vs_seq <- vs_merged %>%
   arrange(STUDYID, USUBJID, VSTESTCD, VISITNUM, VSDTC) %>%
   group_by(USUBJID) %>%
   mutate(VSSEQ = row_number()) %>%
   ungroup()
 
-# ------------------------------------------------------------------------------
-# Final sort and select variables per SDTM specification
-# Variables in order per spec:
-# STUDYID, VSSEQ, USUBJID, DOMAIN, VSTESTCD, VSTEST, VSCAT,
-# VSORRES, VSORRESU, VSSTRESC, VSSTRESN, VSSTRESU, VSSTAT, VSREASND,
-# VISITNUM, VISIT, VSDTC, VSDY, VSPOS
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# 10. Select and order final variables per SDTM spec
+# ==============================================================================
 
-vs <- vs15 %>%
-  arrange(STUDYID, USUBJID, VSTESTCD, VISITNUM, VSSEQ) %>%
+vs <- vs_seq %>%
   select(
     STUDYID,
     VSSEQ,
@@ -219,55 +192,51 @@ vs <- vs15 %>%
     VSDTC,
     VSDY,
     VSPOS
-  )
+  ) %>%
+  arrange(STUDYID, USUBJID, VSTESTCD, VISITNUM, VSDTC)
 
 # -- END VS -- #
 
+
 # -- BEGIN SUPPVS -- #
 
-# Define qualifier metadata
-qual_meta <- tribble(
-  ~qnam,      ~qlabel,
-  "VSCLSIG",  "Clinically Significant?: Yes No",
-  "VSFAST",   "Fasting?: Yes No",
-  "VSLOC",    "Location of Measurement"
+
+# Define qualifier variables metadata
+qualifier_meta <- tibble::tribble(
+  ~qnam,      ~qlabel,                              ~qorig,  ~qeval,
+  "VSCLSIG",  "Clinically Significant?: Yes No",    "CRF",   NA_character_,
+  "VSFAST",   "Fasting?: Yes No",                   "CRF",   NA_character_,
+  "VSLOC",    "Location of Measurement",            "CRF",   NA_character_
 )
 
-# Merge VS domain with raw data to get qualifier variables.
-# VSCLSIG/VSFAST/VSLOC are visit-level attributes (one value per subject per
-# visit in raw_vs), while `vs` has one row per subject per visit per test —
-# joining on STUDYID+USUBJID alone (no VISITNUM) would cross-multiply every
-# test row against every visit's raw_vs row instead of matching same-visit
-# records only. Also take one representative vs record per visit (slice(1))
-# so the visit-level qualifier isn't duplicated across each of that visit's
-# VSTESTCD rows.
-vs_with_qual <- vs %>%
-  select(STUDYID, USUBJID, VISITNUM, VSSEQ) %>%
-  group_by(STUDYID, USUBJID, VISITNUM) %>%
-  slice(1) %>%
-  ungroup() %>%
+# Get parent domain identifiers and qualifier source values
+suppvs_source <- raw_vs %>%
   inner_join(
-    raw_vs %>%
-      select(STUDYID, USUBJID, VISITNUM, VSCLSIG, VSFAST, VSLOC),
-    by = c("STUDYID", "USUBJID", "VISITNUM")
-  )
+    vs %>% select(STUDYID, USUBJID, VSSEQ),
+    by = c("STUDYID", "USUBJID", "VSSEQ")
+  ) %>%
+  select(STUDYID, USUBJID, VSSEQ, VSCLSIG, VSFAST, VSLOC)
 
-# Pivot qualifier variables to long format
-suppvs <- vs_with_qual %>%
+# Pivot qualifier columns to QNAM/QVAL structure
+suppvs <- suppvs_source %>%
   pivot_longer(
     cols = c(VSCLSIG, VSFAST, VSLOC),
     names_to = "QNAM",
     values_to = "QVAL"
   ) %>%
   filter(!is.na(QVAL) & QVAL != "") %>%
-  left_join(qual_meta, by = c("QNAM" = "qnam")) %>%
+  left_join(
+    qualifier_meta,
+    by = c("QNAM" = "qnam")
+  ) %>%
   mutate(
     RDOMAIN = "VS",
     IDVAR = "VSSEQ",
     IDVARVAL = as.character(VSSEQ),
     QVAL = as.character(QVAL),
-    QORIG = "CRF",
-    QEVAL = NA_character_
+    QLABEL = qlabel,
+    QORIG = qorig,
+    QEVAL = qeval
   ) %>%
   select(
     STUDYID,
@@ -276,12 +245,12 @@ suppvs <- vs_with_qual %>%
     IDVAR,
     IDVARVAL,
     QNAM,
-    QLABEL = qlabel,
+    QLABEL,
     QVAL,
     QORIG,
     QEVAL
   ) %>%
-  arrange(STUDYID, RDOMAIN, USUBJID, IDVAR, IDVARVAL, QNAM)
+  arrange(STUDYID, RDOMAIN, USUBJID, IDVARVAL, QNAM)
 
 # -- END SUPPVS -- #
 

@@ -17,193 +17,224 @@ libname raw  'C:\sas_data\raw'  access=readonly;
 libname sdtm 'C:\sas_data\sdtm';
 
 /*-- BEGIN TU --*/
-******************************************************************************;
-* Program:      sdtm_tu.sas
-* Description:  Create SDTM TU (Tumor/Lesion Identification) Domain
-* Study:        [STUDY]
-* Programmer:   [PROGRAMMER]
-* Date:         [DATE]
-******************************************************************************;
+*******************************************************************************;
+* Program:      TU.sas                                                        *;
+* Description:  Create SDTM TU domain (Tumor/Lesion Identification)          *;
+* Study:        Protocol XXXX                                                 *;
+* Domain:       TU (Findings About Events - Tumor/Response Assessments)       *;
+*******************************************************************************;
 
-%let keepvars = STUDYID DOMAIN USUBJID TUSEQ TUTESTCD TUTEST TUCAT TUORRES 
-                TUSTRESC TUSTRESN TUSTRESU TUEVAL TULNKID VISITNUM VISIT 
-                TUDTC TUDY TULAT TULOC TUMETHOD;
-
-* Read DM for STUDYID, USUBJID, RFSTDTC;
-proc sort data=raw.dm out=dm(keep=STUDYID USUBJID RFSTDTC);
-    by USUBJID;
+*--- Read in DM domain for subject info and reference dates ---;
+proc sort data=raw.dm out=dm;
+    by usubjid;
 run;
 
-* Read raw TU data;
-proc sort data=raw.tu out=tu_raw;
-    by USUBJID;
+*--- Read in source TU data ---;
+data tu_raw;
+    set raw.tu;
 run;
 
-* Merge with DM to get reference start date;
-data tu_pre;
-    merge tu_raw(in=a)
-          dm(in=b keep=STUDYID USUBJID RFSTDTC);
-    by USUBJID;
+*--- Merge with DM to get STUDYID and RFSTDTC ---;
+proc sort data=tu_raw;
+    by usubjid;
+run;
+
+data tu_merged;
+    merge tu_raw (in=a)
+          dm (in=b keep=usubjid studyid rfstdtc);
+    by usubjid;
     if a;
     
-    length STUDYID $20
-           DOMAIN $2 
-           USUBJID $40
-           TUTESTCD $8
-           TUTEST $40
-           TUCAT $200
-           TUORRES $200
-           TUSTRESC $200
-           TUSTRESU $20
-           TUEVAL $40
-           TULNKID $200
-           VISIT $200
-           TUDTC $20
-           TULAT $20
-           TULOC $200
-           TUMETHOD $200;
+    length studyid $20
+           domain $2
+           usubjid $40
+           tutestcd $8
+           tutest $40
+           tucat $200
+           tuorres $200
+           tustresc $200
+           tustresu $20
+           tueval $40
+           tulnkid $200
+           visit $200
+           tudtc $20
+           tulat $200
+           tuloc $200
+           tumethod $200;
     
-    * Set domain;
-    DOMAIN = 'TU';
+    *--- Set domain ---;
+    domain = 'TU';
     
-    * Map test code and test name based on measurement type;
-    if upcase(strip(TESTCD)) = 'TUMIDENT' then do;
-        TUTESTCD = 'TUMIDENT';
-        TUTEST = 'Tumor Identification';
+    *--- Assign TUTESTCD and TUTEST based on assessment type ---;
+    if upcase(strip(tutestcd)) = 'TUMIDENT' then do;
+        tutestcd = 'TUMIDENT';
+        tutest = 'Tumor Identification';
     end;
-    else if upcase(strip(TESTCD)) = 'DIAMETER' then do;
-        TUTESTCD = 'DIAMETER';
-        TUTEST = 'Diameter';
+    else if upcase(strip(tutestcd)) = 'TUMSTATE' then do;
+        tutestcd = 'TUMSTATE';
+        tutest = 'Tumor State';
     end;
-    else if upcase(strip(TESTCD)) = 'LDIAM' then do;
-        TUTESTCD = 'LDIAM';
-        TUTEST = 'Longest Diameter';
+    else if upcase(strip(tutestcd)) = 'DIAM' then do;
+        tutestcd = 'DIAM';
+        tutest = 'Diameter';
     end;
-    else if upcase(strip(TESTCD)) = 'PLDIAM' then do;
-        TUTESTCD = 'PLDIAM';
-        TUTEST = 'Perpendicular Diameter';
+    else if upcase(strip(tutestcd)) = 'LDIAM' then do;
+        tutestcd = 'LDIAM';
+        tutest = 'Longest Diameter';
     end;
-    else if upcase(strip(TESTCD)) = 'TUMSTATE' then do;
-        TUTESTCD = 'TUMSTATE';
-        TUTEST = 'Tumor State';
-    end;
-    else do;
-        TUTESTCD = strip(TESTCD);
-        TUTEST = strip(TEST);
+    else if upcase(strip(tutestcd)) = 'PLDIAM' then do;
+        tutestcd = 'PLDIAM';
+        tutest = 'Perpendicular Diameter';
     end;
     
-    * Category for assessment;
-    if not missing(CAT) then TUCAT = strip(CAT);
+    *--- Set TUCAT for assessment criteria ---;
+    if strip(tucat) = '' then tucat = 'RECIST 1.1';
+    else tucat = strip(tucat);
     
-    * Original result;
-    if not missing(ORRES) then TUORRES = strip(ORRES);
-    
-    * Standard character result;
-    if not missing(ORRES) then TUSTRESC = strip(ORRES);
-    
-    * Numeric result;
-    if not missing(STRESN) then TUSTRESN = STRESN;
-    else if not missing(ORRES) and notdigit(compress(ORRES,'.-')) = 0 then 
-        TUSTRESN = input(ORRES, ?? best.);
-    
-    * Standard units;
-    if not missing(STRESU) then TUSTRESU = strip(STRESU);
-    
-    * Evaluator;
-    if not missing(EVAL) then TUEVAL = strip(EVAL);
-    
-    * Link ID;
-    if not missing(LNKID) then TULNKID = strip(LNKID);
-    
-    * Visit information;
-    if not missing(VISITNUM_RAW) then VISITNUM = VISITNUM_RAW;
-    if not missing(VISIT_RAW) then VISIT = strip(VISIT_RAW);
-    
-    * Date/Time of collection (ISO 8601);
-    if not missing(DTC) then TUDTC = strip(DTC);
-    
-    * Study day;
-    if not missing(TUDTC) and not missing(RFSTDTC) then do;
-        if length(strip(TUDTC)) >= 10 and length(strip(RFSTDTC)) >= 10 then do;
-            _tudt = input(substr(strip(TUDTC),1,10), ?? yymmdd10.);
-            _rfstdt = input(substr(strip(RFSTDTC),1,10), ?? yymmdd10.);
-            if not missing(_tudt) and not missing(_rfstdt) then do;
-                if _tudt >= _rfstdt then TUDY = _tudt - _rfstdt + 1;
-                else TUDY = _tudt - _rfstdt;
+    *--- Process TUORRES and derive TUSTRESC and TUSTRESN ---;
+    if strip(tuorres) ne '' then do;
+        tustresc = strip(tuorres);
+        
+        *--- Derive numeric result for diameter measurements ---;
+        if tutestcd in ('DIAM', 'LDIAM', 'PLDIAM') then do;
+            if notdigit(compress(tuorres,'.-')) = 0 and 
+               notdigit(compress(tuorres,'.')) > 0 then do;
+                tustresn = input(tuorres, ?? best.);
+                if strip(tustresu) = '' then tustresu = 'mm';
             end;
+        end;
+        *--- For categorical results like TUMIDENT and TUMSTATE ---;
+        else if tutestcd = 'TUMIDENT' then do;
+            if upcase(strip(tustresc)) = 'TARGET' then tustresn = 1;
+            else if upcase(strip(tustresc)) = 'NON-TARGET' then tustresn = 2;
+            else if upcase(strip(tustresc)) = 'NEW' then tustresn = 3;
+        end;
+        else if tutestcd = 'TUMSTATE' then do;
+            if upcase(strip(tustresc)) in ('PRESENT', 'MEASURABLE') then tustresn = 1;
+            else if upcase(strip(tustresc)) in ('ABSENT', 'NOT PRESENT') then tustresn = 2;
         end;
     end;
     
-    * Laterality;
-    if not missing(LAT) then TULAT = strip(LAT);
+    *--- Map TUEVAL ---;
+    if upcase(strip(tueval)) in ('INV', 'INVESTIGATOR') then tueval = 'INVESTIGATOR';
+    else if upcase(strip(tueval)) in ('IRC', 'INDEPENDENT', 'INDEPENDENT ASSESSOR') then 
+        tueval = 'INDEPENDENT ASSESSOR';
+    else tueval = strip(tueval);
     
-    * Location;
-    if not missing(LOC) then TULOC = strip(LOC);
+    *--- Keep TULNKID for linking ---;
+    tulnkid = strip(tulnkid);
     
-    * Method;
-    if not missing(METHOD) then TUMETHOD = strip(METHOD);
+    *--- Map VISIT and VISITNUM ---;
+    visit = strip(visit);
+    if visitnum = . and strip(visit) ne '' then do;
+        if upcase(visit) = 'SCREENING' then visitnum = 0;
+        else if upcase(visit) = 'BASELINE' then visitnum = 1;
+        else if index(upcase(visit), 'WEEK') > 0 then 
+            visitnum = input(compress(visit,,'kd'), ?? best.) + 1;
+        else if index(upcase(visit), 'CYCLE') > 0 then 
+            visitnum = input(compress(visit,,'kd'), ?? best.) * 10;
+        else if upcase(visit) = 'END OF TREATMENT' then visitnum = 99;
+        else if upcase(visit) = 'FOLLOW-UP' then visitnum = 100;
+    end;
     
-    drop TESTCD TEST CAT ORRES STRESN STRESU EVAL LNKID 
-         VISITNUM_RAW VISIT_RAW DTC LAT LOC METHOD
-         RFSTDTC _tudt _rfstdt;
+    *--- Map TUDTC (keep as character ISO 8601) ---;
+    tudtc = strip(tudtc);
+    
+    *--- Derive TUDY (Study Day) ---;
+    if strip(tudtc) ne '' and strip(rfstdtc) ne '' then do;
+        if length(strip(tudtc)) >= 10 and length(strip(rfstdtc)) >= 10 then do;
+            tudy = input(substr(tudtc,1,10), ?? yymmdd10.) - 
+                   input(substr(rfstdtc,1,10), ?? yymmdd10.);
+            if tudy >= 0 then tudy = tudy + 1;
+        end;
+    end;
+    
+    *--- Map TULAT (Laterality) ---;
+    if upcase(strip(tulat)) = 'LEFT' then tulat = 'LEFT';
+    else if upcase(strip(tulat)) = 'RIGHT' then tulat = 'RIGHT';
+    else if upcase(strip(tulat)) in ('BILATERAL', 'BOTH') then tulat = 'BILATERAL';
+    else tulat = strip(tulat);
+    
+    *--- Map TULOC (Tumor Location) ---;
+    tuloc = strip(tuloc);
+    
+    *--- Map TUMETHOD ---;
+    if upcase(strip(tumethod)) = 'CT' then tumethod = 'CT SCAN';
+    else if upcase(strip(tumethod)) = 'MRI' then tumethod = 'MRI';
+    else if upcase(strip(tumethod)) in ('PE', 'PHYSICAL EXAM') then tumethod = 'PHYSICAL EXAM';
+    else if upcase(strip(tumethod)) in ('XRAY', 'X-RAY') then tumethod = 'X-RAY';
+    else tumethod = strip(tumethod);
+    
+    if strip(usubjid) ne '';
 run;
 
-* Derive sequence number;
-proc sort data=tu_pre;
-    by STUDYID USUBJID TUTESTCD VISITNUM TUDTC TULNKID;
+*--- Sort data before deriving sequence ---;
+proc sort data=tu_merged;
+    by studyid usubjid tulnkid tutestcd visitnum tudtc;
 run;
 
+*--- Derive TUSEQ ---;
+data tu_seq;
+    set tu_merged;
+    by studyid usubjid;
+    
+    retain tuseq;
+    
+    if first.usubjid then tuseq = 0;
+    tuseq + 1;
+run;
+
+*--- Final sort ---;
+proc sort data=tu_seq;
+    by studyid usubjid tuseq;
+run;
+
+*--- Create final TU domain with labels and output ---;
 data sdtm.tu;
-    set tu_pre;
-    by STUDYID USUBJID;
+    set tu_seq;
     
-    retain TUSEQ;
+    label
+        studyid  = "Study Identifier"
+        domain   = "Domain Abbreviation"
+        usubjid  = "Unique Subject Identifier"
+        tuseq    = "Sequence Number"
+        tutestcd = "Tumor Test Short Name"
+        tutest   = "Tumor Test Name"
+        tucat    = "Category for Tumor"
+        tuorres  = "Result or Finding in Original Units"
+        tustresc = "Character Result/Finding in Std Format"
+        tustresn = "Numeric Result/Finding in Standard Units"
+        tustresu = "Standard Units"
+        tueval   = "Evaluator"
+        tulnkid  = "Link ID"
+        visitnum = "Visit Number"
+        visit    = "Visit Name"
+        tudtc    = "Date/Time of Collection"
+        tudy     = "Study Day of Collection"
+        tulat    = "Laterality"
+        tuloc    = "Location of the Tumor"
+        tumethod = "Method of Test or Examination"
+    ;
     
-    if first.USUBJID then TUSEQ = 0;
-    TUSEQ + 1;
-    
-    label STUDYID  = "Study Identifier"
-          DOMAIN   = "Domain Abbreviation"
-          USUBJID  = "Unique Subject Identifier"
-          TUSEQ    = "Sequence Number"
-          TUTESTCD = "Tumor Identification Test Short Name"
-          TUTEST   = "Tumor Identification Test Name"
-          TUCAT    = "Category for Tumor Identification"
-          TUORRES  = "Result or Finding in Original Units"
-          TUSTRESC = "Character Result/Finding in Std Format"
-          TUSTRESN = "Numeric Result/Finding in Standard Units"
-          TUSTRESU = "Standard Units"
-          TUEVAL   = "Evaluator"
-          TULNKID  = "Link ID"
-          VISITNUM = "Visit Number"
-          VISIT    = "Visit Name"
-          TUDTC    = "Date/Time of Collection"
-          TUDY     = "Study Day of Collection"
-          TULAT    = "Laterality"
-          TULOC    = "Location of the Tumor"
-          TUMETHOD = "Method of Identification";
-    
-    keep &keepvars;
+    keep studyid domain usubjid tuseq tutestcd tutest tucat tuorres tustresc
+         tustresn tustresu tueval tulnkid visitnum visit tudtc tudy
+         tulat tuloc tumethod;
+         
+    format tustresn best. visitnum best. tudy best. tuseq best.;
 run;
 
-* Final sort per SDTM IG;
-proc sort data=sdtm.tu;
-    by STUDYID USUBJID TUSEQ;
-run;
-
-* Generate summary report;
+*--- Print summary ---;
 proc freq data=sdtm.tu;
-    tables TUTESTCD*TUTEST TUCAT TUEVAL TUMETHOD TULAT / missing list;
+    tables tutestcd*tutest tucat tueval / list missing;
     title "TU Domain - Frequency Summary";
 run;
 
-proc means data=sdtm.tu n nmiss min max mean median;
-    var TUSEQ TUSTRESN VISITNUM TUDY;
-    title "TU Domain - Numeric Variables Summary";
+proc means data=sdtm.tu n nmiss min max;
+    var tuseq visitnum tudy tustresn;
+    title "TU Domain - Numeric Variable Summary";
 run;
 
 title;
-
 /*-- END TU --*/
 
 /*-- Final sort and output verification --*/

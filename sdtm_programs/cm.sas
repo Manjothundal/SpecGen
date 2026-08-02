@@ -2,13 +2,13 @@
 * Program:    cm.sas
 * Domain:     CM (Interventions)
 * Purpose:    Create SDTM CM domain dataset
-* Variables:  19
+* Variables:  28
 * Generated:  SpecGen Phase 5c - SDTM Program Generation
 *
 * Input:      raw.cm (source CRF data)
 * Output:     sdtm.cm (CM domain dataset)
 *
-* Variables:  STUDYID, CMSEQ, USUBJID, DOMAIN, CMTRT, CMDECOD, CMCAT, CMDOSE
+* Variables:  STUDYID, DOMAIN, USUBJID, CMCAT, CMSEQ, CMGRPID, CMSPID, CMTRT
 *             ...
 *******************************************************************************/
 
@@ -16,208 +16,262 @@
 libname raw  'C:\sas_data\raw'  access=readonly;
 libname sdtm 'C:\sas_data\sdtm';
 
-/*==================================================================================================
-  Program:        CM.sas
-  Description:    Create SDTM CM (Concomitant Medications) domain
-  SAS Version:    9.4 or later
-  CDISC Version:  SDTM 3.2 or later
-==================================================================================================*/
+/*==========================================================================================*
+ | Program Name:    CM.sas                                                                  |
+ | Program Purpose: Create SDTM CM (Concomitant Medications) Domain                        |
+ | SAS Version:     9.4 or higher                                                           |
+ | CDISC Version:   SDTM 3.2 or higher                                                      |
+ |==========================================================================================*/
 
 /*-- BEGIN CM --*/
 
-*-------------------------------------------------------------------------------------------;
-* Step 1: Read source CM data and merge with DM for subject identifiers and reference date ;
-*-------------------------------------------------------------------------------------------;
+*-----------------------------------------------------------------------------------------*
+| Step 1: Read source data and merge with DM for reference dates                          |
+*-----------------------------------------------------------------------------------------*;
 
 proc sort data=raw.cm out=cm_raw;
-    by STUDYID SITEID SUBJID;
+    by studyid siteid subjid;
 run;
 
-proc sort data=raw.dm(keep=STUDYID SITEID SUBJID USUBJID RFSTDTC) out=dm_ref nodupkey;
-    by STUDYID SITEID SUBJID;
+proc sort data=raw.dm(keep=studyid siteid subjid usubjid rfstdtc rfendtc) out=dm;
+    by studyid siteid subjid;
 run;
 
-data cm_01;
+data cm_merged;
     merge cm_raw(in=a)
-          dm_ref(in=b);
-    by STUDYID SITEID SUBJID;
+          dm(in=b);
+    by studyid siteid subjid;
+    if a;
     
-    if a; /* Keep all CM records */
-    
-    length USUBJID $40 RFSTDTC $19;
-    
-    /* Create USUBJID if not already available from DM */
-    if missing(USUBJID) then USUBJID = catx('-', STUDYID, SITEID, SUBJID);
-    
-    /* Ensure reference start date is available for study day calculations */
-    if missing(RFSTDTC) then put "WARN" "ING: Missing RFSTDTC for " USUBJID=;
+    if not b then do;
+        put "WARNING: Subject not found in DM: " studyid= siteid= subjid=;
+    end;
 run;
 
-*-------------------------------------------------------------------------------------------;
-* Step 2: Create CM domain variables and map source to SDTM                                 ;
-*-------------------------------------------------------------------------------------------;
+*-----------------------------------------------------------------------------------------*
+| Step 2: Create CM domain with derivations                                               |
+*-----------------------------------------------------------------------------------------*;
 
-data cm_02;
-    set cm_01;
+data cm_1;
+    set cm_merged;
+    by studyid siteid subjid;
     
     length STUDYID $20
            DOMAIN $2 
            USUBJID $40
-           CMTRT $200 
-           CMDECOD $200 
            CMCAT $200
-           CMDOSE 8
-           CMDOSU $20 
-           CMDOSFRQ $20 
-           CMROUTE $40 
-           CMSTDTC $19 
-           CMENDTC $19
-           CMSTDY 8
-           CMENDY 8
-           EPOCH $20
-           CMCLAS $100
+           CMGRPID $20
+           CMSPID $20
+           CMTRT $200
+           CMDECOD $200
            CMINDC $200
-           CMONGO $3;
+           CMDOSTXT $200
+           CMDOSU $20
+           CMDOSFRQ $20
+           CMROUTE $20
+           CMSTDTC $20
+           CMENDTC $20
+           CMENRF $20
+           ATC4CD $10
+           ATC4 $200
+           ATC3CD $10
+           ATC3 $200
+           ATC2CD $10
+           ATC2 $200
+           ATC1CD $10
+           ATC1 $200;
     
-    /*-- Assign Domain --*/
+    /* Domain Assignment */
     DOMAIN = 'CM';
     
-    /*-- Map Reported Name of Treatment --*/
-    CMTRT = strip(CMTRT);
+    /* Study Identifier */
+    STUDYID = strip(put(studyid, best.));
     
-    /*-- Map Standardized Treatment Name --*/
-    CMDECOD = strip(CMDECOD);
-    if missing(CMDECOD) then CMDECOD = CMTRT; /* Use reported name if no standardized name */
+    /* USUBJID Derivation */
+    if missing(USUBJID) then do;
+        USUBJID = catx('-', strip(put(studyid, best.)), strip(put(siteid, best.)), strip(put(subjid, best.)));
+    end;
     
-    /*-- Map Category --*/
-    CMCAT = strip(CMCAT);
+    /* Map source variables to SDTM variables */
     
-    /*-- Map Dose (numeric) --*/
-    /* CMDOSE remains as numeric */
+    /* Category for Medication */
+    if not missing(cmcat_raw) then CMCAT = strip(cmcat_raw);
     
-    /*-- Map Dose Units --*/
-    CMDOSU = strip(upcase(CMDOSU));
+    /* Group ID */
+    if not missing(cmgrpid_raw) then CMGRPID = strip(cmgrpid_raw);
     
-    /*-- Map Dosing Frequency --*/
-    CMDOSFRQ = strip(upcase(CMDOSFRQ));
+    /* Sponsor-Defined Identifier */
+    if not missing(cmspid_raw) then CMSPID = strip(cmspid_raw);
     
-    /*-- Map Route of Administration --*/
-    CMROUTE = strip(upcase(CMROUTE));
+    /* Reported Name of Drug */
+    if not missing(cmtrt_raw) then CMTRT = strip(cmtrt_raw);
     
-    /*-- Map Start Date/Time (ISO 8601 format) --*/
-    CMSTDTC = strip(CMSTDTC);
+    /* Standardized Medication Name */
+    if not missing(cmdecod_raw) then CMDECOD = strip(cmdecod_raw);
     
-    /*-- Map End Date/Time (ISO 8601 format) --*/
-    CMENDTC = strip(CMENDTC);
+    /* Indication */
+    if not missing(cmindc_raw) then CMINDC = strip(cmindc_raw);
     
-    /*-- Map ATC Class --*/
-    CMCLAS = strip(CMCLAS);
+    /* Dose per Administration */
+    if not missing(cmdose_raw) then do;
+        if notdigit(strip(cmdose_raw)) = 0 then CMDOSE = input(cmdose_raw, ?? best.);
+    end;
     
-    /*-- Map Indication --*/
-    CMINDC = strip(CMINDC);
+    /* Dose Description */
+    if not missing(cmdostxt_raw) then CMDOSTXT = strip(cmdostxt_raw);
     
-    /*-- Map Ongoing --*/
-    CMONGO = strip(upcase(CMONGO));
+    /* Dose Units */
+    if not missing(cmdosu_raw) then CMDOSU = strip(cmdosu_raw);
     
+    /* Dosing Frequency */
+    if not missing(cmdosfrq_raw) then CMDOSFRQ = strip(cmdosfrq_raw);
+    
+    /* Route of Administration */
+    if not missing(cmroute_raw) then CMROUTE = strip(cmroute_raw);
+    
+    /* Start Date/Time - Convert to ISO 8601 */
+    if not missing(cmstdat_raw) then do;
+        _cmstdat_chk = strip(cmstdat_raw);
+        if indexc(_cmstdat_chk, '-') > 0 and length(_cmstdat_chk) >= 10 then
+            CMSTDTC = substr(_cmstdat_chk, 1, 10);
+        else if missing(CMSTDTC) then do;
+            _cmstdt = input(cmstdat_raw, ?? yymmdd10.);
+            if not missing(_cmstdt) then CMSTDTC = put(_cmstdt, is8601da.);
+        end;
+    end;
+    
+    /* End Date/Time - Convert to ISO 8601 */
+    if not missing(cmendat_raw) then do;
+        _cmendat_chk = strip(cmendat_raw);
+        if indexc(_cmendat_chk, '-') > 0 and length(_cmendat_chk) >= 10 then
+            CMENDTC = substr(_cmendat_chk, 1, 10);
+        else if missing(CMENDTC) then do;
+            _cmendt = input(cmendat_raw, ?? yymmdd10.);
+            if not missing(_cmendt) then CMENDTC = put(_cmendt, is8601da.);
+        end;
+    end;
+    
+    /* ATC Level 4 Code and Term */
+    if not missing(atc4cd_raw) then ATC4CD = strip(atc4cd_raw);
+    if not missing(atc4_raw) then ATC4 = strip(atc4_raw);
+    
+    /* ATC Level 3 Code and Term */
+    if not missing(atc3cd_raw) then ATC3CD = strip(atc3cd_raw);
+    if not missing(atc3_raw) then ATC3 = strip(atc3_raw);
+    
+    /* ATC Level 2 Code and Term */
+    if not missing(atc2cd_raw) then ATC2CD = strip(atc2cd_raw);
+    if not missing(atc2_raw) then ATC2 = strip(atc2_raw);
+    
+    /* ATC Level 1 Code and Term */
+    if not missing(atc1cd_raw) then ATC1CD = strip(atc1cd_raw);
+    if not missing(atc1_raw) then ATC1 = strip(atc1_raw);
+    
+    drop _cmstdat_chk _cmendat_chk _cmstdt _cmendt;
 run;
 
-*-------------------------------------------------------------------------------------------;
-* Step 3: Derive Study Days (CMSTDY, CMENDY) relative to RFSTDTC                          ;
-*-------------------------------------------------------------------------------------------;
+*-----------------------------------------------------------------------------------------*
+| Step 3: Derive Study Days (--STDY, --ENDY) relative to RFSTDTC                         |
+*-----------------------------------------------------------------------------------------*;
 
-data cm_03;
-    set cm_02;
+data cm_2;
+    set cm_1;
     
-    length RFSTDT CMSTDT CMENDT 8;
+    /* Convert ISO 8601 dates to SAS dates for calculation */
+    length rfstdt cmstdt cmendt 8;
     
-    /*-- Convert ISO 8601 dates to SAS dates for calculation --*/
-    if not missing(RFSTDTC) and length(strip(RFSTDTC)) >= 10 then 
-        RFSTDT = input(substr(RFSTDTC,1,10), ??yymmdd10.);
+    /* Reference Start Date */
+    if not missing(rfstdtc) then rfstdt = input(substr(rfstdtc, 1, 10), ?? yymmdd10.);
     
-    if not missing(CMSTDTC) and length(strip(CMSTDTC)) >= 10 then 
-        CMSTDT = input(substr(CMSTDTC,1,10), ??yymmdd10.);
+    /* CM Start Date */
+    if not missing(CMSTDTC) then cmstdt = input(substr(CMSTDTC, 1, 10), ?? yymmdd10.);
     
-    if not missing(CMENDTC) and length(strip(CMENDTC)) >= 10 then 
-        CMENDT = input(substr(CMENDTC,1,10), ??yymmdd10.);
+    /* CM End Date */
+    if not missing(CMENDTC) then cmendt = input(substr(CMENDTC, 1, 10), ?? yymmdd10.);
     
-    /*-- Derive Study Day of Start --*/
-    if not missing(CMSTDT) and not missing(RFSTDT) then do;
-        if CMSTDT >= RFSTDT then 
-            CMSTDY = CMSTDT - RFSTDT + 1;
+    /* Study Day of Start of Medication */
+    if not missing(cmstdt) and not missing(rfstdt) then do;
+        if cmstdt >= rfstdt then 
+            CMSTDY = cmstdt - rfstdt + 1;
         else 
-            CMSTDY = CMSTDT - RFSTDT;
+            CMSTDY = cmstdt - rfstdt;
     end;
     
-    /*-- Derive Study Day of End --*/
-    if not missing(CMENDT) and not missing(RFSTDT) then do;
-        if CMENDT >= RFSTDT then 
-            CMENDY = CMENDT - RFSTDT + 1;
+    /* Study Day of End of Medication */
+    if not missing(cmendt) and not missing(rfstdt) then do;
+        if cmendt >= rfstdt then 
+            CMENDY = cmendt - rfstdt + 1;
         else 
-            CMENDY = CMENDT - RFSTDT;
+            CMENDY = cmendt - rfstdt;
     end;
     
-    drop RFSTDT CMSTDT CMENDT SITEID SUBJID RFSTDTC;
-    
+    drop rfstdt cmstdt cmendt;
 run;
 
-*-------------------------------------------------------------------------------------------;
-* Step 4: Derive EPOCH based on treatment period dates                                     ;
-*-------------------------------------------------------------------------------------------;
+*-----------------------------------------------------------------------------------------*
+| Step 4: Derive End Relative to Reference Period (CMENRF)                               |
+*-----------------------------------------------------------------------------------------*;
 
-data cm_04;
-    set cm_03;
+data cm_3;
+    set cm_2;
     
-    /*-- Derive EPOCH based on study day or date relative to treatment periods --*/
-    if not missing(CMSTDY) then do;
-        if CMSTDY < 1 then EPOCH = 'SCREENING';
-        else EPOCH = 'TREATMENT';
-        /* Add additional EPOCH logic based on protocol-specific periods */
+    length rfstdt rfendt cmendt 8;
+    
+    /* Reference Start Date */
+    if not missing(rfstdtc) then rfstdt = input(substr(rfstdtc, 1, 10), ?? yymmdd10.);
+    
+    /* Reference End Date */
+    if not missing(rfendtc) then rfendt = input(substr(rfendtc, 1, 10), ?? yymmdd10.);
+    
+    /* CM End Date */
+    if not missing(CMENDTC) then cmendt = input(substr(CMENDTC, 1, 10), ?? yymmdd10.);
+    
+    /* Derive CMENRF */
+    if missing(CMENDTC) then do;
+        CMENRF = 'ONGOING';
     end;
-    else if not missing(CMONGO) and upcase(CMONGO) = 'YES' then do;
-        EPOCH = 'SCREENING';
-    end;
-    else do;
-        EPOCH = '';
+    else if not missing(rfendtc) and not missing(rfstdt) and not missing(cmendt) then do;
+        if cmendt > rfendt then 
+            CMENRF = 'AFTER';
+        else if cmendt < rfstdt then 
+            CMENRF = 'BEFORE';
+        else 
+            CMENRF = 'DURING';
     end;
     
+    drop rfstdt rfendt cmendt;
 run;
 
-*-------------------------------------------------------------------------------------------;
-* Step 5: Derive CMSEQ (sequence number within subject)                                    ;
-*-------------------------------------------------------------------------------------------;
+*-----------------------------------------------------------------------------------------*
+| Step 5: Assign CMSEQ and finalize                                                       |
+*-----------------------------------------------------------------------------------------*;
 
-proc sort data=cm_04;
-    by USUBJID CMSTDTC CMTRT CMDECOD;
+proc sort data=cm_3;
+    by STUDYID USUBJID CMSTDTC CMTRT CMDECOD;
 run;
 
-data cm_05;
-    set cm_04;
-    by USUBJID;
+data cm_final;
+    set cm_3;
+    by STUDYID USUBJID;
     
-    /*-- Derive Sequence Number --*/
+    /* Sequence Number */
     if first.USUBJID then CMSEQ = 0;
     CMSEQ + 1;
     
-    retain CMSEQ;
-    
-run;
-
-*-------------------------------------------------------------------------------------------;
-* Step 6: Apply labels and create final CM domain dataset                                  ;
-*-------------------------------------------------------------------------------------------;
-
-data cm_final;
-    set cm_05;
-    
+    /* Apply Labels */
     label 
         STUDYID  = "Study Identifier"
         DOMAIN   = "Domain Abbreviation"
         USUBJID  = "Unique Subject Identifier"
+        CMCAT    = "Category for Medication"
         CMSEQ    = "Sequence Number"
+        CMGRPID  = "Group ID"
+        CMSPID   = "Sponsor-Defined Identifier"
         CMTRT    = "Reported Name of Drug, Med, or Therapy"
         CMDECOD  = "Standardized Medication Name"
-        CMCAT    = "Category for Medication"
+        CMINDC   = "Indication"
         CMDOSE   = "Dose per Administration"
+        CMDOSTXT = "Dose Description"
         CMDOSU   = "Dose Units"
         CMDOSFRQ = "Dosing Frequency per Interval"
         CMROUTE  = "Route of Administration"
@@ -225,136 +279,70 @@ data cm_final;
         CMENDTC  = "End Date/Time of Medication"
         CMSTDY   = "Study Day of Start of Medication"
         CMENDY   = "Study Day of End of Medication"
-        EPOCH    = "Epoch"
-        CMCLAS   = "Medication Class"
-        CMINDC   = "Indication"
-        CMONGO   = "Ongoing Medication"
-    ;
-    
+        CMENRF   = "End Relative to Reference Period"
+        ATC4CD   = "ATC Level 4 Code"
+        ATC4     = "ATC Level 4 Term"
+        ATC3CD   = "ATC Level 3 Code"
+        ATC3     = "ATC Level 3 Term"
+        ATC2CD   = "ATC Level 2 Code"
+        ATC2     = "ATC Level 2 Term"
+        ATC1CD   = "ATC Level 1 Code"
+        ATC1     = "ATC Level 1 Term";
 run;
 
-*-------------------------------------------------------------------------------------------;
-* Step 7: Sort and output final CM domain                                                  ;
-*-------------------------------------------------------------------------------------------;
+*-----------------------------------------------------------------------------------------*
+| Step 6: Final sort and output to SDTM library                                           |
+*-----------------------------------------------------------------------------------------*;
 
 proc sort data=cm_final 
-          out=sdtm.cm(keep=STUDYID DOMAIN USUBJID CMSEQ CMTRT CMDECOD CMCAT CMDOSE CMDOSU 
-                           CMDOSFRQ CMROUTE CMSTDTC CMENDTC CMSTDY CMENDY EPOCH CMCLAS 
-                           CMINDC CMONGO);
+          out=sdtm.cm(keep=STUDYID 
+                           DOMAIN 
+                           USUBJID 
+                           CMCAT 
+                           CMSEQ 
+                           CMGRPID 
+                           CMSPID 
+                           CMTRT 
+                           CMDECOD 
+                           CMINDC 
+                           CMDOSE 
+                           CMDOSTXT 
+                           CMDOSU 
+                           CMDOSFRQ 
+                           CMROUTE 
+                           CMSTDTC 
+                           CMENDTC 
+                           CMSTDY 
+                           CMENDY 
+                           CMENRF 
+                           ATC4CD 
+                           ATC4 
+                           ATC3CD 
+                           ATC3 
+                           ATC2CD 
+                           ATC2 
+                           ATC1CD 
+                           ATC1);
     by STUDYID USUBJID CMSEQ;
 run;
 
-*-------------------------------------------------------------------------------------------;
-* Step 8: Generate data summary report                                                     ;
-*-------------------------------------------------------------------------------------------;
-
-proc contents data=sdtm.cm varnum;
-    title "Contents of SDTM.CM Domain";
-run;
+*-----------------------------------------------------------------------------------------*
+| Step 7: Summary report                                                                   |
+*-----------------------------------------------------------------------------------------*;
 
 proc freq data=sdtm.cm;
-    tables CMCAT CMDOSU CMDOSFRQ CMROUTE EPOCH CMONGO / missing;
-    title "Frequency Summary of CM Domain";
+    tables CMCAT CMDOSFRQ CMROUTE CMENRF / missing;
+    title "CM Domain Frequency Counts";
 run;
+
+proc means data=sdtm.cm n nmiss min max;
+    var CMSEQ CMDOSE CMSTDY CMENDY;
+    title "CM Domain Numeric Variable Summary";
+run;
+
+title;
 
 /*-- END CM --*/
-
-
-/*-- BEGIN SUPPCM --*/
-/*====================================================================================
-  Program Name: suppcm.sas
-  Description:  Create SUPPCM supplemental qualifiers for CM domain
-  RDOMAIN:      CM
-  IDVAR:        CMSEQ
-====================================================================================*/
-
-*-----------------------------------------------------------------------------------;
-* Merge source data with SDTM CM to get CMSEQ values;
-*-----------------------------------------------------------------------------------;
-proc sort data=raw.cm out=work.cm_raw;
-    by studyid usubjid cmtrt cmdecod;
-run;
-
-proc sort data=sdtm.cm out=work.cm_sdtm;
-    by studyid usubjid cmtrt cmdecod;
-run;
-
-data work.cm_merge;
-    merge work.cm_raw (in=a)
-          work.cm_sdtm (in=b keep=studyid usubjid cmtrt cmdecod cmseq);
-    by studyid usubjid cmtrt cmdecod;
-    if a and b;
-run;
-
-*-----------------------------------------------------------------------------------;
-* Transpose qualifier variables into QNAM/QVAL rows;
-*-----------------------------------------------------------------------------------;
-data work.suppcm_base;
-    length STUDYID $20 
-           RDOMAIN $2 
-           USUBJID $40 
-           IDVAR $8 
-           IDVARVAL $200 
-           QNAM $8 
-           QLABEL $40 
-           QVAL $200 
-           QORIG $8 
-           QEVAL $40;
-    
-    set work.cm_merge;
-    
-    RDOMAIN = 'CM';
-    IDVAR = 'CMSEQ';
-    IDVARVAL = put(CMSEQ, best.);
-    QORIG = 'CRF';
-    QEVAL = '';
-    
-    * CMINDOTH - Other Indication;
-    if not missing(CMINDOTH) then do;
-        QNAM = 'CMINDOTH';
-        QLABEL = 'Other Indication';
-        QVAL = strip(CMINDOTH);
-        output;
-    end;
-    
-    * CMPREVFL - Prior Medication Flag;
-    if not missing(CMPREVFL) then do;
-        QNAM = 'CMPREVFL';
-        QLABEL = 'Prior Medication Flag';
-        QVAL = strip(CMPREVFL);
-        output;
-    end;
-    
-    keep STUDYID RDOMAIN USUBJID IDVAR IDVARVAL QNAM QLABEL QVAL QORIG QEVAL;
-    
-    label STUDYID  = 'Study Identifier'
-          RDOMAIN  = 'Related Domain Abbreviation'
-          USUBJID  = 'Unique Subject Identifier'
-          IDVAR    = 'Identifying Variable'
-          IDVARVAL = 'Identifying Variable Value'
-          QNAM     = 'Qualifier Variable Name'
-          QLABEL   = 'Qualifier Variable Label'
-          QVAL     = 'Data Value'
-          QORIG    = 'Origin'
-          QEVAL    = 'Evaluator';
-run;
-
-*-----------------------------------------------------------------------------------;
-* Sort by required ordering variables;
-*-----------------------------------------------------------------------------------;
-proc sort data=work.suppcm_base
-          out=sdtm.suppcm;
-    by STUDYID RDOMAIN USUBJID IDVARVAL QNAM;
-run;
-
-*-----------------------------------------------------------------------------------;
-* Clean up work datasets;
-*-----------------------------------------------------------------------------------;
-proc datasets library=work nolist;
-    delete cm_raw cm_sdtm cm_merge suppcm_base;
-quit;
-
-/*-- END SUPPCM --*/
 
 /*-- Final sort and output verification --*/
 proc sort data=sdtm.cm;

@@ -11,123 +11,92 @@
 #             ...
 # ********************************************************************
 
-# =============================================================================
-# Program:       dm.R
-# Description:   SDTM DM (Demographics) domain derivation
-# =============================================================================
-
 library(dplyr)
 
-# =============================================================================
-# 1. Start with raw_dm and derive SDTM variables
-# =============================================================================
+# -- BEGIN DM -- #
 
+# ============================================================================
+# SDTM DM Domain Derivation
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# 1. Start with raw demographics data
+# ----------------------------------------------------------------------------
 dm <- raw_dm %>%
   mutate(
-    STUDYID = "STUDY123",
-    DOMAIN = "DM",
-    SUBJID = as.character(subject_id),
-    SITEID = as.character(site_id),
-    USUBJID = paste(STUDYID, as.character(site_id), as.character(subject_id), sep = "-"),
-    BRTHDTC = as.character(birth_date),
-    SEX = as.character(sex),
-    RACE = as.character(race),
-    ETHNIC = as.character(ethnicity),
-    RFICDTC = as.character(consent_date),
-    RANDNUM = as.character(randomization_number),
-    COUNTRY = as.character(country_code),
-    INVID = as.character(investigator_id),
-    INVNAM = as.character(investigator_name),
-    ARM = as.character(arm_description)
+    # Assigned variables
+    STUDYID = "STUDY123",                                    # Study Identifier
+    DOMAIN = "DM",                                           # Domain Abbreviation
+    
+    # Derive Unique Subject Identifier
+    USUBJID = paste(STUDYID, SITEID, SUBJID, sep = "-")     # Unique Subject Identifier
   )
 
-# =============================================================================
-# 2. Derive ARM codes from ARM descriptions
-# =============================================================================
-
-dm <- dm %>%
-  mutate(
-    ARMCD = case_when(
-      toupper(ARM) %in% c("PLACEBO", "PLACEBO GROUP") ~ "PBO",
-      toupper(ARM) %in% c("TREATMENT", "TREATMENT GROUP", "ACTIVE") ~ "TRT",
-      toupper(ARM) %in% c("LOW DOSE", "LOW") ~ "LOW",
-      toupper(ARM) %in% c("HIGH DOSE", "HIGH") ~ "HIGH",
-      toupper(ARM) %in% c("SCREEN FAILURE") ~ "SCRNFAIL",
-      toupper(ARM) %in% c("NOT ASSIGNED") ~ "NOTASSGN",
-      !is.na(ARM) ~ "ARM",
-      TRUE ~ NA_character_
-    )
-  )
-
-# =============================================================================
-# 3. Derive reference start/end dates from exposure (raw_ex)
-# =============================================================================
-
+# ----------------------------------------------------------------------------
+# 2. Derive reference dates from exposure data (raw_ex)
+# ----------------------------------------------------------------------------
+# Calculate first and last exposure dates per subject
 ex_dates <- raw_ex %>%
-  mutate(
-    SITEID = as.character(site_id),
-    SUBJID = as.character(subject_id),
-    EXSTDTC = as.character(exposure_start_date),
-    EXENDTC = as.character(exposure_end_date)
-  ) %>%
-  group_by(SITEID, SUBJID) %>%
+  mutate(USUBJID = paste("STUDY123", SITEID, SUBJID, sep = "-")) %>%
+  group_by(USUBJID) %>%
   summarise(
-    RFSTDTC = min(EXSTDTC, na.rm = TRUE),
-    RFENDTC = max(EXENDTC, na.rm = TRUE),
-    RFXSTDTC = min(EXSTDTC, na.rm = TRUE),
-    RFXENDTC = max(EXENDTC, na.rm = TRUE),
+    RFXSTDTC = min(EXSTDTC, na.rm = TRUE),                  # Date/Time of First Study Treatment
+    RFXENDTC = max(EXENDTC, na.rm = TRUE),                  # Date/Time of Last Study Treatment
     .groups = "drop"
   ) %>%
   mutate(
-    RFSTDTC = if_else(is.infinite(RFSTDTC), NA_character_, RFSTDTC),
-    RFENDTC = if_else(is.infinite(RFENDTC), NA_character_, RFENDTC),
     RFXSTDTC = if_else(is.infinite(RFXSTDTC), NA_character_, RFXSTDTC),
     RFXENDTC = if_else(is.infinite(RFXENDTC), NA_character_, RFXENDTC)
   )
 
+# ----------------------------------------------------------------------------
+# 3. Merge exposure dates back to DM
+# ----------------------------------------------------------------------------
 dm <- dm %>%
-  left_join(ex_dates, by = c("SITEID", "SUBJID"))
+  left_join(ex_dates, by = "USUBJID") %>%
+  mutate(
+    # Reference Start/End Date = First/Last Study Treatment
+    RFSTDTC = RFXSTDTC,                                      # Subject Reference Start Date/Time
+    RFENDTC = RFXENDTC                                       # Subject Reference End Date/Time
+  )
 
-# =============================================================================
-# 4. Derive AGE from birth date and reference start date
-# =============================================================================
-
+# ----------------------------------------------------------------------------
+# 4. Derive AGE if not collected
+# ----------------------------------------------------------------------------
 dm <- dm %>%
   mutate(
-    AGE = case_when(
-      !is.na(BRTHDTC) & !is.na(RFSTDTC) ~ as.numeric(floor(
-        as.numeric(difftime(
-          as.Date(substr(RFSTDTC, 1, 10)),
-          as.Date(substr(BRTHDTC, 1, 10)),
-          units = "days"
-        )) / 365.25
+    # Compute AGE from BRTHDTC and RFSTDTC if AGE is missing
+    AGE = if_else(
+      is.na(AGE) & !is.na(BRTHDTC) & !is.na(RFSTDTC),
+      as.numeric(floor(
+        (as.Date(substr(RFSTDTC, 1, 10)) - as.Date(substr(BRTHDTC, 1, 10))) / 365.25
       )),
-      TRUE ~ NA_real_
+      as.numeric(AGE)
     )
   )
 
-# =============================================================================
-# 5. Derive actual arm variables (default to planned arm)
-# =============================================================================
-
+# ----------------------------------------------------------------------------
+# 5. Derive Actual ARM variables
+# ----------------------------------------------------------------------------
+# If actual arm not separately collected, set equal to planned arm
 dm <- dm %>%
   mutate(
-    ACTARMCD = ARMCD,
-    ACTARM = ARM
+    ACTARMCD = if_else(is.na(ACTARMCD), ARMCD, ACTARMCD),    # Actual Arm Code
+    ACTARM = if_else(is.na(ACTARM), ARM, ACTARM)             # Description of Actual Arm
   )
 
-# =============================================================================
-# 6. Assign sequence number and final sort
-# =============================================================================
-
+# ----------------------------------------------------------------------------
+# 6. Assign sequence number
+# ----------------------------------------------------------------------------
 dm <- dm %>%
   arrange(STUDYID, USUBJID) %>%
-  mutate(DMSEQ = row_number())
+  mutate(
+    DMSEQ = row_number()                                     # Sequence Number
+  )
 
-# =============================================================================
+# ----------------------------------------------------------------------------
 # 7. Select and order final variables per SDTM specification
-# =============================================================================
-
+# ----------------------------------------------------------------------------
 dm <- dm %>%
   select(
     STUDYID,
@@ -157,43 +126,48 @@ dm <- dm %>%
   ) %>%
   arrange(STUDYID, USUBJID)
 
+# -- END DM -- #
+
 
 # -- BEGIN SUPPDM -- #
 
-# Define qualifier metadata
-qual_metadata <- tribble(
-  ~QNAM,     ~QLABEL,
-  "COMPLT",  "Completed Study?: Yes No",
-  "DCSREAS", "Reason for Discontinuation",
-  "EDUYRN",  "Years of Education"
+# Define qualifier variable metadata
+qualifier_specs <- tribble(
+  ~qnam,     ~qlabel,                           ~source_var,
+  "COMPLT",  "Completed Study?: Yes No",        "COMPLT",
+  "DCSREAS", "Reason for Discontinuation",      "DCSREAS",
+  "EDUYRN",  "Years of Education",              "EDUYRN"
 )
 
 # Merge raw_dm with dm to get DMSEQ
-dm_with_seq <- raw_dm %>%
-  left_join(
+dm_with_raw <- raw_dm %>%
+  inner_join(
     dm %>% select(STUDYID, USUBJID, DMSEQ),
     by = c("STUDYID", "USUBJID")
   )
 
-# Pivot longer to create QNAM/QVAL rows
-suppdm <- dm_with_seq %>%
-  select(STUDYID, USUBJID, DMSEQ, all_of(qual_metadata$QNAM)) %>%
+# Pivot qualifier variables to long format
+suppdm <- dm_with_raw %>%
+  select(STUDYID, USUBJID, DMSEQ, all_of(qualifier_specs$source_var)) %>%
   pivot_longer(
-    cols = all_of(qual_metadata$QNAM),
+    cols = all_of(qualifier_specs$source_var),
     names_to = "QNAM",
     values_to = "QVAL",
-    values_transform = list(QVAL = as.character)
+    values_transform = as.character
   ) %>%
-  left_join(qual_metadata, by = "QNAM") %>%
+  left_join(
+    qualifier_specs %>% select(qnam, qlabel),
+    by = c("QNAM" = "qnam")
+  ) %>%
   filter(!is.na(QVAL) & QVAL != "") %>%
   mutate(
     RDOMAIN = "DM",
     IDVAR = "DMSEQ",
     IDVARVAL = as.character(DMSEQ),
+    QLABEL = qlabel,
     QORIG = "CRF",
     QEVAL = NA_character_
   ) %>%
-  arrange(STUDYID, RDOMAIN, USUBJID, IDVAR, IDVARVAL, QNAM) %>%
   select(
     STUDYID,
     RDOMAIN,
@@ -205,7 +179,8 @@ suppdm <- dm_with_seq %>%
     QVAL,
     QORIG,
     QEVAL
-  )
+  ) %>%
+  arrange(STUDYID, RDOMAIN, USUBJID, IDVARVAL, QNAM)
 
 # -- END SUPPDM -- #
 

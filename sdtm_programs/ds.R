@@ -12,76 +12,154 @@
 # ********************************************************************
 
 # ==============================================================================
-# Program: ds.R
-# Purpose: Create SDTM DS (Disposition) domain
-# CDISC SDTM Version: 3.2
+# Program:      DS domain creation
+# Description:  Disposition Events domain for SDTM
+# Input:        raw_ds, dm (already in R session)
+# Output:       ds
+# CDISC Class:  Events (one record per disposition event per subject)
 # ==============================================================================
-
-library(dplyr)
 
 # -- BEGIN DS -- #
 
-# ==============================================================================
-# Read source data
-# Assumes raw_ds and dm are already loaded in the R session
-# ==============================================================================
+library(dplyr)
 
-# ==============================================================================
-# Derive USUBJID from dm and select RFSTDTC
-# ==============================================================================
+# ------------------------------------------------------------------------------
+# Read source data (already in session)
+# ------------------------------------------------------------------------------
+# raw_ds: source disposition data
+# dm:     demographics domain (for USUBJID, RFSTDTC)
 
-dm_subset <- dm %>%
-  select(STUDYID, USUBJID, RFSTDTC)
+# ------------------------------------------------------------------------------
+# Derive study day function
+# ------------------------------------------------------------------------------
+# Calculate study day relative to reference start date
+# Study day = date - RFSTDTC + 1 if date >= RFSTDTC
+#           = date - RFSTDTC     if date < RFSTDTC
+derive_study_day <- function(dtc, rfstdtc) {
+  if (is.na(dtc) || is.na(rfstdtc) || dtc == "" || rfstdtc == "") {
+    return(NA_integer_)
+  }
+  
+  dt <- as.Date(substr(dtc, 1, 10))
+  rfstdt <- as.Date(substr(rfstdtc, 1, 10))
+  
+  if (is.na(dt) || is.na(rfstdt)) {
+    return(NA_integer_)
+  }
+  
+  diff <- as.integer(dt - rfstdt)
+  if (diff >= 0) {
+    return(diff + 1L)
+  } else {
+    return(diff)
+  }
+}
 
-# ==============================================================================
-# Merge source disposition data with dm to get USUBJID and RFSTDTC
-# ==============================================================================
+# ------------------------------------------------------------------------------
+# Derive EPOCH based on date relative to treatment periods
+# ------------------------------------------------------------------------------
+# Simple example: assign EPOCH based on disposition event timing
+# In production, this would reference trial design dates from TA/TE/TV domains
+derive_epoch <- function(dsstdtc, rfstdtc, rfendtc) {
+  if (is.na(dsstdtc) || dsstdtc == "") {
+    return(NA_character_)
+  }
+  
+  dsdt <- as.Date(substr(dsstdtc, 1, 10))
+  
+  if (is.na(dsdt)) {
+    return(NA_character_)
+  }
+  
+  # If before reference start date
+  if (!is.na(rfstdtc) && rfstdtc != "") {
+    rfstdt <- as.Date(substr(rfstdtc, 1, 10))
+    if (!is.na(rfstdt) && dsdt < rfstdt) {
+      return("SCREENING")
+    }
+  }
+  
+  # If after reference end date
+  if (!is.na(rfendtc) && rfendtc != "") {
+    rfendt <- as.Date(substr(rfendtc, 1, 10))
+    if (!is.na(rfendt) && dsdt > rfendt) {
+      return("FOLLOW-UP")
+    }
+  }
+  
+  # Otherwise treatment period
+  return("TREATMENT")
+}
+
+# ------------------------------------------------------------------------------
+# Build DS domain
+# ------------------------------------------------------------------------------
 
 ds <- raw_ds %>%
-  left_join(dm_subset, by = c("STUDYID", "USUBJID")) %>%
-  # Derive DOMAIN: Domain Abbreviation
-  mutate(DOMAIN = "DS") %>%
-  # Map DSTERM: Reported Term for the Event
-  mutate(DSTERM = as.character(DSTERM)) %>%
-  # Map DSDECOD: Dictionary-Derived Term
-  mutate(DSDECOD = if_else(is.na(DSDECOD) | DSDECOD == "", DSTERM, as.character(DSDECOD))) %>%
-  # Map DSCAT: Category for Event
-  mutate(DSCAT = as.character(DSCAT)) %>%
-  # Map DSSCAT: Subcategory for Event
-  mutate(DSSCAT = if_else(is.na(DSSCAT) | DSSCAT == "", NA_character_, as.character(DSSCAT))) %>%
-  # Map DSBODSYS: Body System or Organ Class (typically not applicable for DS)
-  mutate(DSBODSYS = NA_character_) %>%
-  # Map DSSTDTC: Start Date/Time of Event (ISO 8601 format)
-  mutate(DSSTDTC = as.character(DSSTDTC)) %>%
-  # Map DSENDTC: End Date/Time of Event (ISO 8601 format)
-  mutate(DSENDTC = if_else(is.na(DSENDTC) | DSENDTC == "", NA_character_, as.character(DSENDTC))) %>%
-  # Derive DSSTDY: Study Day of Start of Event
-  mutate(
-    DSSTDY = if_else(
-      !is.na(DSSTDTC) & !is.na(RFSTDTC) & nchar(DSSTDTC) >= 10 & nchar(RFSTDTC) >= 10,
-      as.numeric(as.Date(substr(DSSTDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10))) + 
-        if_else(as.Date(substr(DSSTDTC, 1, 10)) >= as.Date(substr(RFSTDTC, 1, 10)), 1L, 0L),
-      NA_real_
-    )
+  # Join with DM to get USUBJID and reference dates
+  left_join(
+    dm %>% select(STUDYID, USUBJID, RFSTDTC, RFENDTC),
+    by = c("STUDYID", "USUBJID")
   ) %>%
-  # Derive DSENDY: Study Day of End of Event
+  
+  # Map core variables
   mutate(
-    DSENDY = if_else(
-      !is.na(DSENDTC) & !is.na(RFSTDTC) & nchar(DSENDTC) >= 10 & nchar(RFSTDTC) >= 10,
-      as.numeric(as.Date(substr(DSENDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10))) + 
-        if_else(as.Date(substr(DSENDTC, 1, 10)) >= as.Date(substr(RFSTDTC, 1, 10)), 1L, 0L),
-      NA_real_
-    )
+    # Domain abbreviation (Assigned)
+    DOMAIN = "DS",
+    
+    # Reported Term for the Disposition Event (CRF)
+    DSTERM = as.character(DSTERM),
+    
+    # Standardized/Dictionary-Derived Term (CRF)
+    DSDECOD = if_else(is.na(DSDECOD) | DSDECOD == "", DSTERM, as.character(DSDECOD)),
+    
+    # Category for Disposition Event (CRF)
+    # e.g., "PROTOCOL MILESTONE", "DISPOSITION EVENT"
+    DSCAT = as.character(DSCAT),
+    
+    # Subcategory for Disposition Event (CRF)
+    DSSCAT = as.character(DSSCAT),
+    
+    # Body System or Organ Class (Derived)
+    # Generally not applicable for DS; left as NA or empty
+    DSBODSYS = NA_character_,
+    
+    # Start Date/Time of Disposition Event (CRF)
+    # Ensure ISO 8601 format
+    DSSTDTC = as.character(DSSTDTC),
+    
+    # End Date/Time of Disposition Event (CRF)
+    # Usually not applicable for DS
+    DSENDTC = as.character(DSENDTC)
   ) %>%
-  # Map EPOCH: Epoch (from source or derive based on study design)
-  mutate(EPOCH = as.character(EPOCH)) %>%
-  # Derive DSSEQ: Sequence Number within subject
-  group_by(USUBJID) %>%
-  mutate(DSSEQ = row_number()) %>%
+  
+  # Derive study days
+  rowwise() %>%
+  mutate(
+    # Study Day of Start of Disposition Event (Derived)
+    DSSTDY = derive_study_day(DSSTDTC, RFSTDTC),
+    
+    # Study Day of End of Disposition Event (Derived)
+    DSENDY = derive_study_day(DSENDTC, RFSTDTC),
+    
+    # Epoch (Derived from date/protocol milestone)
+    EPOCH = derive_epoch(DSSTDTC, RFSTDTC, RFENDTC)
+  ) %>%
   ungroup() %>%
-  # Sort by STUDYID, USUBJID, DSSEQ
+  
+  # Derive sequence number within subject
+  group_by(USUBJID) %>%
+  arrange(USUBJID, DSSTDTC, DSTERM) %>%
+  mutate(
+    # Sequence Number (Derived)
+    DSSEQ = row_number()
+  ) %>%
+  ungroup() %>%
+  
+  # Final sort order
   arrange(STUDYID, USUBJID, DSSEQ) %>%
-  # Select final variables in specification order
+  
+  # Select and order variables per SDTM specification
   select(
     STUDYID,
     DSSEQ,
@@ -100,6 +178,10 @@ ds <- raw_ds %>%
   )
 
 # -- END DS -- #
+
+# ==============================================================================
+# End of script
+# ==============================================================================
 
 # -- Verification -- #
 # glimpse(ds)

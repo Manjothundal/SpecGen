@@ -12,9 +12,11 @@
 # ********************************************************************
 
 # ==============================================================================
-# Program:      dv_sdtm.R
-# Description:  Create SDTM DV (Protocol Deviations) domain
-# SDTM Version: 3.2
+# Program: dv.R
+# Purpose: Create SDTM DV (Protocol Deviations) domain
+# Domain:  DV (Events class - one row per event per subject)
+# Inputs:  raw_dv, dm (both already in R session)
+# Output:  dv
 # ==============================================================================
 
 library(dplyr)
@@ -22,134 +24,242 @@ library(dplyr)
 # -- BEGIN DV -- #
 
 # ==============================================================================
-# Read source data
+# Read source data (assumes raw_dv and dm are already loaded)
 # ==============================================================================
-# Assumes raw_dv and dm are already loaded in the R session
+
+# Note: raw_dv and dm are already available in the session
 
 # ==============================================================================
-# Derive USUBJID if not present in raw_dv
+# Derive USUBJID and merge RFSTDTC from DM
 # ==============================================================================
-# Join dm to get USUBJID and RFSTDTC for study day calculations
-dv <- raw_dv %>%
-  left_join(
-    dm %>% select(STUDYID, USUBJID, RFSTDTC),
-    by = c("STUDYID", "USUBJID")
+
+# Extract required DM variables
+dm_subset <- dm %>%
+  select(STUDYID, USUBJID, RFSTDTC)
+
+# Derive USUBJID if not already in raw_dv, otherwise use existing
+# Assuming raw_dv has STUDYID, SITEID, SUBJID or already has USUBJID
+dv_prep <- raw_dv %>%
+  mutate(
+    USUBJID = if ("USUBJID" %in% names(.)) {
+      USUBJID
+    } else {
+      paste(STUDYID, SITEID, SUBJID, sep = "-")
+    }
   )
+
+# ==============================================================================
+# Merge RFSTDTC from DM for study day calculations
+# ==============================================================================
+
+dv_prep <- dv_prep %>%
+  left_join(dm_subset, by = c("STUDYID", "USUBJID"))
 
 # ==============================================================================
 # Assign DOMAIN
 # ==============================================================================
-# Variable: DOMAIN (Domain Abbreviation)
-dv <- dv %>%
+
+dv_prep <- dv_prep %>%
   mutate(DOMAIN = "DV")
 
 # ==============================================================================
 # Map DV-specific variables from source
+# Variable mappings (adjust based on actual raw_dv column names):
+# - DVTERM: Reported term for the deviation
+# - DVDECOD: Standardized/coded term for the deviation
+# - DVCAT: Category (e.g., "PROTOCOL DEVIATION", "INCLUSION/EXCLUSION")
+# - DVSCAT: Subcategory (e.g., specific deviation type)
+# - DVBODSYS: Body system (typically not applicable for DV, set to NA)
+# - DVSTDTC: Start date/time in ISO 8601 format
+# - DVENDTC: End date/time in ISO 8601 format
+# - EPOCH: Study epoch when deviation occurred
 # ==============================================================================
-# Variable: DVTERM (Reported Term for the Event)
-# Variable: DVDECOD (Dictionary-Derived Term)
-# Variable: DVCAT (Category for Event)
-# Variable: DVSCAT (Subcategory for Event)
-# Variable: DVBODSYS (Body System or Organ Class)
-dv <- dv %>%
+
+dv_prep <- dv_prep %>%
   mutate(
-    DVTERM = if ("DVTERM_RAW" %in% names(.)) coalesce(DVTERM_RAW, DVTERM) else DVTERM,
-    DVDECOD = if ("DVDECOD_RAW" %in% names(.)) coalesce(DVDECOD_RAW, DVDECOD, DVTERM) else coalesce(DVDECOD, DVTERM),
-    DVCAT = if ("DVCAT_RAW" %in% names(.)) coalesce(DVCAT_RAW, DVCAT) else DVCAT,
-    DVSCAT = if ("DVSCAT_RAW" %in% names(.)) coalesce(DVSCAT_RAW, DVSCAT) else DVSCAT,
-    DVBODSYS = if ("DVBODSYS_RAW" %in% names(.)) coalesce(DVBODSYS_RAW, DVBODSYS) else DVBODSYS
+    # Map reported term (verbatim)
+    DVTERM = if ("DVTERM" %in% names(.)) {
+      DVTERM
+    } else if ("DV_VERBATIM" %in% names(.)) {
+      DV_VERBATIM
+    } else if ("DEVTERM" %in% names(.)) {
+      DEVTERM
+    } else {
+      NA_character_
+    },
+    
+    # Map dictionary-derived/coded term
+    DVDECOD = if ("DVDECOD" %in% names(.)) {
+      DVDECOD
+    } else if ("DV_CODED" %in% names(.)) {
+      DV_CODED
+    } else if ("DEVDECOD" %in% names(.)) {
+      DEVDECOD
+    } else if ("DVTERM" %in% names(.) & !is.na(DVTERM)) {
+      DVTERM
+    } else {
+      NA_character_
+    },
+    
+    # Map category
+    DVCAT = if ("DVCAT" %in% names(.)) {
+      DVCAT
+    } else if ("DV_CAT" %in% names(.)) {
+      DV_CAT
+    } else if ("CATEGORY" %in% names(.)) {
+      CATEGORY
+    } else {
+      NA_character_
+    },
+    
+    # Map subcategory
+    DVSCAT = if ("DVSCAT" %in% names(.)) {
+      DVSCAT
+    } else if ("DV_SCAT" %in% names(.)) {
+      DV_SCAT
+    } else if ("SUBCATEGORY" %in% names(.)) {
+      SUBCATEGORY
+    } else {
+      NA_character_
+    },
+    
+    # Body system (typically not applicable for protocol deviations)
+    DVBODSYS = if ("DVBODSYS" %in% names(.)) {
+      DVBODSYS
+    } else if ("BODSYS" %in% names(.)) {
+      BODSYS
+    } else {
+      NA_character_
+    },
+    
+    # Map start date/time (ISO 8601 format)
+    DVSTDTC = if ("DVSTDTC" %in% names(.)) {
+      DVSTDTC
+    } else if ("DV_START_DTC" %in% names(.)) {
+      DV_START_DTC
+    } else if ("DVSTDAT" %in% names(.)) {
+      as.character(DVSTDAT)
+    } else if ("DEVSTDTC" %in% names(.)) {
+      DEVSTDTC
+    } else {
+      NA_character_
+    },
+    
+    # Map end date/time (ISO 8601 format)
+    DVENDTC = if ("DVENDTC" %in% names(.)) {
+      DVENDTC
+    } else if ("DV_END_DTC" %in% names(.)) {
+      DV_END_DTC
+    } else if ("DVENDAT" %in% names(.)) {
+      as.character(DVENDAT)
+    } else if ("DEVENDTC" %in% names(.)) {
+      DEVENDTC
+    } else {
+      NA_character_
+    },
+    
+    # Map epoch
+    EPOCH = if ("EPOCH" %in% names(.)) {
+      EPOCH
+    } else if ("DV_EPOCH" %in% names(.)) {
+      DV_EPOCH
+    } else {
+      NA_character_
+    }
   )
 
 # ==============================================================================
-# Map start and end dates
+# Derive study day variables (--STDY, --ENDY)
+# Study day = (Event date - RFSTDTC) + 1 if event date >= RFSTDTC
+#           = (Event date - RFSTDTC)     if event date < RFSTDTC
 # ==============================================================================
-# Variable: DVSTDTC (Start Date/Time of Event)
-# Variable: DVENDTC (End Date/Time of Event)
-dv <- dv %>%
-  mutate(
-    DVSTDTC = if ("DVSTDTC_RAW" %in% names(.)) coalesce(DVSTDTC_RAW, DVSTDTC) else DVSTDTC,
-    DVENDTC = if ("DVENDTC_RAW" %in% names(.)) coalesce(DVENDTC_RAW, DVENDTC) else DVENDTC
-  )
 
-# ==============================================================================
-# Derive study days
-# ==============================================================================
-# Variable: DVSTDY (Study Day of Start of Event)
-# Variable: DVENDY (Study Day of End of Event)
-# Study day calculation: if event date >= RFSTDTC then date - RFSTDTC + 1
-#                        if event date < RFSTDTC then date - RFSTDTC
-dv <- dv %>%
+dv_prep <- dv_prep %>%
   mutate(
+    # Derive DVSTDY
     DVSTDY = case_when(
       is.na(DVSTDTC) | is.na(RFSTDTC) ~ NA_real_,
-      as.Date(substr(DVSTDTC, 1, 10)) >= as.Date(substr(RFSTDTC, 1, 10)) ~
-        as.numeric(as.Date(substr(DVSTDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10))) + 1,
-      TRUE ~
-        as.numeric(as.Date(substr(DVSTDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10)))
+      DVSTDTC == "" | RFSTDTC == "" ~ NA_real_,
+      TRUE ~ {
+        dv_start_date <- as.Date(substr(DVSTDTC, 1, 10))
+        rfst_date <- as.Date(substr(RFSTDTC, 1, 10))
+        diff_days <- as.numeric(dv_start_date - rfst_date)
+        if_else(diff_days >= 0, diff_days + 1, diff_days)
+      }
     ),
+    
+    # Derive DVENDY
     DVENDY = case_when(
       is.na(DVENDTC) | is.na(RFSTDTC) ~ NA_real_,
-      as.Date(substr(DVENDTC, 1, 10)) >= as.Date(substr(RFSTDTC, 1, 10)) ~
-        as.numeric(as.Date(substr(DVENDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10))) + 1,
-      TRUE ~
-        as.numeric(as.Date(substr(DVENDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10)))
+      DVENDTC == "" | RFSTDTC == "" ~ NA_real_,
+      TRUE ~ {
+        dv_end_date <- as.Date(substr(DVENDTC, 1, 10))
+        rfst_date <- as.Date(substr(RFSTDTC, 1, 10))
+        diff_days <- as.numeric(dv_end_date - rfst_date)
+        if_else(diff_days >= 0, diff_days + 1, diff_days)
+      }
     )
   )
 
 # ==============================================================================
-# Derive EPOCH based on date relative to treatment period
+# Derive EPOCH based on event date if not already mapped
+# (Example logic - adjust based on study-specific epoch definitions)
 # ==============================================================================
-# Variable: EPOCH (Epoch)
-# This is a simplified derivation; adjust logic based on study-specific epochs
-# Assumes EPOCH_RAW or EPOCH exists in raw_dv, or derive from dates
-dv <- dv %>%
+
+dv_prep <- dv_prep %>%
   mutate(
     EPOCH = case_when(
-      "EPOCH_RAW" %in% names(.) & !is.na(EPOCH_RAW) ~ EPOCH_RAW,
-      "EPOCH" %in% names(.) & !is.na(EPOCH) ~ EPOCH,
-      !is.na(DVSTDY) & DVSTDY < 1 ~ "SCREENING",
-      !is.na(DVSTDY) & DVSTDY >= 1 ~ "TREATMENT",
-      TRUE ~ NA_character_
+      !is.na(EPOCH) & EPOCH != "" ~ EPOCH,
+      is.na(DVSTDTC) | DVSTDTC == "" ~ NA_character_,
+      TRUE ~ {
+        dv_date <- as.Date(substr(DVSTDTC, 1, 10))
+        rfst_date <- as.Date(substr(RFSTDTC, 1, 10))
+        case_when(
+          is.na(rfst_date) ~ "SCREENING",
+          dv_date < rfst_date ~ "SCREENING",
+          TRUE ~ "TREATMENT"
+        )
+      }
     )
   )
 
 # ==============================================================================
-# Derive DVSEQ
+# Derive DVSEQ (sequence number within each subject)
 # ==============================================================================
-# Variable: DVSEQ (Sequence Number)
-# Sequence number within each subject
-dv <- dv %>%
-  group_by(USUBJID) %>%
-  arrange(USUBJID, DVSTDTC) %>%
+
+dv_prep <- dv_prep %>%
+  group_by(STUDYID, USUBJID) %>%
+  arrange(STUDYID, USUBJID, DVSTDTC) %>%
   mutate(DVSEQ = row_number()) %>%
   ungroup()
 
 # ==============================================================================
-# Sort dataset
+# Sort by STUDYID, USUBJID, DVSEQ
 # ==============================================================================
-dv <- dv %>%
+
+dv <- dv_prep %>%
   arrange(STUDYID, USUBJID, DVSEQ)
 
 # ==============================================================================
-# Select and order final variables per SDTM specification
+# Select final variables in specification order
 # ==============================================================================
-# Keep only SDTM variables in specified order
+
 dv <- dv %>%
   select(
-    STUDYID,      # Study Identifier
-    DVSEQ,        # Sequence Number
-    USUBJID,      # Unique Subject Identifier
-    DOMAIN,       # Domain Abbreviation
-    DVTERM,       # Reported Term for the Event
-    DVDECOD,      # Dictionary-Derived Term
-    DVCAT,        # Category for Event
-    DVSCAT,       # Subcategory for Event
-    DVBODSYS,     # Body System or Organ Class
-    DVSTDTC,      # Start Date/Time of Event
-    DVENDTC,      # End Date/Time of Event
-    DVSTDY,       # Study Day of Start of Event
-    DVENDY,       # Study Day of End of Event
-    EPOCH         # Epoch
+    STUDYID,
+    DOMAIN,
+    USUBJID,
+    DVSEQ,
+    DVTERM,
+    DVDECOD,
+    DVCAT,
+    DVSCAT,
+    DVBODSYS,
+    DVSTDTC,
+    DVENDTC,
+    DVSTDY,
+    DVENDY,
+    EPOCH
   )
 
 # -- END DV -- #

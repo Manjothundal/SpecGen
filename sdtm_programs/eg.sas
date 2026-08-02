@@ -16,362 +16,321 @@
 libname raw  'C:\sas_data\raw'  access=readonly;
 libname sdtm 'C:\sas_data\sdtm';
 
-/*=======================================================================================
-  Program:      SDTM_EG.sas
-  Description:  Create SDTM EG (Electrocardiogram) domain
-  Study:        [Study Protocol]
-  Version:      1.0
-  Author:       Senior CDISC SDTM Programmer
-  Date:         [Date]
-=======================================================================================*/
+/*---------------------------------------------------------------------------*
+ | PROGRAM NAME:    SDTM_EG.sas                                             |
+ | DESCRIPTION:     Create SDTM EG (ECG Tests) domain                       |
+ | DOMAIN:          EG (Findings - ECG)                                     |
+ | INPUT:           raw.eg, sdtm.dm                                         |
+ | OUTPUT:          sdtm.eg                                                 |
+ | PROGRAMMER:      Senior CDISC SDTM Programmer                            |
+ | DATE:            [Date]                                                  |
+ *---------------------------------------------------------------------------*/
 
 /*-- BEGIN EG --*/
 
-/*---------------------------------------------------------------------------------------
-  Step 1: Read DM domain for subject-level information
----------------------------------------------------------------------------------------*/
-proc sort data=sdtm.dm(keep=studyid usubjid rfstdtc) out=dm_ref nodupkey;
-    by usubjid;
+/*---------------------------------------------------------------------------*
+ | Step 1: Read in DM for reference information                            |
+ *---------------------------------------------------------------------------*/
+proc sort data=sdtm.dm(keep=studyid usubjid rfstdtc) out=dm nodupkey;
+    by studyid usubjid;
 run;
 
-/*---------------------------------------------------------------------------------------
-  Step 2: Read raw EG data and merge with DM
-  Assumption: raw.eg contains one row per visit per subject with test results
----------------------------------------------------------------------------------------*/
-data eg_raw;
-    merge raw.eg(in=a)
-          dm_ref(in=b);
-    by usubjid;
-    if a;
-    
-    /* Ensure STUDYID is populated from DM */
-    if missing(studyid) and b then studyid = dm_ref.studyid;
-    
-    length egdtc_raw $19;
-    /* Ensure date/time is in ISO 8601 format */
-    if not missing(egdat) then do;
-        if not missing(egtim) then 
-            egdtc_raw = put(egdat, yymmdd10.) || 'T' || put(egtim, time8.);
-        else 
-            egdtc_raw = put(egdat, yymmdd10.);
-    end;
-run;
+/*---------------------------------------------------------------------------*
+ | Step 2: Read and transpose source EG data if in wide format             |
+ | Assumes raw.eg contains variables:                                       |
+ | STUDYID, SITEID, SUBJID, VISIT, VISITNUM, EGDTC, EGEVAL                 |
+ | HR, HRUNIT, HRND, HRREA                                                  |
+ | QT, QTUNIT, QTND, QTREA                                                  |
+ | QTC, QTCUNIT, QTCND, QTCREA                                              |
+ | RR, RRUNIT, RRND, RRREA                                                  |
+ | PR, PRUNIT, PRND, PRREA                                                  |
+ | QRS, QRSUNIT, QRSND, QRSREA                                              |
+ *---------------------------------------------------------------------------*/
 
-/*---------------------------------------------------------------------------------------
-  Step 3: Transpose data from wide to vertical format (one row per test per timepoint)
-  Assumption: Source has columns like HEART_RATE, PR_INT, QRS_DUR, QT_INT, QTC_INT, etc.
----------------------------------------------------------------------------------------*/
-data eg_vertical;
-    set eg_raw;
+data eg_trans;
+    set raw.eg;
     
-    length egtestcd $8 egtest $40 egcat $40 egorres $200 egorresu $20 
-           egstat $8 egreasnd $200;
+    /*-- Derive USUBJID --*/
+    length USUBJID $40;
+    USUBJID = catx('-', STUDYID, SITEID, SUBJID);
     
-    /* Initialize category */
-    egcat = "ELECTROCARDIOGRAM";
+    /*-- Define array for test names and parameters --*/
+    length EGTESTCD $8 EGTEST $40 EGORRES $200 EGORRESU $40 
+           EGSTAT $12 EGREASND $200 EGCAT $40;
     
-    /* Initialize variables for each record */
-    egstat = "";
-    egreasnd = "";
-    
-    /* Heart Rate */
-    if not missing(heart_rate) or not missing(heart_rate_nd) then do;
-        egtestcd = "HR";
-        egtest = "Heart Rate";
-        if not missing(heart_rate) then do;
-            egorres = strip(put(heart_rate, best.));
-            egorresu = "beats/min";
-            egstat = "";
-            egreasnd = "";
-        end;
-        else if not missing(heart_rate_nd) then do;
-            egorres = "";
-            egorresu = "";
-            egstat = "NOT DONE";
-            egreasnd = strip(heart_rate_nd);
-        end;
-        output;
-    end;
-    
-    /* Reset for next test */
-    egstat = "";
-    egreasnd = "";
-    
-    /* PR Interval */
-    if not missing(pr_int) or not missing(pr_int_nd) then do;
-        egtestcd = "PRINTR";
-        egtest = "PR Interval";
-        if not missing(pr_int) then do;
-            egorres = strip(put(pr_int, best.));
-            egorresu = "msec";
-            egstat = "";
-            egreasnd = "";
-        end;
-        else if not missing(pr_int_nd) then do;
-            egorres = "";
-            egorresu = "";
-            egstat = "NOT DONE";
-            egreasnd = strip(pr_int_nd);
-        end;
-        output;
-    end;
-    
-    egstat = "";
-    egreasnd = "";
-    
-    /* QRS Duration */
-    if not missing(qrs_dur) or not missing(qrs_dur_nd) then do;
-        egtestcd = "QRSDUR";
-        egtest = "QRS Duration";
-        if not missing(qrs_dur) then do;
-            egorres = strip(put(qrs_dur, best.));
-            egorresu = "msec";
-            egstat = "";
-            egreasnd = "";
-        end;
-        else if not missing(qrs_dur_nd) then do;
-            egorres = "";
-            egorresu = "";
-            egstat = "NOT DONE";
-            egreasnd = strip(qrs_dur_nd);
-        end;
-        output;
-    end;
-    
-    egstat = "";
-    egreasnd = "";
-    
-    /* QT Interval */
-    if not missing(qt_int) or not missing(qt_int_nd) then do;
-        egtestcd = "QT";
-        egtest = "QT Interval";
-        if not missing(qt_int) then do;
-            egorres = strip(put(qt_int, best.));
-            egorresu = "msec";
-            egstat = "";
-            egreasnd = "";
-        end;
-        else if not missing(qt_int_nd) then do;
-            egorres = "";
-            egorresu = "";
-            egstat = "NOT DONE";
-            egreasnd = strip(qt_int_nd);
-        end;
-        output;
-    end;
-    
-    egstat = "";
-    egreasnd = "";
-    
-    /* QTc Interval (Corrected) */
-    if not missing(qtc_int) or not missing(qtc_int_nd) then do;
-        egtestcd = "QTC";
-        egtest = "QT Corrected";
-        if not missing(qtc_int) then do;
-            egorres = strip(put(qtc_int, best.));
-            egorresu = "msec";
-            egstat = "";
-            egreasnd = "";
-        end;
-        else if not missing(qtc_int_nd) then do;
-            egorres = "";
-            egorresu = "";
-            egstat = "NOT DONE";
-            egreasnd = strip(qtc_int_nd);
-        end;
-        output;
-    end;
-    
-    egstat = "";
-    egreasnd = "";
-    
-    /* RR Interval */
-    if not missing(rr_int) or not missing(rr_int_nd) then do;
-        egtestcd = "RR";
-        egtest = "RR Interval";
-        if not missing(rr_int) then do;
-            egorres = strip(put(rr_int, best.));
-            egorresu = "msec";
-            egstat = "";
-            egreasnd = "";
-        end;
-        else if not missing(rr_int_nd) then do;
-            egorres = "";
-            egorresu = "";
-            egstat = "NOT DONE";
-            egreasnd = strip(rr_int_nd);
-        end;
-        output;
-    end;
-    
-    egstat = "";
-    egreasnd = "";
-    
-    /* QTcB (Bazett) */
-    if not missing(qtcb) or not missing(qtcb_nd) then do;
-        egtestcd = "QTCB";
-        egtest = "QT Corrected by Bazett's Formula";
-        if not missing(qtcb) then do;
-            egorres = strip(put(qtcb, best.));
-            egorresu = "msec";
-            egstat = "";
-            egreasnd = "";
-        end;
-        else if not missing(qtcb_nd) then do;
-            egorres = "";
-            egorresu = "";
-            egstat = "NOT DONE";
-            egreasnd = strip(qtcb_nd);
-        end;
-        output;
-    end;
-    
-    egstat = "";
-    egreasnd = "";
-    
-    /* QTcF (Fridericia) */
-    if not missing(qtcf) or not missing(qtcf_nd) then do;
-        egtestcd = "QTCF";
-        egtest = "QT Corrected by Fridericia's Formula";
-        if not missing(qtcf) then do;
-            egorres = strip(put(qtcf, best.));
-            egorresu = "msec";
-            egstat = "";
-            egreasnd = "";
-        end;
-        else if not missing(qtcf_nd) then do;
-            egorres = "";
-            egorresu = "";
-            egstat = "NOT DONE";
-            egreasnd = strip(qtcf_nd);
-        end;
-        output;
-    end;
-    
-    keep studyid usubjid egtestcd egtest egcat egorres egorresu egstat egreasnd 
-         visitnum visit egdtc_raw rfstdtc egeval;
-run;
-
-/*---------------------------------------------------------------------------------------
-  Step 4: Derive SDTM variables
----------------------------------------------------------------------------------------*/
-data eg_derive;
-    set eg_vertical;
-    
-    length domain $2 egstresc $200 egstresu $20 egdtc $19;
-    
-    /* Set domain */
-    domain = "EG";
-    
-    /* Derive EGSTRESC and EGSTRESN from EGORRES */
-    if egstat ne "NOT DONE" then do;
-        egstresc = strip(egorres);
-        egstresn = input(egorres, ?? best.);
+    /*-- HR: Heart Rate --*/
+    EGTESTCD = 'HR';
+    EGTEST = 'Heart Rate';
+    EGCAT = 'ECG';
+    if upcase(strip(HRND)) = 'Y' then do;
+        EGSTAT = 'NOT DONE';
+        EGREASND = strip(HRREA);
+        EGORRES = '';
+        EGORRESU = '';
     end;
     else do;
-        egstresc = "";
-        egstresn = .;
+        EGSTAT = '';
+        EGREASND = '';
+        if HR ne . then EGORRES = strip(put(HR, best.));
+        else EGORRES = '';
+        EGORRESU = strip(HRUNIT);
     end;
+    output;
     
-    /* Derive EGSTRESU - standard units (same as original for EG) */
-    if egstat ne "NOT DONE" then egstresu = egorresu;
-    else egstresu = "";
-    
-    /* Map EGDTC from raw date/time - keep in ISO 8601 format */
-    egdtc = strip(egdtc_raw);
-    
-    /* Derive EGDY - study day relative to RFSTDTC */
-    if not missing(egdtc) and not missing(rfstdtc) and length(egdtc) >= 10 and length(rfstdtc) >= 10 then do;
-        egdy_calc = input(substr(egdtc, 1, 10), ?? yymmdd10.) - 
-                    input(substr(rfstdtc, 1, 10), ?? yymmdd10.);
-        if egdy_calc >= 0 then egdy = egdy_calc + 1;
-        else egdy = egdy_calc;
+    /*-- QT Interval --*/
+    EGTESTCD = 'QT';
+    EGTEST = 'QT Duration';
+    EGCAT = 'ECG';
+    if upcase(strip(QTND)) = 'Y' then do;
+        EGSTAT = 'NOT DONE';
+        EGREASND = strip(QTREA);
+        EGORRES = '';
+        EGORRESU = '';
     end;
+    else do;
+        EGSTAT = '';
+        EGREASND = '';
+        if QT ne . then EGORRES = strip(put(QT, best.));
+        else EGORRES = '';
+        EGORRESU = strip(QTUNIT);
+    end;
+    output;
     
-    drop egdtc_raw rfstdtc egdy_calc;
+    /*-- QTc: QT Corrected --*/
+    EGTESTCD = 'QTC';
+    EGTEST = 'QT Corrected';
+    EGCAT = 'ECG';
+    if upcase(strip(QTCND)) = 'Y' then do;
+        EGSTAT = 'NOT DONE';
+        EGREASND = strip(QTCREA);
+        EGORRES = '';
+        EGORRESU = '';
+    end;
+    else do;
+        EGSTAT = '';
+        EGREASND = '';
+        if QTC ne . then EGORRES = strip(put(QTC, best.));
+        else EGORRES = '';
+        EGORRESU = strip(QTCUNIT);
+    end;
+    output;
+    
+    /*-- RR Interval --*/
+    EGTESTCD = 'RR';
+    EGTEST = 'RR Duration';
+    EGCAT = 'ECG';
+    if upcase(strip(RRND)) = 'Y' then do;
+        EGSTAT = 'NOT DONE';
+        EGREASND = strip(RRREA);
+        EGORRES = '';
+        EGORRESU = '';
+    end;
+    else do;
+        EGSTAT = '';
+        EGREASND = '';
+        if RR ne . then EGORRES = strip(put(RR, best.));
+        else EGORRES = '';
+        EGORRESU = strip(RRUNIT);
+    end;
+    output;
+    
+    /*-- PR Interval --*/
+    EGTESTCD = 'PR';
+    EGTEST = 'PR Duration';
+    EGCAT = 'ECG';
+    if upcase(strip(PRND)) = 'Y' then do;
+        EGSTAT = 'NOT DONE';
+        EGREASND = strip(PRREA);
+        EGORRES = '';
+        EGORRESU = '';
+    end;
+    else do;
+        EGSTAT = '';
+        EGREASND = '';
+        if PR ne . then EGORRES = strip(put(PR, best.));
+        else EGORRES = '';
+        EGORRESU = strip(PRUNIT);
+    end;
+    output;
+    
+    /*-- QRS Duration --*/
+    EGTESTCD = 'QRS';
+    EGTEST = 'QRS Duration';
+    EGCAT = 'ECG';
+    if upcase(strip(QRSND)) = 'Y' then do;
+        EGSTAT = 'NOT DONE';
+        EGREASND = strip(QRSREA);
+        EGORRES = '';
+        EGORRESU = '';
+    end;
+    else do;
+        EGSTAT = '';
+        EGREASND = '';
+        if QRS ne . then EGORRES = strip(put(QRS, best.));
+        else EGORRES = '';
+        EGORRESU = strip(QRSUNIT);
+    end;
+    output;
+    
+    keep STUDYID USUBJID EGTESTCD EGTEST EGCAT EGORRES EGORRESU 
+         EGSTAT EGREASND VISIT VISITNUM EGDTC EGEVAL;
 run;
 
-/*---------------------------------------------------------------------------------------
-  Step 5: Sort and derive EGSEQ
----------------------------------------------------------------------------------------*/
-proc sort data=eg_derive;
-    by studyid usubjid visitnum egdtc egtestcd;
+/*---------------------------------------------------------------------------*
+ | Step 3: Merge with DM and derive standard variables                     |
+ *---------------------------------------------------------------------------*/
+
+data eg_derived;
+    merge eg_trans(in=a)
+          dm;
+    by studyid usubjid;
+    if a;
+    
+    length DOMAIN $2 EGSTRESC $200 EGSTRESU $40;
+    
+    /*-- Set DOMAIN --*/
+    DOMAIN = 'EG';
+    
+    /*-- Derive EGSTRESC (standardized character result) --*/
+    EGSTRESC = '';
+    
+    /*-- Derive EGSTRESN (numeric result in standard units) --*/
+    EGSTRESN = .;
+    
+    /*-- Derive EGSTRESU (standard units) --*/
+    EGSTRESU = '';
+    
+    /*-- Apply unit conversions if needed --*/
+    if EGSTAT ne 'NOT DONE' and EGORRES ne '' then do;
+        if EGTESTCD = 'HR' then do;
+            if upcase(EGORRESU) in ('BEATS/MIN' 'BPM' '/MIN') then do;
+                EGSTRESU = 'beats/min';
+                EGSTRESN = input(EGORRES, ?best.);
+                EGSTRESC = strip(EGORRES);
+            end;
+            else do;
+                EGSTRESU = strip(EGORRESU);
+                EGSTRESN = input(EGORRES, ?best.);
+                EGSTRESC = strip(EGORRES);
+            end;
+        end;
+        else if EGTESTCD in ('QT' 'QTC' 'RR' 'PR' 'QRS') then do;
+            if upcase(EGORRESU) = 'MSEC' then do;
+                EGSTRESU = 'msec';
+                EGSTRESN = input(EGORRES, ?best.);
+                EGSTRESC = strip(EGORRES);
+            end;
+            else if upcase(EGORRESU) = 'SEC' then do;
+                EGSTRESU = 'msec';
+                EGSTRESN = input(EGORRES, ?best.) * 1000;
+                EGSTRESC = strip(put(EGSTRESN, best.));
+            end;
+            else do;
+                EGSTRESU = strip(EGORRESU);
+                EGSTRESN = input(EGORRES, ?best.);
+                EGSTRESC = strip(EGORRES);
+            end;
+        end;
+        else do;
+            EGSTRESU = strip(EGORRESU);
+            EGSTRESN = input(EGORRES, ?best.);
+            EGSTRESC = strip(EGORRES);
+        end;
+    end;
+    
+    /*-- Derive EGDY (Study Day) --*/
+    EGDY = .;
+    if EGDTC ne '' and RFSTDTC ne '' then do;
+        if input(substr(EGDTC,1,10), ??yymmdd10.) ne . and 
+           input(substr(RFSTDTC,1,10), ??yymmdd10.) ne . then do;
+            if input(substr(EGDTC,1,10), yymmdd10.) >= input(substr(RFSTDTC,1,10), yymmdd10.) then
+                EGDY = input(substr(EGDTC,1,10), yymmdd10.) - input(substr(RFSTDTC,1,10), yymmdd10.) + 1;
+            else
+                EGDY = input(substr(EGDTC,1,10), yymmdd10.) - input(substr(RFSTDTC,1,10), yymmdd10.);
+        end;
+    end;
+run;
+
+/*---------------------------------------------------------------------------*
+ | Step 4: Sort and assign EGSEQ                                           |
+ *---------------------------------------------------------------------------*/
+
+proc sort data=eg_derived;
+    by STUDYID USUBJID VISITNUM EGDTC EGTESTCD;
 run;
 
 data eg_seq;
-    set eg_derive;
-    by studyid usubjid;
+    set eg_derived;
+    by STUDYID USUBJID;
     
-    retain egseq;
+    /*-- Derive EGSEQ --*/
+    retain EGSEQ;
+    if first.USUBJID then EGSEQ = 0;
+    EGSEQ + 1;
     
-    /* Derive sequence number */
-    if first.usubjid then egseq = 0;
-    egseq + 1;
-run;
-
-/*---------------------------------------------------------------------------------------
-  Step 6: Apply labels and output final dataset
----------------------------------------------------------------------------------------*/
-data sdtm.eg(label="Electrocardiogram");
-    retain studyid domain usubjid egseq egtestcd egtest egcat egorres egorresu 
-           egstresc egstresn egstresu egstat egreasnd visitnum visit egdtc egdy egeval;
-    set eg_seq;
-    
-    /* Apply variable labels */
+    /*-- Apply labels --*/
     label
-        studyid  = "Study Identifier"
-        domain   = "Domain Abbreviation"
-        usubjid  = "Unique Subject Identifier"
-        egseq    = "Sequence Number"
-        egtestcd = "ECG Test Short Name"
-        egtest   = "ECG Test Name"
-        egcat    = "Category for ECG"
-        egorres  = "Result or Finding in Original Units"
-        egorresu = "Original Units"
-        egstresc = "Character Result/Finding in Std Format"
-        egstresn = "Numeric Result/Finding in Standard Units"
-        egstresu = "Standard Units"
-        egstat   = "Completion Status"
-        egreasnd = "Reason Not Done"
-        visitnum = "Visit Number"
-        visit    = "Visit Name"
-        egdtc    = "Date/Time of ECG"
-        egdy     = "Study Day of ECG"
-        egeval   = "Evaluator"
+        STUDYID  = "Study Identifier"
+        DOMAIN   = "Domain Abbreviation"
+        USUBJID  = "Unique Subject Identifier"
+        EGSEQ    = "Sequence Number"
+        EGTESTCD = "ECG Test or Examination Short Name"
+        EGTEST   = "ECG Test or Examination Name"
+        EGCAT    = "Category for ECG"
+        EGORRES  = "Result or Finding in Original Units"
+        EGORRESU = "Original Units"
+        EGSTRESC = "Character Result/Finding in Std Format"
+        EGSTRESN = "Numeric Result/Finding in Standard Units"
+        EGSTRESU = "Standard Units"
+        EGSTAT   = "Completion Status"
+        EGREASND = "Reason Not Done"
+        VISITNUM = "Visit Number"
+        VISIT    = "Visit Name"
+        EGDTC    = "Date/Time of ECG"
+        EGDY     = "Study Day of ECG"
+        EGEVAL   = "Evaluator"
     ;
     
-    /* Set variable lengths and formats */
-    length studyid $20 domain $2 usubjid $40 egtestcd $8 egtest $40 
-           egcat $40 egorres $200 egorresu $20 egstresc $200 egstresu $20 
-           egstat $8 egreasnd $200 visit $200 egdtc $19 egeval $40;
-    
-    format egseq 8. egstresn 8. egdy 8. visitnum 8.;
-    
-    /* Keep only SDTM variables in specified order */
-    keep studyid domain usubjid egseq egtestcd egtest egcat egorres egorresu 
-         egstresc egstresn egstresu egstat egreasnd visitnum visit egdtc egdy egeval;
+    /*-- Apply formats --*/
+    format EGSTRESN EGSEQ VISITNUM EGDY 8.;
 run;
 
-/*---------------------------------------------------------------------------------------
-  Step 7: Final sort
----------------------------------------------------------------------------------------*/
+/*---------------------------------------------------------------------------*
+ | Step 5: Create final SDTM EG dataset                                    |
+ *---------------------------------------------------------------------------*/
+
+data sdtm.eg;
+    retain STUDYID DOMAIN USUBJID EGSEQ EGTESTCD EGTEST EGCAT 
+           EGORRES EGORRESU EGSTRESC EGSTRESN EGSTRESU 
+           EGSTAT EGREASND VISITNUM VISIT EGDTC EGDY EGEVAL;
+    set eg_seq;
+    
+    keep STUDYID DOMAIN USUBJID EGSEQ EGTESTCD EGTEST EGCAT 
+         EGORRES EGORRESU EGSTRESC EGSTRESN EGSTRESU 
+         EGSTAT EGREASND VISITNUM VISIT EGDTC EGDY EGEVAL;
+run;
+
+/*---------------------------------------------------------------------------*
+ | Step 6: Final sort by key variables                                     |
+ *---------------------------------------------------------------------------*/
+
 proc sort data=sdtm.eg;
-    by studyid usubjid visitnum egdtc egtestcd;
+    by STUDYID USUBJID EGSEQ;
 run;
 
-/*---------------------------------------------------------------------------------------
-  Step 8: Generate summary report
----------------------------------------------------------------------------------------*/
+/*---------------------------------------------------------------------------*
+ | Step 7: Generate summary report                                         |
+ *---------------------------------------------------------------------------*/
+
 proc freq data=sdtm.eg;
-    tables egtestcd * egtest / list missing;
-    tables egstat / missing;
-    title "EG Domain - Test Code and Status Summary";
+    tables EGTESTCD*EGTEST EGSTAT VISITNUM / missing;
+    title "SDTM EG Domain - Frequency Counts";
 run;
 
-proc means data=sdtm.eg n nmiss min max mean std;
-    var egstresn egdy;
-    class egtestcd;
-    title "EG Domain - Numeric Results Summary by Test";
+proc means data=sdtm.eg n nmiss min max mean median;
+    var EGSTRESN EGDY;
+    class EGTESTCD;
+    title "SDTM EG Domain - Numeric Summary Statistics";
 run;
 
 title;
@@ -380,72 +339,108 @@ title;
 
 
 /*-- BEGIN SUPPEG --*/
-*******************************************************************************;
-* Program:       suppeg.sas                                                   *;
-* Description:   Create SUPPEG (Supplemental Qualifiers for EG) domain       *;
-* Parent Domain: EG                                                           *;
-*******************************************************************************;
+/*====================================================================================*/
+/* Program Name:     SUPPEG.sas                                                       */
+/* Description:      Create SUPPEG (Supplemental Qualifiers for EG) domain           */
+/* RDOMAIN:          EG                                                               */
+/* IDVAR:            EGSEQ                                                            */
+/*====================================================================================*/
 
-* Merge source data with SDTM EG to get EGSEQ;
-proc sort data=raw.eg out=raw_eg_sort;
-    by usubjid egdtc egtpt;
+/*------------------------------------------------------------------------------------*/
+/* Step 1: Merge source EG data with SDTM EG to get EGSEQ                            */
+/*------------------------------------------------------------------------------------*/
+proc sort data=raw.eg out=raw_eg_sorted;
+    by USUBJID EGDTC EGTPTNUM;
 run;
 
-proc sort data=sdtm.eg out=eg_seq;
-    by usubjid egdtc egtpt;
+proc sort data=sdtm.EG out=sdtm_eg;
+    by USUBJID EGDTC EGTPTNUM;
 run;
 
 data eg_with_seq;
-    merge raw_eg_sort (in=a)
-          eg_seq (in=b keep=studyid usubjid egdtc egtpt egseq);
-    by usubjid egdtc egtpt;
+    merge raw_eg_sorted (in=a)
+          sdtm_eg (in=b keep=STUDYID USUBJID EGSEQ EGDTC EGTPTNUM);
+    by USUBJID EGDTC EGTPTNUM;
     if a and b;
+    
+    keep STUDYID USUBJID EGSEQ EGCLSIG;
 run;
 
-* Create SUPPEG records for each qualifier variable;
-data suppeg;
-    length STUDYID $20 RDOMAIN $8 USUBJID $40 IDVAR $8 IDVARVAL $200
-           QNAM $8 QLABEL $40 QVAL $200 QORIG $8 QEVAL $40;
-    
+/*------------------------------------------------------------------------------------*/
+/* Step 2: Transpose qualifier variables into SUPPEG structure                       */
+/*------------------------------------------------------------------------------------*/
+data suppeg_base;
     set eg_with_seq;
+    
+    length STUDYID $20 
+           RDOMAIN $8 
+           USUBJID $40 
+           IDVAR $8 
+           IDVARVAL $200
+           QNAM $8 
+           QLABEL $200 
+           QVAL $200 
+           QORIG $8 
+           QEVAL $40;
     
     RDOMAIN = 'EG';
     IDVAR = 'EGSEQ';
-    IDVARVAL = put(EGSEQ, 8.);
+    IDVARVAL = strip(put(EGSEQ, best.));
     QORIG = 'CRF';
     QEVAL = '';
     
-    * EGCLSIG qualifier;
-    if not missing(egclsig) then do;
+    /* EGCLSIG */
+    if not missing(EGCLSIG) then do;
         QNAM = 'EGCLSIG';
-        QLABEL = 'Clinical Significance';
-        QVAL = strip(egclsig);
+        QLABEL = 'Clinically Significant';
+        QVAL = strip(EGCLSIG);
         output;
     end;
     
     keep STUDYID RDOMAIN USUBJID IDVAR IDVARVAL QNAM QLABEL QVAL QORIG QEVAL;
+run;
+
+/*------------------------------------------------------------------------------------*/
+/* Step 3: Sort and apply labels                                                     */
+/*------------------------------------------------------------------------------------*/
+proc sort data=suppeg_base out=suppeg_sorted;
+    by STUDYID RDOMAIN USUBJID IDVARVAL QNAM;
+run;
+
+data sdtm.SUPPEG;
+    set suppeg_sorted;
     
-    label STUDYID  = 'Study Identifier'
-          RDOMAIN  = 'Related Domain Abbreviation'
-          USUBJID  = 'Unique Subject Identifier'
-          IDVAR    = 'Identifying Variable'
-          IDVARVAL = 'Identifying Variable Value'
-          QNAM     = 'Qualifier Variable Name'
-          QLABEL   = 'Qualifier Variable Label'
-          QVAL     = 'Data Value'
-          QORIG    = 'Origin'
-          QEVAL    = 'Evaluator';
+    label
+        STUDYID  = 'Study Identifier'
+        RDOMAIN  = 'Related Domain Abbreviation'
+        USUBJID  = 'Unique Subject Identifier'
+        IDVAR    = 'Identifying Variable'
+        IDVARVAL = 'Identifying Variable Value'
+        QNAM     = 'Qualifier Variable Name'
+        QLABEL   = 'Qualifier Variable Label'
+        QVAL     = 'Data Value'
+        QORIG    = 'Origin'
+        QEVAL    = 'Evaluator'
+    ;
 run;
 
-* Sort final dataset;
-proc sort data=suppeg out=sdtm.suppeg;
-    by STUDYID USUBJID IDVARVAL QNAM;
+/*------------------------------------------------------------------------------------*/
+/* Step 4: Create summary report                                                     */
+/*------------------------------------------------------------------------------------*/
+proc freq data=sdtm.SUPPEG;
+    tables QNAM / missing;
+    title "SUPPEG: Frequency of Qualifier Variables";
 run;
 
-* Clean up temporary datasets;
-proc datasets library=work nolist;
-    delete raw_eg_sort eg_seq eg_with_seq suppeg;
+proc sql;
+    select count(*) as Total_Records,
+           count(distinct USUBJID) as Unique_Subjects,
+           count(distinct IDVARVAL) as Unique_Parent_Records
+    from sdtm.SUPPEG;
+    title "SUPPEG: Summary Counts";
 quit;
+
+title;
 
 /*-- END SUPPEG --*/
 

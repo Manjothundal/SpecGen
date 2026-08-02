@@ -16,241 +16,254 @@
 libname raw  'C:\sas_data\raw'  access=readonly;
 libname sdtm 'C:\sas_data\sdtm';
 
-/*=======================================================================================
-  Program:      ds.sas
-  Description:  Create SDTM DS (Disposition) domain
-  CDISC SDTM:   Version 3.2 or later
-  Input:        raw.ds, sdtm.dm
-  Output:       sdtm.ds
-=======================================================================================*/
+/*==============================================================================
+Program:        sdtm_ds.sas
+Purpose:        Create SDTM DS (Disposition) Domain
+SDTM Version:   3.2
+Inputs:         raw.ds, raw.dm
+Outputs:        sdtm.ds
+================================================================================*/
 
 /*-- BEGIN DS --*/
 
-%let keepvars = STUDYID DOMAIN USUBJID DSSEQ DSTERM DSDECOD DSCAT DSSCAT DSBODSYS 
-                DSSTDTC DSENDTC DSSTDY DSENDY EPOCH;
+*-----------------------------------------------------------------------------*
+* Step 1: Read in raw disposition data and merge with DM for study day calc  *
+*-----------------------------------------------------------------------------*;
 
-*--------------------------------------------------------------------------------------;
-* Read source DS data and merge with DM for reference dates and subject identifiers   ;
-*--------------------------------------------------------------------------------------;
 proc sort data=raw.ds out=ds_raw;
     by studyid siteid subjid;
 run;
 
-proc sort data=sdtm.dm(keep=studyid usubjid siteid subjid rfstdtc) out=dm_ref;
+proc sort data=raw.dm out=dm_ref;
     by studyid siteid subjid;
 run;
 
-data ds_merged;
-    merge ds_raw(in=a)
-          dm_ref(in=b);
-    by studyid siteid subjid;
+data ds_01;
+    length usubjid $40;
     
+    merge ds_raw (in=a)
+          dm_ref (keep=studyid siteid subjid usubjid rfstdtc rfendtc);
+    by studyid siteid subjid;
     if a;
     
-    * Issue warning if subject not found in DM;
-    if not b then do;
-        put "WARNING: Subject not found in DM - " studyid= siteid= subjid=;
+    *-----------------------------------------------------------------------------*
+    * Step 2: Derive USUBJID if not already present                               *
+    *-----------------------------------------------------------------------------*;
+    if missing(usubjid) then do;
+        usubjid = catx('-', studyid, siteid, subjid);
     end;
 run;
 
-*--------------------------------------------------------------------------------------;
-* Create DS domain with derivations                                                   ;
-*--------------------------------------------------------------------------------------;
-data ds_temp;
-    set ds_merged;
+*-----------------------------------------------------------------------------*
+* Step 3: Set domain and map source variables                                 *
+*-----------------------------------------------------------------------------*;
+
+data ds_02;
+    length studyid $20
+           domain $2
+           usubjid $40
+           dsterm $200
+           dsdecod $200
+           dscat $200
+           dsscat $200
+           dsbodsys $200
+           dsstdtc $20
+           dsendtc $20
+           epoch $20;
     
-    length STUDYID $20
-           DOMAIN $2
-           USUBJID $40
-           DSSEQ 8
-           DSTERM $200
-           DSDECOD $200
-           DSCAT $40
-           DSSCAT $40
-           DSBODSYS $200
-           DSSTDTC $20
-           DSENDTC $20
-           DSSTDY 8
-           DSENDY 8
-           EPOCH $20;
+    set ds_01;
     
-    *--------------------------------------------------------------------------------------;
-    * Assign domain constant                                                              ;
-    *--------------------------------------------------------------------------------------;
-    DOMAIN = 'DS';
+    * Set Domain *;
+    domain = 'DS';
     
-    *--------------------------------------------------------------------------------------;
-    * STUDYID should be retained from source                                              ;
-    *--------------------------------------------------------------------------------------;
-    STUDYID = strip(STUDYID);
+    * Map Reported and Coded Terms *;
+    if not missing(dsterm_raw) then dsterm = strip(dsterm_raw);
+    else if not missing(dsterm) then dsterm = strip(dsterm);
     
-    *--------------------------------------------------------------------------------------;
-    * Derive USUBJID if not already available from merge                                  ;
-    *--------------------------------------------------------------------------------------;
-    if missing(USUBJID) then do;
-        USUBJID = catx('-', strip(STUDYID), strip(SITEID), strip(SUBJID));
+    if not missing(dsdecod_raw) then dsdecod = strip(dsdecod_raw);
+    else if not missing(dsdecod) then dsdecod = strip(dsdecod);
+    else if not missing(dsterm) then dsdecod = strip(dsterm);
+    
+    * Map Category and Subcategory *;
+    if not missing(dscat_raw) then dscat = strip(dscat_raw);
+    else if not missing(dscat) then dscat = strip(dscat);
+    
+    if not missing(dsscat_raw) then dsscat = strip(dsscat_raw);
+    else if not missing(dsscat) then dsscat = strip(dsscat);
+    
+    * Map Body System *;
+    if not missing(dsbodsys_raw) then dsbodsys = strip(dsbodsys_raw);
+    else if not missing(dsbodsys) then dsbodsys = strip(dsbodsys);
+run;
+
+*-----------------------------------------------------------------------------*
+* Step 4: Derive ISO 8601 date/time character variables                       *
+*-----------------------------------------------------------------------------*;
+
+data ds_03;
+    set ds_02;
+    
+    * Derive DSSTDTC in ISO 8601 format *;
+    if not missing(dsstdat) then do;
+        if not missing(dssttim) then 
+            dsstdtc = strip(put(dsstdat, is8601da.)) || 'T' || 
+                     put(dssttim, tod8.);
+        else 
+            dsstdtc = put(dsstdat, is8601da.);
+    end;
+    else if not missing(dsstdtc_raw) then 
+        dsstdtc = strip(dsstdtc_raw);
+    
+    * Derive DSENDTC in ISO 8601 format *;
+    if not missing(dsendat) then do;
+        if not missing(dsentim) then 
+            dsendtc = strip(put(dsendat, is8601da.)) || 'T' || 
+                     put(dsentim, tod8.);
+        else 
+            dsendtc = put(dsendat, is8601da.);
+    end;
+    else if not missing(dsendtc_raw) then 
+        dsendtc = strip(dsendtc_raw);
+run;
+
+*-----------------------------------------------------------------------------*
+* Step 5: Derive study day variables (--STDY, --ENDY)                         *
+*-----------------------------------------------------------------------------*;
+
+data ds_04;
+    set ds_03;
+    
+    length dsstdy dsendy 8;
+    
+    * Convert character dates to numeric for calculation *;
+    if not missing(dsstdtc) then 
+        dsstdat_num = input(substr(dsstdtc, 1, 10), yymmdd10.);
+    if not missing(dsendtc) then 
+        dsendat_num = input(substr(dsendtc, 1, 10), yymmdd10.);
+    if not missing(rfstdtc) then 
+        rfstdat_num = input(substr(rfstdtc, 1, 10), yymmdd10.);
+    
+    * Derive DSSTDY *;
+    if not missing(dsstdat_num) and not missing(rfstdat_num) then do;
+        if dsstdat_num >= rfstdat_num then 
+            dsstdy = dsstdat_num - rfstdat_num + 1;
+        else 
+            dsstdy = dsstdat_num - rfstdat_num;
     end;
     
-    *--------------------------------------------------------------------------------------;
-    * Map disposition terms from source                                                   ;
-    * DSTERM: Reported term from CRF                                                      ;
-    * DSDECOD: Standardized/dictionary-derived term                                       ;
-    *--------------------------------------------------------------------------------------;
-    DSTERM = strip(dterm);
-    
-    * Map to standardized disposition decode values;
-    if not missing(ddecod) then DSDECOD = strip(ddecod);
-    else if upcase(strip(dterm)) = 'COMPLETED' then DSDECOD = 'COMPLETED';
-    else if upcase(strip(dterm)) = 'SCREEN FAILURE' then DSDECOD = 'SCREEN FAILURE';
-    else if upcase(strip(dterm)) in ('WITHDREW CONSENT', 'WITHDRAWAL BY SUBJECT') then 
-        DSDECOD = 'WITHDRAWAL BY SUBJECT';
-    else if upcase(strip(dterm)) in ('ADVERSE EVENT', 'AE') then DSDECOD = 'ADVERSE EVENT';
-    else if upcase(strip(dterm)) = 'LOST TO FOLLOW-UP' then DSDECOD = 'LOST TO FOLLOW-UP';
-    else if upcase(strip(dterm)) = 'PHYSICIAN DECISION' then DSDECOD = 'PHYSICIAN DECISION';
-    else if upcase(strip(dterm)) = 'PROTOCOL DEVIATION' then DSDECOD = 'PROTOCOL DEVIATION';
-    else if upcase(strip(dterm)) = 'DEATH' then DSDECOD = 'DEATH';
-    else DSDECOD = strip(dterm);
-    
-    *--------------------------------------------------------------------------------------;
-    * Map categories and subcategories                                                     ;
-    *--------------------------------------------------------------------------------------;
-    if not missing(dcat) then DSCAT = strip(dcat);
-    if not missing(dscat) then DSSCAT = strip(dscat);
-    
-    *--------------------------------------------------------------------------------------;
-    * Map body system - typically not applicable for DS domain                            ;
-    *--------------------------------------------------------------------------------------;
-    if not missing(dbodsys) then DSBODSYS = strip(dbodsys);
-    
-    *--------------------------------------------------------------------------------------;
-    * Map start and end dates to ISO 8601 format                                          ;
-    *--------------------------------------------------------------------------------------;
-    * Handle source date variables - adjust variable names as needed;
-    if not missing(dstdtc_char) then do;
-        DSSTDTC = strip(dstdtc_char);
-    end;
-    else if not missing(dstdat) then do;
-        if dstdat > 0 then 
-            DSSTDTC = put(dstdat, is8601da.);
+    * Derive DSENDY *;
+    if not missing(dsendat_num) and not missing(rfstdat_num) then do;
+        if dsendat_num >= rfstdat_num then 
+            dsendy = dsendat_num - rfstdat_num + 1;
+        else 
+            dsendy = dsendat_num - rfstdat_num;
     end;
     
-    if not missing(dendtc_char) then do;
-        DSENDTC = strip(dendtc_char);
-    end;
-    else if not missing(dendat) then do;
-        if dendat > 0 then 
-            DSENDTC = put(dendat, is8601da.);
-    end;
+    drop dsstdat_num dsendat_num rfstdat_num;
+run;
+
+*-----------------------------------------------------------------------------*
+* Step 6: Derive EPOCH based on date relative to treatment periods            *
+*-----------------------------------------------------------------------------*;
+
+data ds_05;
+    set ds_04;
     
-    *--------------------------------------------------------------------------------------;
-    * Derive study days relative to RFSTDTC                                               ;
-    *--------------------------------------------------------------------------------------;
-    if not missing(DSSTDTC) and not missing(RFSTDTC) and length(strip(DSSTDTC)) >= 10 
-       and length(strip(RFSTDTC)) >= 10 then do;
-        _dsstdt = input(substr(DSSTDTC, 1, 10), yymmdd10.);
-        _rfstdt = input(substr(RFSTDTC, 1, 10), yymmdd10.);
+    * Basic EPOCH derivation - customize based on study design *;
+    if not missing(epoch_raw) then 
+        epoch = strip(epoch_raw);
+    else if not missing(dsstdtc) then do;
+        dsstdat_num = input(substr(dsstdtc, 1, 10), yymmdd10.);
+        if not missing(rfstdtc) then 
+            rfstdat_num = input(substr(rfstdtc, 1, 10), yymmdd10.);
+        if not missing(rfendtc) then 
+            rfendat_num = input(substr(rfendtc, 1, 10), yymmdd10.);
         
-        if not missing(_dsstdt) and not missing(_rfstdt) then do;
-            if _dsstdt >= _rfstdt then 
-                DSSTDY = _dsstdt - _rfstdt + 1;
+        if not missing(rfstdat_num) then do;
+            if dsstdat_num < rfstdat_num then 
+                epoch = 'SCREENING';
+            else if not missing(rfendat_num) and dsstdat_num > rfendat_num then 
+                epoch = 'FOLLOW-UP';
             else 
-                DSSTDY = _dsstdt - _rfstdt;
+                epoch = 'TREATMENT';
         end;
-    end;
-    
-    if not missing(DSENDTC) and not missing(RFSTDTC) and length(strip(DSENDTC)) >= 10 
-       and length(strip(RFSTDTC)) >= 10 then do;
-        _dsendt = input(substr(DSENDTC, 1, 10), yymmdd10.);
-        _rfstdt = input(substr(RFSTDTC, 1, 10), yymmdd10.);
         
-        if not missing(_dsendt) and not missing(_rfstdt) then do;
-            if _dsendt >= _rfstdt then 
-                DSENDY = _dsendt - _rfstdt + 1;
-            else 
-                DSENDY = _dsendt - _rfstdt;
-        end;
+        drop dsstdat_num rfstdat_num rfendat_num;
     end;
+run;
+
+*-----------------------------------------------------------------------------*
+* Step 7: Derive DSSEQ (sequence number within subject)                       *
+*-----------------------------------------------------------------------------*;
+
+proc sort data=ds_05;
+    by usubjid dsstdtc dsterm;
+run;
+
+data ds_06;
+    set ds_05;
+    by usubjid;
     
-    *--------------------------------------------------------------------------------------;
-    * Derive EPOCH based on disposition date and treatment phase                          ;
-    *--------------------------------------------------------------------------------------;
-    if not missing(epoch_src) then EPOCH = strip(epoch_src);
-    else if not missing(DSSTDTC) then do;
-        if not missing(DSSTDY) and DSSTDY < 1 then EPOCH = 'SCREENING';
-        else if upcase(strip(DSDECOD)) = 'SCREEN FAILURE' then EPOCH = 'SCREENING';
-        else if upcase(strip(DSCAT)) = 'DISPOSITION EVENT' then do;
-            if upcase(strip(DSDECOD)) in ('COMPLETED' 'EARLY TERMINATION') then 
-                EPOCH = 'TREATMENT';
-            else EPOCH = 'TREATMENT';
-        end;
-        else EPOCH = 'TREATMENT';
-    end;
+    length dsseq 8;
     
-    * Clean up temporary variables;
-    drop _dsstdt _dsendt _rfstdt 
-         dterm ddecod dcat dscat dbodsys 
-         dstdat dendat dstdtc_char dendtc_char epoch_src
-         siteid subjid rfstdtc;
+    retain dsseq;
+    
+    if first.usubjid then dsseq = 0;
+    dsseq + 1;
+run;
+
+*-----------------------------------------------------------------------------*
+* Step 8: Apply labels and final formatting                                   *
+*-----------------------------------------------------------------------------*;
+
+data ds_final;
+    set ds_06;
     
     label
-        STUDYID  = "Study Identifier"
-        DOMAIN   = "Domain Abbreviation"
-        USUBJID  = "Unique Subject Identifier"
-        DSSEQ    = "Sequence Number"
-        DSTERM   = "Reported Term for the Disposition Event"
-        DSDECOD  = "Standardized Disposition Term"
-        DSCAT    = "Category for Disposition Event"
-        DSSCAT   = "Subcategory for Disposition Event"
-        DSBODSYS = "Body System or Organ Class"
-        DSSTDTC  = "Start Date/Time of Disposition Event"
-        DSENDTC  = "End Date/Time of Disposition Event"
-        DSSTDY   = "Study Day of Start of Disposition Event"
-        DSENDY   = "Study Day of End of Disposition Event"
-        EPOCH    = "Epoch"
+        studyid   = "Study Identifier"
+        domain    = "Domain Abbreviation"
+        usubjid   = "Unique Subject Identifier"
+        dsseq     = "Sequence Number"
+        dsterm    = "Reported Term for the Disposition Event"
+        dsdecod   = "Standardized Disposition Term"
+        dscat     = "Category for Disposition Event"
+        dsscat    = "Subcategory for Disposition Event"
+        dsbodsys  = "Body System or Organ Class"
+        dsstdtc   = "Start Date/Time of Disposition Event"
+        dsendtc   = "End Date/Time of Disposition Event"
+        dsstdy    = "Study Day of Start of Disposition Event"
+        dsendy    = "Study Day of End of Disposition Event"
+        epoch     = "Epoch"
     ;
 run;
 
-*--------------------------------------------------------------------------------------;
-* Sort and derive DSSEQ as sequence number within subject                             ;
-*--------------------------------------------------------------------------------------;
-proc sort data=ds_temp;
-    by STUDYID USUBJID DSSTDTC DSTERM;
+*-----------------------------------------------------------------------------*
+* Step 9: Final sort and output to SDTM library                               *
+*-----------------------------------------------------------------------------*;
+
+proc sort data=ds_final 
+          out=sdtm.ds (keep=studyid domain usubjid dsseq dsterm dsdecod 
+                            dscat dsscat dsbodsys dsstdtc dsendtc 
+                            dsstdy dsendy epoch);
+    by studyid usubjid dsseq;
 run;
 
-data ds_temp;
-    set ds_temp;
-    by STUDYID USUBJID;
-    
-    * Derive sequence counter;
-    if first.USUBJID then DSSEQ = 0;
-    DSSEQ + 1;
-run;
-
-*--------------------------------------------------------------------------------------;
-* Final sort and output with specified variable order                                  ;
-*--------------------------------------------------------------------------------------;
-proc sort data=ds_temp;
-    by STUDYID USUBJID DSSEQ;
-run;
-
-data sdtm.ds(keep=&keepvars label="Disposition");
-    retain &keepvars;
-    set ds_temp;
-run;
-
-*--------------------------------------------------------------------------------------;
-* Generate summary report                                                              ;
-*--------------------------------------------------------------------------------------;
-proc freq data=sdtm.ds;
-    tables DSDECOD*DSCAT / missing list;
-    title "DS Domain: Disposition Events Summary";
-run;
+*-----------------------------------------------------------------------------*
+* Step 10: Generate summary report                                            *
+*-----------------------------------------------------------------------------*;
 
 proc sql;
-    select count(distinct USUBJID) as Subjects,
-           count(*) as Records
+    title "DS Domain Summary";
+    select count(distinct usubjid) as Subjects,
+           count(*) as Records,
+           count(distinct dsterm) as Unique_Terms
     from sdtm.ds;
 quit;
+
+proc freq data=sdtm.ds;
+    tables dscat dsdecod epoch / missing;
+    title "DS Domain Frequency Counts";
+run;
 
 title;
 

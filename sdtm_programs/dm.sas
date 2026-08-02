@@ -2,13 +2,13 @@
 * Program:    dm.sas
 * Domain:     DM (DM)
 * Purpose:    Create SDTM DM domain dataset
-* Variables:  24
+* Variables:  28
 * Generated:  SpecGen Phase 5c - SDTM Program Generation
 *
 * Input:      raw.dm (source CRF data)
 * Output:     sdtm.dm (DM domain dataset)
 *
-* Variables:  STUDYID, DMSEQ, USUBJID, DOMAIN, RFSTDTC, RFENDTC, RFXSTDTC, RFXENDTC
+* Variables:  STUDYID, DOMAIN, USUBJID, SUBJID, SITEID, RFSTDTC, RFENDTC, RFXSTDTC
 *             ...
 *******************************************************************************/
 
@@ -16,393 +16,237 @@
 libname raw  'C:\sas_data\raw'  access=readonly;
 libname sdtm 'C:\sas_data\sdtm';
 
-/*==========================================================================================*
-  Program:      dm.sas
-  Description:  Create SDTM DM (Demographics) Domain
-  Study:        [STUDY_NAME]
-  Programmer:   [PROGRAMMER_NAME]
-  Date:         [DATE]
-  
-  Input:        raw.dm  - Demographics CRF data
-                raw.ex  - Exposure data for reference dates
-                
-  Output:       sdtm.dm - SDTM Demographics Domain
-*===========================================================================================*/
+/*****************************************************************************************
+Program:      dm.sas
+Purpose:      Create SDTM DM (Demographics) domain
+Programmer:   Senior CDISC SDTM Programmer
+Date:         [Date]
+Input:        raw.dm - Demographics CRF data
+              raw.ex - Exposure data
+Output:       sdtm.dm
+******************************************************************************************/
 
 /*-- BEGIN DM --*/
 
-*==============================================================================;
-* Step 1: Extract first and last exposure dates from EX domain
-*==============================================================================;
-proc sort data=raw.ex out=ex_temp;
+*-----------------------------------------------------------------------------*
+* Step 1: Get first and last exposure dates from EX domain for RFXSTDTC/RFXENDTC
+*-----------------------------------------------------------------------------*;
+proc sort data=raw.ex(where=(exstdtc ne '')) out=ex_sorted;
     by studyid siteid subjid exstdtc;
-    where exstdtc ne '';
 run;
 
 data ex_dates;
-    set ex_temp;
+    set ex_sorted;
     by studyid siteid subjid;
     
-    length rfstdtc rfendtc rfxstdtc rfxendtc $19;
+    length usubjid $200 rfxstdtc rfxendtc $20;
     
-    retain rfstdtc rfendtc rfxstdtc rfxendtc;
+    * Create USUBJID *;
+    usubjid = catx('-', put(studyid,$20.-L), put(siteid,$10.-L), put(subjid,$20.-L));
     
-    * Keep first exposure date;
-    if first.subjid then do;
-        rfstdtc = exstdtc;
-        rfxstdtc = exstdtc;
-    end;
+    retain rfxstdtc rfxendtc;
     
-    * Keep last exposure date;
+    * Keep first exposure date *;
+    if first.subjid then rfxstdtc = exstdtc;
+    
+    * Keep last exposure date *;
     if last.subjid then do;
-        rfendtc = exstdtc;
         rfxendtc = exstdtc;
         output;
     end;
     
-    keep studyid siteid subjid rfstdtc rfendtc rfxstdtc rfxendtc;
+    keep usubjid rfxstdtc rfxendtc;
 run;
 
-*==============================================================================;
-* Step 2: Create DM domain from demographics CRF data
-*==============================================================================;
-data dm_pre;
+*-----------------------------------------------------------------------------*
+* Step 2: Read demographics source data and merge with exposure dates
+*-----------------------------------------------------------------------------*;
+proc sort data=raw.dm;
+    by studyid siteid subjid;
+run;
+
+data dm_base;
     merge raw.dm(in=a)
           ex_dates(in=b);
-    by studyid siteid subjid;
-    if a;
+    by usubjid;
     
-    length 
-        studyid $20
-        domain $2
-        usubjid $40
-        subjid $20
-        siteid $10
-        invid $10
-        invnam $60
-        country $3
-        armcd $20
-        arm $200
-        actarmcd $20
-        actarm $200
-        ethnic $40
-        race $40
-        randnum $20
-        rficdtc $19
-        sex $1
-        brthdtc $19
-        rfstdtc $19
-        rfendtc $19
-        rfxstdtc $19
-        rfxendtc $19
-    ;
+    if a; * Keep all subjects from DM *;
     
-    *---------------------------------------------------------;
-    * Assign constant values
-    *---------------------------------------------------------;
+    length studyid $20 domain $2 usubjid $200 subjid $20 siteid $10 
+           rfstdtc rfendtc rfxstdtc rfxendtc rficdtc rfpendtc dthdtc $20
+           dthfl $1 invnam $200 invid $20
+           brthdtc $20 age 8 ageu $10 sex $1 race $200 ethnic $200
+           armcd $20 arm $200 actarmcd $20 actarm $200 country $3 dmdtc $20 dmdy 8;
+    
+    * Assign constant values *;
     domain = 'DM';
     
-    *---------------------------------------------------------;
-    * Derive USUBJID
-    *---------------------------------------------------------;
-    usubjid = catx('-', studyid, siteid, subjid);
+    * Derive USUBJID *;
+    usubjid = catx('-', put(studyid,$20.-L), put(siteid,$10.-L), put(subjid,$20.-L));
     
-    *---------------------------------------------------------;
-    * Map CRF variables to SDTM variables
-    *---------------------------------------------------------;
-    * Direct mappings from raw.dm;
-    studyid = studyid;
-    siteid = siteid;
-    subjid = subjid;
+    * Direct mappings from CRF *;
+    subjid = put(subjid, $20.-L);
+    siteid = put(siteid, $10.-L);
     sex = upcase(sex);
     
-    * Convert birth date to ISO 8601;
-    if not missing(brthdt) then brthdtc = put(brthdt, e8601da.);
-    else brthdtc = '';
+    * Reference dates from exposure *;
+    rfstdtc = rfxstdtc;  * First dose date *;
+    rfendtc = rfxendtc;  * Last dose date *;
     
-    * Map ethnicity;
-    ethnic = strip(ethnic);
+    * Informed consent date *;
+    if not missing(icdtc) then rficdtc = icdtc;
     
-    * Map race;
-    race = strip(race);
+    * Protocol end date - map from raw if available *;
+    if not missing(pendtc) then rfpendtc = pendtc;
     
-    * Randomization number and informed consent date;
-    randnum = strip(randnum);
-    if not missing(icfdt) then rficdtc = put(icfdt, e8601da.);
-    else rficdtc = '';
-    
-    *---------------------------------------------------------;
-    * Derive/Map ARM and ARMCD
-    *---------------------------------------------------------;
-    armcd = strip(armcd);
-    arm = strip(arm);
-    
-    *---------------------------------------------------------;
-    * Derive ACTARM and ACTARMCD (use planned if actual not available)
-    *---------------------------------------------------------;
-    if not missing(actarmcd_crf) then actarmcd = strip(actarmcd_crf);
-    else actarmcd = armcd;
-    
-    if not missing(actarm_crf) then actarm = strip(actarm_crf);
-    else actarm = arm;
-    
-    *---------------------------------------------------------;
-    * Assign investigator information
-    *---------------------------------------------------------;
-    invid = strip(invid);
-    invnam = strip(invnam);
-    
-    *---------------------------------------------------------;
-    * Assign country (derive from siteid or use collected value)
-    *---------------------------------------------------------;
-    if missing(country) then do;
-        if substr(siteid,1,2) = '01' then country = 'USA';
-        else if substr(siteid,1,2) = '02' then country = 'CAN';
-        else if substr(siteid,1,2) = '03' then country = 'GBR';
-        else if substr(siteid,1,2) = '04' then country = 'DEU';
-        else if substr(siteid,1,2) = '05' then country = 'FRA';
+    * Death information *;
+    if not missing(dthdtc_raw) then do;
+        dthdtc = dthdtc_raw;
+        dthfl = 'Y';
     end;
-    else country = strip(country);
+    else if not missing(dthfl_raw) and upcase(dthfl_raw) = 'Y' then dthfl = 'Y';
+    else dthfl = 'N';
     
-    *---------------------------------------------------------;
-    * Derive AGE if not directly collected
-    *---------------------------------------------------------;
-    if not missing(age_crf) then age = age_crf;
-    else if not missing(brthdt) and not missing(rfstdtc) then do;
-        age = floor((input(substr(rfstdtc,1,10), yymmdd10.) - brthdt) / 365.25);
-    end;
+    * Investigator information *;
+    if not missing(invnam_raw) then invnam = invnam_raw;
+    if not missing(invid_raw) then invid = invid_raw;
     
-    *---------------------------------------------------------;
-    * Reference dates from EX are already merged
-    *---------------------------------------------------------;
-    rfstdtc = rfstdtc;
-    rfendtc = rfendtc;
-    rfxstdtc = rfxstdtc;
-    rfxendtc = rfxendtc;
+    * Country mapping - derive from raw.dm if available *;
+    if not missing(country_raw) then country = upcase(country_raw);
+    
+    * DM Collection Date *;
+    if not missing(dmdtc_raw) then dmdtc = dmdtc_raw;
     
 run;
 
-*==============================================================================;
-* Step 3: Assign DMSEQ sequence number
-*==============================================================================;
-proc sort data=dm_pre;
-    by studyid usubjid;
+*-----------------------------------------------------------------------------*
+* Step 3: Derive AGE and AGEU
+*-----------------------------------------------------------------------------*;
+data dm_age;
+    set dm_base;
+    
+    * Derive AGE if not collected directly *;
+    if missing(age) and not missing(brthdtc) and not missing(rfstdtc) then do;
+        * Calculate age in years *;
+        age = floor((input(substr(rfstdtc,1,10), yymmdd10.) - 
+                     input(substr(brthdtc,1,10), yymmdd10.)) / 365.25);
+        ageu = 'YEARS';
+    end;
+    else if not missing(age) and missing(ageu) then ageu = 'YEARS';
+    
+    * Format age as numeric *;
+    format age 8.;
+    
 run;
 
+*-----------------------------------------------------------------------------*
+* Step 4: Derive DMDY (Study Day of DM Collection)
+*-----------------------------------------------------------------------------*;
+data dm_dmdy;
+    set dm_age;
+    
+    * Derive DMDY relative to RFSTDTC *;
+    if not missing(dmdtc) and not missing(rfstdtc) then do;
+        dmdy = input(substr(dmdtc,1,10), yymmdd10.) - input(substr(rfstdtc,1,10), yymmdd10.);
+        if dmdy >= 0 then dmdy = dmdy + 1;
+    end;
+    
+    format dmdy 8.;
+    
+run;
+
+*-----------------------------------------------------------------------------*
+* Step 5: Apply labels and create final DM dataset
+*-----------------------------------------------------------------------------*;
 data sdtm.dm;
-    set dm_pre;
-    by studyid usubjid;
+    set dm_dmdy;
     
-    * Assign sequence number (one record per subject);
-    dmseq = 1;
-    
-    * Apply variable labels;
     label
-        studyid   = 'Study Identifier'
-        dmseq     = 'Sequence Number'
-        usubjid   = 'Unique Subject Identifier'
-        subjid    = 'Subject Identifier for the Study'
-        domain    = 'Domain Abbreviation'
-        rfstdtc   = 'Subject Reference Start Date/Time'
-        rfendtc   = 'Subject Reference End Date/Time'
-        rfxstdtc  = 'Date/Time of First Study Treatment'
-        rfxendtc  = 'Date/Time of Last Study Treatment'
-        siteid    = 'Study Site Identifier'
-        invid     = 'Investigator Identifier'
-        invnam    = 'Investigator Name'
-        country   = 'Country'
-        armcd     = 'Planned Arm Code'
-        arm       = 'Description of Planned Arm'
-        actarmcd  = 'Actual Arm Code'
-        actarm    = 'Description of Actual Arm'
-        age       = 'Age'
-        brthdtc   = 'Date/Time of Birth'
-        ethnic    = 'Ethnicity'
-        race      = 'Race'
-        randnum   = 'Randomization Number'
-        rficdtc   = 'Date/Time of Informed Consent'
-        sex       = 'Sex'
+        studyid  = "Study Identifier"
+        domain   = "Domain Abbreviation"
+        usubjid  = "Unique Subject Identifier"
+        subjid   = "Subject Identifier for the Study"
+        siteid   = "Study Site Identifier"
+        rfstdtc  = "Subject Reference Start Date/Time"
+        rfendtc  = "Subject Reference End Date/Time"
+        rfxstdtc = "Date/Time of First Study Treatment"
+        rfxendtc = "Date/Time of Last Study Treatment"
+        rficdtc  = "Date/Time of Informed Consent"
+        rfpendtc = "Date/Time of End of Participation"
+        dthdtc   = "Date/Time of Death"
+        dthfl    = "Subject Death Flag"
+        invnam   = "Investigator Name"
+        invid    = "Investigator Identifier"
+        brthdtc  = "Date/Time of Birth"
+        age      = "Age"
+        ageu     = "Age Units"
+        sex      = "Sex"
+        race     = "Race"
+        ethnic   = "Ethnicity"
+        armcd    = "Planned Arm Code"
+        arm      = "Description of Planned Arm"
+        actarmcd = "Actual Arm Code"
+        actarm   = "Description of Actual Arm"
+        country  = "Country"
+        dmdtc    = "Date/Time of Collection"
+        dmdy     = "Study Day of Collection"
     ;
     
-    * Keep only required variables in specification order;
     keep
         studyid
-        dmseq
-        usubjid
         domain
+        usubjid
+        subjid
+        siteid
         rfstdtc
         rfendtc
         rfxstdtc
         rfxendtc
-        siteid
-        invid
+        rficdtc
+        rfpendtc
+        dthdtc
+        dthfl
         invnam
-        country
+        invid
+        brthdtc
+        age
+        ageu
+        sex
+        race
+        ethnic
         armcd
         arm
         actarmcd
         actarm
-        age
-        brthdtc
-        ethnic
-        race
-        randnum
-        rficdtc
-        sex
-        subjid
+        country
+        dmdtc
+        dmdy
     ;
 run;
 
-*==============================================================================;
-* Step 4: Final sort by USUBJID
-*==============================================================================;
+*-----------------------------------------------------------------------------*
+* Step 6: Sort final dataset by STUDYID USUBJID
+*-----------------------------------------------------------------------------*;
 proc sort data=sdtm.dm;
-    by usubjid;
+    by studyid usubjid;
 run;
 
-*==============================================================================;
-* Step 5: Generate contents and summary report
-*==============================================================================;
-proc contents data=sdtm.dm varnum;
-    title "Contents of SDTM.DM Domain";
-run;
-
+*-----------------------------------------------------------------------------*
+* Step 7: Generate summary report
+*-----------------------------------------------------------------------------*;
 proc freq data=sdtm.dm;
-    tables sex race ethnic armcd actarmcd country / missing;
-    title "Frequency Counts for SDTM.DM Domain";
+    tables sex race ethnic armcd actarmcd dthfl / missing;
+    title "DM Domain - Frequency Counts";
 run;
 
-proc means data=sdtm.dm n nmiss min max mean median;
-    var age dmseq;
-    title "Descriptive Statistics for SDTM.DM Domain";
-run;
-
-*==============================================================================;
-* Clean up temporary datasets
-*==============================================================================;
-proc datasets library=work nolist;
-    delete ex_temp ex_dates dm_pre;
-quit;
-
-/*-- END DM --*/
-
-
-/*-- BEGIN SUPPDM --*/
-
-**********************************************************************;
-* Program:      SUPPDM.sas                                            ;
-* Description:  Create SUPPDM (Supplemental Qualifiers for DM)        ;
-* Study:        [STUDY NAME]                                          ;
-* Domain:       SUPPDM                                                ;
-* Parent:       DM                                                    ;
-**********************************************************************;
-
-**********************************************************************;
-* Step 1: Merge source data with SDTM DM to get USUBJID              ;
-**********************************************************************;
-proc sort data=raw.dm out=raw_dm_sort;
-    by USUBJID;
-run;
-
-proc sort data=sdtm.dm out=dm_key;
-    by USUBJID;
-run;
-
-data dm_with_qual;
-    merge raw_dm_sort (in=a)
-          dm_key (in=b keep=STUDYID USUBJID);
-    by USUBJID;
-    if a and b;
-    
-    * Keep only qualifier variables needed for SUPPDM;
-    keep STUDYID USUBJID COMPLT DCSREAS EDUYRN;
-run;
-
-**********************************************************************;
-* Step 2: Transpose qualifier variables into SUPPDM structure        ;
-**********************************************************************;
-data suppdm_prelim;
-    length STUDYID $20 RDOMAIN $8 USUBJID $40 IDVAR $8 IDVARVAL $200
-           QNAM $200 QLABEL $200 QVAL $200 QORIG $8 QEVAL $40;
-    set dm_with_qual;
-    
-    RDOMAIN = 'DM';
-    IDVAR = 'USUBJID';
-    IDVARVAL = strip(USUBJID);
-    QORIG = 'CRF';
-    QEVAL = '';
-    
-    * Transpose COMPLT;
-    if not missing(COMPLT) then do;
-        QNAM = 'COMPLT';
-        QLABEL = 'Completed Study?';
-        QVAL = strip(COMPLT);
-        output;
-    end;
-    
-    * Transpose DCSREAS;
-    if not missing(DCSREAS) then do;
-        QNAM = 'DCSREAS';
-        QLABEL = 'Reason for Discontinuation';
-        QVAL = strip(DCSREAS);
-        output;
-    end;
-    
-    * Transpose EDUYRN;
-    if not missing(EDUYRN) then do;
-        QNAM = 'EDUYRN';
-        QLABEL = 'Years of Education';
-        if compress(EDUYRN, '0123456789.') = '' then
-            QVAL = strip(put(input(EDUYRN, best.), best.));
-        else
-            QVAL = strip(EDUYRN);
-        output;
-    end;
-    
-    keep STUDYID RDOMAIN USUBJID IDVAR IDVARVAL QNAM QLABEL QVAL QORIG QEVAL;
-run;
-
-**********************************************************************;
-* Step 3: Sort and create final SUPPDM dataset                       ;
-**********************************************************************;
-proc sort data=suppdm_prelim 
-          out=sdtm.suppdm (label="Supplemental Qualifiers for DM");
-    by STUDYID RDOMAIN USUBJID IDVARVAL QNAM;
-run;
-
-**********************************************************************;
-* Step 4: Apply variable labels                                      ;
-**********************************************************************;
-data sdtm.suppdm;
-    set sdtm.suppdm;
-    
-    label STUDYID  = "Study Identifier"
-          RDOMAIN  = "Related Domain Abbreviation"
-          USUBJID  = "Unique Subject Identifier"
-          IDVAR    = "Identifying Variable"
-          IDVARVAL = "Identifying Variable Value"
-          QNAM     = "Qualifier Variable Name"
-          QLABEL   = "Qualifier Variable Label"
-          QVAL     = "Data Value"
-          QORIG    = "Origin"
-          QEVAL    = "Evaluator";
-run;
-
-**********************************************************************;
-* Step 5: Generate summary report                                    ;
-**********************************************************************;
-proc freq data=sdtm.suppdm;
-    tables QNAM / nocum;
-    title "SUPPDM: Frequency of Qualifier Variables";
-run;
-
-proc contents data=sdtm.suppdm varnum;
-    title "SUPPDM: Dataset Contents";
+proc means data=sdtm.dm n nmiss mean std min max;
+    var age;
+    title "DM Domain - Age Statistics";
 run;
 
 title;
 
-/*-- END SUPPDM --*/
+/*-- END DM --*/
 
 /*-- Final sort and output verification --*/
 proc sort data=sdtm.dm;

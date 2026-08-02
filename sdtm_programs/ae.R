@@ -12,15 +12,38 @@
 # ********************************************************************
 
 # ==============================================================================
-# Program:      AE Domain (Adverse Events)
-# Purpose:      Generate SDTM AE domain from raw source data
-# CDISC Model:  SDTM 3.x
-# Domain:       AE (Events class - one row per event per subject)
+# Program:      ae.R
+# Description:  SDTM AE (Adverse Events) Domain
+# CDISC SDTM:   Events Class - one row per event per subject
 # ==============================================================================
+
+library(dplyr)
 
 # -- BEGIN AE -- #
 
-library(dplyr)
+# ==============================================================================
+# Variable Labels (for reference - not applied in R)
+# ==============================================================================
+# STUDYID   : Study Identifier
+# AESEQ     : Sequence Number
+# USUBJID   : Unique Subject Identifier
+# DOMAIN    : Domain Abbreviation
+# AETERM    : Reported Term for the Event
+# AEDECOD   : Dictionary-Derived Term
+# AECAT     : Category for Event
+# AESCAT    : Subcategory for Event
+# AEBODSYS  : Body System or Organ Class
+# AESTDTC   : Start Date/Time of Event
+# AEENDTC   : End Date/Time of Event
+# AESTDY    : Study Day of Start of Event
+# AEENDY    : Study Day of End of Event
+# EPOCH     : Epoch
+# AEACN     : Action Taken with Study Treatment
+# AEOUT     : Outcome of Adverse Event
+# AEREL     : Causality
+# AESER     : Serious Event
+# AESEV     : Severity/Intensity
+# ==============================================================================
 
 # ==============================================================================
 # Derive AE domain
@@ -28,95 +51,116 @@ library(dplyr)
 
 ae <- raw_ae %>%
   
-  # ----------------------------------------------------------------------------
-  # Subject identifiers and reference dates
-  # ----------------------------------------------------------------------------
+  # ============================================================================
+  # Merge DM to get subject-level variables
+  # ============================================================================
   left_join(
-    dm %>% select(STUDYID, SITEID, SUBJID, USUBJID, RFSTDTC, RFENDTC),
-    by = c("STUDYID", "SITEID", "SUBJID")
+    dm %>% select(STUDYID, USUBJID, RFSTDTC),
+    by = c("STUDYID", "USUBJID")
   ) %>%
   
-  # ----------------------------------------------------------------------------
-  # Basic domain setup
-  # ----------------------------------------------------------------------------
+  # ============================================================================
+  # Assign Domain
+  # ============================================================================
   mutate(DOMAIN = "AE") %>%
   
-  # ----------------------------------------------------------------------------
-  # AE-specific variables from source
-  # ----------------------------------------------------------------------------
-  mutate(AETERM = AEVERBATIM) %>%
-  mutate(AEDECOD = AECODED) %>%
-  mutate(AEBODSYS = AESOC) %>%
-  mutate(AECAT = CATEGORY) %>%
-  mutate(AESCAT = if_else(!is.na(SUBCATEGORY), SUBCATEGORY, NA_character_)) %>%
-  
-  # ----------------------------------------------------------------------------
-  # Date/time variables (ISO 8601 format)
-  # ----------------------------------------------------------------------------
-  mutate(AESTDTC = AESTDAT) %>%
-  mutate(AEENDTC = AEENDAT) %>%
-  
-  # ----------------------------------------------------------------------------
-  # Study day derivations
-  # ----------------------------------------------------------------------------
+  # ============================================================================
+  # Map source variables to SDTM variables
+  # ============================================================================
   mutate(
+    # Map Reported Term
+    AETERM = AETERM_RAW,
+    
+    # Map Dictionary-Derived Term
+    AEDECOD = AEDECOD_RAW,
+    
+    # Map Body System or Organ Class
+    AEBODSYS = AEBODSYS_RAW,
+    
+    # Map Category
+    AECAT = AECAT_RAW,
+    
+    # Map Subcategory
+    AESCAT = AESCAT_RAW,
+    
+    # Map Start Date/Time (ISO 8601)
+    AESTDTC = AESTDTC_RAW,
+    
+    # Map End Date/Time (ISO 8601)
+    AEENDTC = AEENDTC_RAW,
+    
+    # Map Action Taken
+    AEACN = AEACN_RAW,
+    
+    # Map Outcome
+    AEOUT = AEOUT_RAW,
+    
+    # Map Causality
+    AEREL = AEREL_RAW,
+    
+    # Map Serious Event
+    AESER = AESER_RAW,
+    
+    # Map Severity
+    AESEV = AESEV_RAW
+  ) %>%
+  
+  # ============================================================================
+  # Derive Study Day variables
+  # ============================================================================
+  mutate(
+    # Parse reference start date
+    RFSTDT = as.Date(substr(RFSTDTC, 1, 10)),
+    
+    # Parse AE start date
+    AESTDT = as.Date(substr(AESTDTC, 1, 10)),
+    
+    # Parse AE end date
+    AEENDT = as.Date(substr(AEENDTC, 1, 10)),
+    
+    # Derive Study Day of Start
     AESTDY = if_else(
-      !is.na(AESTDTC) & !is.na(RFSTDTC),
-      as.numeric(as.Date(substr(AESTDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10))) +
-        if_else(as.Date(substr(AESTDTC, 1, 10)) >= as.Date(substr(RFSTDTC, 1, 10)), 1, 0),
+      !is.na(AESTDT) & !is.na(RFSTDT),
+      as.numeric(AESTDT - RFSTDT) + if_else(AESTDT >= RFSTDT, 1L, 0L),
       NA_real_
-    )
-  ) %>%
-  
-  mutate(
+    ),
+    
+    # Derive Study Day of End
     AEENDY = if_else(
-      !is.na(AEENDTC) & !is.na(RFSTDTC),
-      as.numeric(as.Date(substr(AEENDTC, 1, 10)) - as.Date(substr(RFSTDTC, 1, 10))) +
-        if_else(as.Date(substr(AEENDTC, 1, 10)) >= as.Date(substr(RFSTDTC, 1, 10)), 1, 0),
+      !is.na(AEENDT) & !is.na(RFSTDT),
+      as.numeric(AEENDT - RFSTDT) + if_else(AEENDT >= RFSTDT, 1L, 0L),
       NA_real_
     )
   ) %>%
   
-  # ----------------------------------------------------------------------------
-  # EPOCH derivation based on date relative to treatment period
-  # ----------------------------------------------------------------------------
+  # ============================================================================
+  # Derive EPOCH based on date relative to treatment period
+  # ============================================================================
   mutate(
     EPOCH = case_when(
-      is.na(AESTDTC) ~ NA_character_,
-      !is.na(RFSTDTC) & as.Date(substr(AESTDTC, 1, 10)) < as.Date(substr(RFSTDTC, 1, 10)) ~ "SCREENING",
-      !is.na(RFSTDTC) & !is.na(RFENDTC) & 
-        as.Date(substr(AESTDTC, 1, 10)) >= as.Date(substr(RFSTDTC, 1, 10)) &
-        as.Date(substr(AESTDTC, 1, 10)) <= as.Date(substr(RFENDTC, 1, 10)) ~ "TREATMENT",
-      !is.na(RFENDTC) & as.Date(substr(AESTDTC, 1, 10)) > as.Date(substr(RFENDTC, 1, 10)) ~ "FOLLOW-UP",
-      TRUE ~ "TREATMENT"
+      is.na(AESTDT) ~ NA_character_,
+      !is.na(AESTDY) & AESTDY < 1 ~ "SCREENING",
+      !is.na(AESTDY) & AESTDY >= 1 ~ "TREATMENT",
+      TRUE ~ NA_character_
     )
   ) %>%
   
-  # ----------------------------------------------------------------------------
-  # AE-specific clinical variables
-  # ----------------------------------------------------------------------------
-  mutate(AEACN = ACTION) %>%
-  mutate(AEOUT = OUTCOME) %>%
-  mutate(AEREL = RELATED) %>%
-  mutate(AESER = SERIOUS) %>%
-  mutate(AESEV = SEVERITY) %>%
-  
-  # ----------------------------------------------------------------------------
-  # Sequence number
-  # ----------------------------------------------------------------------------
+  # ============================================================================
+  # Derive AESEQ - Sequence Number within subject
+  # ============================================================================
   group_by(USUBJID) %>%
   arrange(USUBJID, AESTDTC, AETERM) %>%
   mutate(AESEQ = row_number()) %>%
   ungroup() %>%
   
-  # ----------------------------------------------------------------------------
+  # ============================================================================
   # Sort final dataset
-  # ----------------------------------------------------------------------------
+  # ============================================================================
   arrange(STUDYID, USUBJID, AESEQ) %>%
   
-  # ----------------------------------------------------------------------------
-  # Select and order final variables per SDTM specification
-  # ----------------------------------------------------------------------------
+  # ============================================================================
+  # Select final variables in specification order
+  # ============================================================================
   select(
     STUDYID,
     AESEQ,
@@ -141,52 +185,44 @@ ae <- raw_ae %>%
 
 # -- END AE -- #
 
-# ==============================================================================
-# End of Program
-# ==============================================================================
-
 
 # -- BEGIN SUPPAE -- #
 
-# Define qualifier variables metadata
-qualifiers <- tribble(
+
+# Prepare qualifier metadata
+qualifier_metadata <- tribble(
   ~QNAM,       ~QLABEL,
   "AEACNOTH",  "Other Action Taken",
-  "AESDTH",    "Led to Death?: Yes No",
-  "AESHOSP",   "Led to Hospitalization?: Yes No",
-  "AETRTEM",   "Treatment Emergent?: Yes No"
+  "AESDTH",    "Results in Death",
+  "AESHOSP",   "Requires or Prolongs Hospitalization",
+  "AETRTEM",   "Treatment Emergent Flag"
 )
 
 # Merge raw_ae with ae to get AESEQ
-ae_base <- raw_ae %>%
+ae_with_qualifiers <- raw_ae %>%
   inner_join(
-    ae %>% select(STUDYID, USUBJID, AESEQ),
-    by = c("STUDYID", "USUBJID")
-  )
+    ae %>% select(STUDYID, USUBJID, AESTDTC, AETERM, AESEQ),
+    by = c("STUDYID", "USUBJID", "AESTDTC", "AETERM")
+  ) %>%
+  select(STUDYID, USUBJID, AESEQ, AEACNOTH, AESDTH, AESHOSP, AETRTEM)
 
-# Pivot qualifier variables to long format
-suppae <- ae_base %>%
-  select(STUDYID, USUBJID, AESEQ, all_of(qualifiers$QNAM)) %>%
+# Pivot qualifiers to long format
+suppae <- ae_with_qualifiers %>%
   pivot_longer(
-    cols = all_of(qualifiers$QNAM),
+    cols = c(AEACNOTH, AESDTH, AESHOSP, AETRTEM),
     names_to = "QNAM",
-    values_to = "QVAL",
-    values_transform = as.character
+    values_to = "QVAL"
   ) %>%
   filter(!is.na(QVAL) & QVAL != "") %>%
-  left_join(qualifiers, by = "QNAM") %>%
+  left_join(qualifier_metadata, by = "QNAM") %>%
   mutate(
     RDOMAIN = "AE",
     IDVAR = "AESEQ",
     IDVARVAL = as.character(AESEQ),
+    QVAL = as.character(QVAL),
     QORIG = "CRF",
-    QEVAL = NA_character_,
-    AEACNOTH = if_else(QNAM == "AEACNOTH", QVAL, NA_character_),
-    AESDTH = if_else(QNAM == "AESDTH", QVAL, NA_character_),
-    AESHOSP = if_else(QNAM == "AESHOSP", QVAL, NA_character_),
-    AETRTEM = if_else(QNAM == "AETRTEM", QVAL, NA_character_)
+    QEVAL = NA_character_
   ) %>%
-  arrange(STUDYID, RDOMAIN, USUBJID, IDVARVAL, QNAM) %>%
   select(
     STUDYID,
     RDOMAIN,
@@ -197,12 +233,9 @@ suppae <- ae_base %>%
     QLABEL,
     QVAL,
     QORIG,
-    QEVAL,
-    AEACNOTH,
-    AESDTH,
-    AESHOSP,
-    AETRTEM
-  )
+    QEVAL
+  ) %>%
+  arrange(STUDYID, USUBJID, IDVAR, IDVARVAL, QNAM)
 
 # -- END SUPPAE -- #
 

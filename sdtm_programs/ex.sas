@@ -16,212 +16,149 @@
 libname raw  'C:\sas_data\raw'  access=readonly;
 libname sdtm 'C:\sas_data\sdtm';
 
-/*=======================================================================================
-  Program:      EX.sas
-  Description:  SDTM EX (Exposure) Domain - Interventions Class
-  Date:         [Current Date]
-  Programmer:   [Name]
-  Study:        [Study Number]
-  Notes:        Production-quality SDTM EX domain program
-=========================================================================================*/
+/*=============================================================================
+  PROGRAM:      SDTM_EX.sas
+  DESCRIPTION:  Create SDTM EX (Exposure) Domain
+  DOMAIN:       EX (Interventions Class)
+=============================================================================*/
 
 /*-- BEGIN EX --*/
 
-%let keepvars = STUDYID DOMAIN USUBJID EXSEQ EXTRT EXDECOD EXCAT EXDOSE EXDOSU 
-                EXDOSFRQ EXROUTE EXSTDTC EXENDTC EXSTDY EXENDY EPOCH;
-
-/*---------------------------------------------------------------------------------------
-  STEP 1: Read in DM domain for reference variables (STUDYID, USUBJID, RFSTDTC)
----------------------------------------------------------------------------------------*/
-proc sort data=sdtm.dm(keep=studyid usubjid rfstdtc siteid subjid) out=dm nodupkey;
+/*-----------------------------------------------------------------------------
+  Step 1: Read DM domain for subject-level information
+-----------------------------------------------------------------------------*/
+proc sort data=sdtm.dm(keep=studyid usubjid rfstdtc) out=dm nodupkey;
     by studyid usubjid;
 run;
 
-/*---------------------------------------------------------------------------------------
-  STEP 2: Read and prepare raw EX source data
----------------------------------------------------------------------------------------*/
+/*-----------------------------------------------------------------------------
+  Step 2: Read source EX data and merge with DM
+-----------------------------------------------------------------------------*/
 data ex_raw;
-    set raw.ex;
-    
-    /* Keep only non-missing records */
-    if not missing(subjid);
-    
-    /* Derive USUBJID if not already in source */
-    length usubjid $40;
-    if missing(usubjid) then usubjid = catx('-', studyid, siteid, subjid);
-    
-run;
-
-/*---------------------------------------------------------------------------------------
-  STEP 3: Merge EX raw data with DM to get reference date (RFSTDTC)
----------------------------------------------------------------------------------------*/
-proc sort data=ex_raw;
+    merge raw.ex(in=a)
+          dm(in=b);
     by studyid usubjid;
-run;
-
-data ex_merge;
-    merge ex_raw(in=a)
-          dm(in=b keep=studyid usubjid rfstdtc);
-    by studyid usubjid;
+    
     if a;
     
-    /* Flag if subject not in DM */
-    if not b then put "WARNING: Subject not found in DM - " usubjid=;
+    /* Ensure required variables exist */
+    if missing(usubjid) then delete;
 run;
 
-/*---------------------------------------------------------------------------------------
-  STEP 4: Create SDTM EX domain with all derivations
----------------------------------------------------------------------------------------*/
-data ex_pre;
-    set ex_merge;
+/*-----------------------------------------------------------------------------
+  Step 3: Create EX domain with derivations
+-----------------------------------------------------------------------------*/
+data ex_1;
+    set ex_raw;
     
-    /* Set required variable lengths */
-    length STUDYID $20
-           DOMAIN $2
-           USUBJID $40
-           EXTRT $200
-           EXDECOD $200
-           EXCAT $200
-           EXDOSE 8
-           EXDOSU $200
-           EXDOSFRQ $200
-           EXROUTE $200
-           EXSTDTC $20
-           EXENDTC $20
-           EXSTDY 8
-           EXENDY 8
-           EPOCH $20;
-    
-    /*-----------------------------------------------------------------------------------
-      Domain and Basic Variables
-    -----------------------------------------------------------------------------------*/
+    /* Set domain constant */
+    length STUDYID $20 DOMAIN $2 USUBJID $40;
     DOMAIN = 'EX';
     
-    /* STUDYID should come from source or DM */
-    STUDYID = strip(studyid);
-    USUBJID = strip(usubjid);
+    /* Map treatment variables */
+    length EXTRT $200 EXDECOD $200;
+    EXTRT = strip(EXTRT);
     
-    /*-----------------------------------------------------------------------------------
-      Treatment Variables - Map from source variables
-      Adjust source variable names as needed for actual data
-    -----------------------------------------------------------------------------------*/
-    /* Reported treatment name from CRF */
-    EXTRT = strip(trt);  /* Adjust source variable name as needed */
+    /* Derive standardized treatment name */
+    if not missing(EXTRT) then EXDECOD = strip(upcase(EXTRT));
+    else EXDECOD = '';
     
-    /* Standardized treatment name - derive from reported name or dictionary */
-    if upcase(strip(EXTRT)) in ('DRUG A' 'ACTIVE') then EXDECOD = 'DRUG A';
-    else if upcase(strip(EXTRT)) in ('PLACEBO' 'PBO') then EXDECOD = 'PLACEBO';
-    else EXDECOD = strip(upcase(EXTRT));
+    /* Map category */
+    length EXCAT $200;
+    EXCAT = strip(EXCAT);
     
-    /* Category for intervention */
-    if not missing(excat) then EXCAT = strip(excat);  
-    else EXCAT = 'STUDY TREATMENT';
+    /* Map dose and units */
+    length EXDOSU $200;
+    if not missing(EXDOSE) then EXDOSE = EXDOSE;
+    EXDOSU = strip(EXDOSU);
     
-    /*-----------------------------------------------------------------------------------
-      Dose Variables - Map from source
-    -----------------------------------------------------------------------------------*/
-    /* Dose per administration */
-    if not missing(dose) then EXDOSE = dose;  
+    /* Map dosing frequency */
+    length EXDOSFRQ $200;
+    EXDOSFRQ = strip(EXDOSFRQ);
     
-    /* Dose units */
-    if not missing(dosu) then EXDOSU = strip(dosu);  
+    /* Map route of administration */
+    length EXROUTE $200;
+    EXROUTE = strip(EXROUTE);
     
-    /* Dosing frequency */
-    if not missing(dosfrq) then EXDOSFRQ = strip(dosfrq);  
+    /* Format start and end dates to ISO 8601 */
+    length EXSTDTC EXENDTC $20;
     
-    /* Route of administration */
-    if not missing(route) then EXROUTE = strip(route);  
-    
-    /*-----------------------------------------------------------------------------------
-      Date/Time Variables - Convert to ISO 8601 format
-    -----------------------------------------------------------------------------------*/
-    /* Start date/time of intervention */
-    if not missing(exstdt) then do;
-        if not missing(exsttm) then 
-            EXSTDTC = strip(put(exstdt, yymmdd10.)) || 'T' || put(exsttm, time8.);
-        else 
-            EXSTDTC = strip(put(exstdt, yymmdd10.));
+    /* Convert dates to ISO 8601 format if needed */
+    if not missing(EXSTDTC) then do;
+        _exstdtc_temp = strip(EXSTDTC);
+        if length(_exstdtc_temp) <= 11 and verify(_exstdtc_temp, '0123456789/-:T ') = 0 then do;
+            _exstdt_num = input(_exstdtc_temp, ?? yymmdd10.);
+            if not missing(_exstdt_num) then EXSTDTC = put(_exstdt_num, is8601da.);
+            else EXSTDTC = strip(EXSTDTC);
+        end;
+        else EXSTDTC = strip(EXSTDTC);
     end;
     
-    /* End date/time of intervention */
-    if not missing(exendt) then do;
-        if not missing(exentm) then 
-            EXENDTC = strip(put(exendt, yymmdd10.)) || 'T' || put(exentm, time8.);
-        else 
-            EXENDTC = strip(put(exendt, yymmdd10.));
+    if not missing(EXENDTC) then do;
+        _exendtc_temp = strip(EXENDTC);
+        if length(_exendtc_temp) <= 11 and verify(_exendtc_temp, '0123456789/-:T ') = 0 then do;
+            _exendt_num = input(_exendtc_temp, ?? yymmdd10.);
+            if not missing(_exendt_num) then EXENDTC = put(_exendt_num, is8601da.);
+            else EXENDTC = strip(EXENDTC);
+        end;
+        else EXENDTC = strip(EXENDTC);
     end;
     
-    /*-----------------------------------------------------------------------------------
-      Study Day Derivations - Relative to RFSTDTC
-    -----------------------------------------------------------------------------------*/
-    /* Derive EXSTDY - Study day of start of intervention */
-    if not missing(exstdt) and not missing(rfstdtc) then do;
-        rfstdt = input(scan(rfstdtc, 1, 'T'), yymmdd10.);
-        if not missing(rfstdt) then do;
-            if exstdt >= rfstdt then 
-                EXSTDY = exstdt - rfstdt + 1;
-            else 
-                EXSTDY = exstdt - rfstdt;
+    /* Derive study day variables */
+    if not missing(RFSTDTC) and not missing(EXSTDTC) and length(strip(EXSTDTC)) >= 10 then do;
+        _rfstdt = input(substr(strip(RFSTDTC), 1, 10), ?? yymmdd10.);
+        _exstdt = input(substr(strip(EXSTDTC), 1, 10), ?? yymmdd10.);
+        
+        if not missing(_rfstdt) and not missing(_exstdt) then do;
+            if _exstdt >= _rfstdt then EXSTDY = _exstdt - _rfstdt + 1;
+            else EXSTDY = _exstdt - _rfstdt;
         end;
     end;
     
-    /* Derive EXENDY - Study day of end of intervention */
-    if not missing(exendt) and not missing(rfstdtc) then do;
-        rfstdt = input(scan(rfstdtc, 1, 'T'), yymmdd10.);
-        if not missing(rfstdt) then do;
-            if exendt >= rfstdt then 
-                EXENDY = exendt - rfstdt + 1;
-            else 
-                EXENDY = exendt - rfstdt;
+    if not missing(RFSTDTC) and not missing(EXENDTC) and length(strip(EXENDTC)) >= 10 then do;
+        _rfstdt = input(substr(strip(RFSTDTC), 1, 10), ?? yymmdd10.);
+        _exendt = input(substr(strip(EXENDTC), 1, 10), ?? yymmdd10.);
+        
+        if not missing(_rfstdt) and not missing(_exendt) then do;
+            if _exendt >= _rfstdt then EXENDY = _exendt - _rfstdt + 1;
+            else EXENDY = _exendt - _rfstdt;
         end;
     end;
     
-    /*-----------------------------------------------------------------------------------
-      EPOCH Derivation - Based on date relative to treatment periods
-      Adjust logic based on protocol-specific epochs
-    -----------------------------------------------------------------------------------*/
-    if not missing(epoch_source) then EPOCH = strip(epoch_source);
-    else if not missing(EXSTDY) then do;
-        if EXSTDY >= 1 then EPOCH = 'TREATMENT';
-        else if EXSTDY < 1 then EPOCH = 'SCREENING';
+    /* Derive EPOCH based on study day */
+    length EPOCH $20;
+    if not missing(EXSTDY) then do;
+        if EXSTDY < 1 then EPOCH = 'SCREENING';
+        else if EXSTDY >= 1 then EPOCH = 'TREATMENT';
     end;
+    else if not missing(EXSTDTC) then EPOCH = 'TREATMENT';
     
-    /* Drop temporary and source variables */
-    drop trt dose dosu dosfrq route exstdt exsttm exendt exentm 
-         rfstdt rfstdtc siteid subjid epoch_source excat;
-         
+    /* Drop temporary variables */
+    drop _rfstdt _exstdt _exendt _exstdtc_temp _exendtc_temp _exstdt_num _exendt_num RFSTDTC;
 run;
 
-/*---------------------------------------------------------------------------------------
-  STEP 5: Derive EXSEQ as sequence number within each subject
----------------------------------------------------------------------------------------*/
-proc sort data=ex_pre;
-    by studyid usubjid exstdtc exendtc extrt;
+/*-----------------------------------------------------------------------------
+  Step 4: Sort and assign sequence number
+-----------------------------------------------------------------------------*/
+proc sort data=ex_1;
+    by STUDYID USUBJID EXSTDTC EXTRT;
 run;
 
-data ex_seq;
-    set ex_pre;
-    by studyid usubjid;
+data ex_2;
+    set ex_1;
+    by STUDYID USUBJID;
     
-    /* Sequence number within subject */
-    length EXSEQ 8;
-    if first.usubjid then EXSEQ = 0;
-    EXSEQ + 1;
+    /* Derive sequence number */
+    if first.USUBJID then EXSEQ = 1;
+    else EXSEQ + 1;
     
-run;
-
-/*---------------------------------------------------------------------------------------
-  STEP 6: Apply labels and final dataset
----------------------------------------------------------------------------------------*/
-data sdtm.ex(label="Exposure");
-    set ex_seq;
-    
+    /* Apply variable labels */
     label
         STUDYID  = "Study Identifier"
         DOMAIN   = "Domain Abbreviation"
         USUBJID  = "Unique Subject Identifier"
         EXSEQ    = "Sequence Number"
-        EXTRT    = "Name of Actual Treatment"
+        EXTRT    = "Name of Treatment"
         EXDECOD  = "Standardized Treatment Name"
         EXCAT    = "Category for Treatment"
         EXDOSE   = "Dose per Administration"
@@ -234,33 +171,70 @@ data sdtm.ex(label="Exposure");
         EXENDY   = "Study Day of End of Treatment"
         EPOCH    = "Epoch"
     ;
-    
-    /* Keep only specified variables in order */
-    keep &keepvars;
-    
 run;
 
-/*---------------------------------------------------------------------------------------
-  STEP 7: Final sort by STUDYID USUBJID EXSEQ
----------------------------------------------------------------------------------------*/
-proc sort data=sdtm.ex;
-    by studyid usubjid exseq;
+/*-----------------------------------------------------------------------------
+  Step 5: Final sort and output
+-----------------------------------------------------------------------------*/
+proc sort data=ex_2 out=sdtm.ex;
+    by STUDYID USUBJID EXSEQ;
 run;
 
-/*---------------------------------------------------------------------------------------
-  STEP 8: Generate summary report
----------------------------------------------------------------------------------------*/
+/*-----------------------------------------------------------------------------
+  Step 6: Create final EX dataset with specified variable order
+-----------------------------------------------------------------------------*/
+data sdtm.ex;
+    retain
+        STUDYID
+        DOMAIN
+        USUBJID
+        EXSEQ
+        EXTRT
+        EXDECOD
+        EXCAT
+        EXDOSE
+        EXDOSU
+        EXDOSFRQ
+        EXROUTE
+        EXSTDTC
+        EXENDTC
+        EXSTDY
+        EXENDY
+        EPOCH
+    ;
+    set sdtm.ex;
+    
+    label
+        STUDYID  = "Study Identifier"
+        DOMAIN   = "Domain Abbreviation"
+        USUBJID  = "Unique Subject Identifier"
+        EXSEQ    = "Sequence Number"
+        EXTRT    = "Name of Treatment"
+        EXDECOD  = "Standardized Treatment Name"
+        EXCAT    = "Category for Treatment"
+        EXDOSE   = "Dose per Administration"
+        EXDOSU   = "Dose Units"
+        EXDOSFRQ = "Dosing Frequency per Interval"
+        EXROUTE  = "Route of Administration"
+        EXSTDTC  = "Start Date/Time of Treatment"
+        EXENDTC  = "End Date/Time of Treatment"
+        EXSTDY   = "Study Day of Start of Treatment"
+        EXENDY   = "Study Day of End of Treatment"
+        EPOCH    = "Epoch"
+    ;
+run;
+
+/*-----------------------------------------------------------------------------
+  Step 7: Generate summary report
+-----------------------------------------------------------------------------*/
+proc contents data=sdtm.ex varnum;
+    title "SDTM EX Domain - Contents";
+run;
+
 proc freq data=sdtm.ex;
-    tables extrt*exdecod excat exdosfrq exroute epoch / missing list;
-    title "EX Domain Frequency Summary";
+    tables EXTRT*EXDECOD EXCAT EXDOSFRQ EXROUTE EPOCH / missing nocum nopercent;
+    title "SDTM EX Domain - Frequency Counts";
 run;
-
-proc means data=sdtm.ex n nmiss min max mean median;
-    var exseq exdose exstdy exendy;
-    title "EX Domain Numeric Variable Summary";
-run;
-
-title;
 
 /*-- END EX --*/
 
