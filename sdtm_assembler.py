@@ -40,6 +40,8 @@ import os
 import re
 import sys
 import argparse
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import openpyxl
 
 # Claude's responses (review verdicts, generated code) commonly contain
@@ -56,6 +58,13 @@ from config import WRITER, REVIEWER, LOCAL_MODEL, API_MODEL
 from generator import generate_local, generate_api, review_sas
 from improver import improve_block
 from runlog import log_run
+
+# Domains generate concurrently (see generate_all_domains); log_run() appends
+# a row to a shared CSV, and two threads finishing at the same instant could
+# interleave their writes into one corrupted line. One lock, held only for
+# the log write itself, keeps rows intact without limiting the actual
+# API-bound work to one-at-a-time.
+_LOG_LOCK = threading.Lock()
 
 
 # ── Domain classification ───────────────────────────────────────────
@@ -842,15 +851,16 @@ def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=Fa
 
     # Log the run
     try:
-        log_run(
-            spec_file=xlsx_path,
-            mode="sdtm_generate",
-            writer_model=writer_model,
-            improver_model=API_MODEL if use_api else "none",
-            reviewer_model=API_MODEL if use_api else "none",
-            n_vars=len(variables),
-            output_file=output_file,
-        )
+        with _LOG_LOCK:
+            log_run(
+                spec_file=xlsx_path,
+                mode="sdtm_generate",
+                writer_model=writer_model,
+                improver_model=API_MODEL if use_api else "none",
+                reviewer_model=API_MODEL if use_api else "none",
+                n_vars=len(variables),
+                output_file=output_file,
+            )
     except Exception as e:
         print(f"    Warning: could not log run: {e}")
 
@@ -935,26 +945,67 @@ def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=F
     print(f"    Appended {supp_domain} into {parent_file} ({len(clean_code)} chars)")
 
     try:
-        log_run(
-            spec_file=xlsx_path,
-            mode="sdtm_generate",
-            writer_model=writer_model,
-            improver_model=API_MODEL if use_api else "none",
-            reviewer_model=API_MODEL if use_api else "none",
-            n_vars=len(variables),
-            output_file=parent_file,
-        )
+        with _LOG_LOCK:
+            log_run(
+                spec_file=xlsx_path,
+                mode="sdtm_generate",
+                writer_model=writer_model,
+                improver_model=API_MODEL if use_api else "none",
+                reviewer_model=API_MODEL if use_api else "none",
+                n_vars=len(variables),
+                output_file=parent_file,
+            )
     except Exception as e:
         print(f"    Warning: could not log run: {e}")
 
     return parent_file
 
 
-def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, force=False, language="sas"):
+def _run_concurrently(fn, domain_list, max_workers, xlsx_path, output_dir, use_api, force, language):
+    """Run fn(xlsx_path, domain, output_dir, use_api, force=force, language=language)
+    for every domain in domain_list at once (up to max_workers in flight),
+    instead of one at a time. Each domain's own Writer->Improver->Reviewer
+    calls are the slow part (~60-100s observed, 3 sequential API round-trips
+    generating/reviewing a full program) — the domains themselves don't
+    depend on each other (SUPP domains are only run after ALL standard
+    domains finish, once every possible parent file already exists), so
+    there's no reason to wait for one to finish before starting the next.
+    Returns (results dict, failed list) — one failing domain doesn't stop
+    the others.
+    """
+    results = {}
+    failed = []
+    if not domain_list:
+        return results, failed
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_domain = {
+            executor.submit(fn, xlsx_path, domain, output_dir, use_api, force=force, language=language): domain
+            for domain in domain_list
+        }
+        for future in as_completed(future_to_domain):
+            domain = future_to_domain[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                print(f"  [{domain}] FAILED: {e}")
+                result = None
+            if result:
+                results[domain] = result
+            else:
+                failed.append(domain)
+
+    return results, failed
+
+
+def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, force=False,
+                         language="sas", max_workers=5):
     """
     Generate SAS or R programs for all domains in the spec.
     Processes standard domains first, then SUPP domains
-    (SUPP needs parent domain to exist first).
+    (SUPP needs parent domain to exist first) — within each phase, domains
+    run CONCURRENTLY (up to max_workers at once) since they don't depend on
+    each other; only the two phases themselves are sequential.
 
     Domains whose output file already exists are skipped unless force=True
     (see generate_single_domain) — repeated runs (e.g. every "Generate" click
@@ -976,26 +1027,25 @@ def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, forc
     print(f"  Standard domains ({len(std_domains)}): {', '.join(std_domains)}")
     print(f"  SUPP domains ({len(supp_domains)}): {', '.join(supp_domains)}")
     print(f"  Mode: {'API' if use_api else 'Offline'}{' (force regenerate)' if force else ''}")
+    print(f"  Concurrency: up to {max_workers} domains at once")
 
-    results = {}
-    failed = []
-
-    # Standard domains first
-    for domain in std_domains:
-        result = generate_single_domain(xlsx_path, domain, output_dir, use_api, force=force, language=language)
-        if result:
-            results[domain] = result
-        else:
-            failed.append(domain)
+    # Standard domains first, concurrently — SUPP domains need every parent
+    # file to exist before this phase starts, so it can't overlap the next
+    results, failed = _run_concurrently(
+        generate_single_domain, std_domains, max_workers,
+        xlsx_path, output_dir, use_api, force=force, language=language,
+    )
 
     # SUPP domains after (they reference parent domain) — appended into the
-    # parent domain's own output file, not written as a separate program
-    for domain in supp_domains:
-        result = append_supp_domain(xlsx_path, domain, output_dir, use_api, force=force, language=language)
-        if result:
-            results[domain] = result
-        else:
-            failed.append(domain)
+    # parent domain's own output file, not written as a separate program.
+    # Each SUPP domain has its own distinct parent (1:1 by CDISC convention),
+    # so running them concurrently with each other is safe too.
+    supp_results, supp_failed = _run_concurrently(
+        append_supp_domain, supp_domains, max_workers,
+        xlsx_path, output_dir, use_api, force=force, language=language,
+    )
+    results.update(supp_results)
+    failed.extend(supp_failed)
 
     # Summary
     print(f"\n{'='*60}")
@@ -1030,6 +1080,11 @@ if __name__ == "__main__":
                              "aren't overwritten by a fresh draft)")
     parser.add_argument("--lang", choices=["sas", "r"], default="sas",
                         help="Output language (default: sas)")
+    parser.add_argument("--workers", "-w", type=int, default=5,
+                        help="Max domains to generate concurrently (default: 5). "
+                             "Domains are independent API-bound work, so running "
+                             "several at once is much faster than one at a time; "
+                             "raise/lower to match your API rate limit.")
 
     args = parser.parse_args()
 
@@ -1037,7 +1092,8 @@ if __name__ == "__main__":
         domains = [d.strip().upper() for d in args.domain.split(",")]
         generate_all_domains(args.spec, args.output,
                              use_api=not args.offline, domains=domains, force=args.force,
-                             language=args.lang)
+                             language=args.lang, max_workers=args.workers)
     else:
         generate_all_domains(args.spec, args.output,
-                             use_api=not args.offline, force=args.force, language=args.lang)
+                             use_api=not args.offline, force=args.force, language=args.lang,
+                             max_workers=args.workers)

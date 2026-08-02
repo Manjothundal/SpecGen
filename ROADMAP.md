@@ -55,6 +55,20 @@ the outputs.
             (if rough, as expected for the local model) R; API mode produces
             genuinely good tidyverse code (proper left_join/mutate/if_else/select,
             correct row_number()-based --SEQ derivation).
+            SDTM generation was slow even in API mode — measured ~66s/domain average
+            (20-143s range) across real runs, because each domain is 3 sequential
+            API round-trips (Writer drafts the whole program, Improver re-sends the
+            entire draft for a rewrite, Reviewer re-sends it again for a verdict)
+            generating/reviewing 100-300+ lines each time, and domains were
+            processed one at a time in a plain loop despite not depending on each
+            other. generate_all_domains now runs each phase (standard domains, then
+            SUPP domains) through a ThreadPoolExecutor — up to --workers (default 5)
+            domains generating concurrently instead of strictly sequentially; only
+            SUPP domains still wait for the standard-domain phase to finish (their
+            parent file must exist first). log_run()'s shared CSV write is now
+            lock-guarded against concurrent-write corruption. Verified: 5 domains
+            that would take ~330s sequential (5 x 66s avg) completed in 75.8s with
+            5 workers — about 4.3x faster, close to the theoretical 5x ceiling.
       - [x] 5d: TLF from SAP + mock shells — tlf_assembler.py, tlf_programs/ (demographics 14.1.1, AE summary 14.3.1)
 - [x] Phase 6: Update mode — CORE WORKING (differ + marker-based patcher)
       - spec_differ.py: v1 vs v2 comparison (new / changed / deleted / unchanged)
