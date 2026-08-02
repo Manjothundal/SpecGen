@@ -911,6 +911,14 @@ def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=F
     if clean_code.endswith("```"):
         clean_code = clean_code.rsplit("```", 1)[0]
     clean_code = clean_code.strip()
+    if language == "r":
+        # The SUPP prompt asks for library(dplyr)/library(tidyr) since each
+        # domain's generation is standalone, but here it's being appended
+        # into a parent file that already loaded them in its own header —
+        # strip redundant library() lines rather than duplicate them.
+        clean_code = "\n".join(
+            ln for ln in clean_code.splitlines() if not ln.strip().startswith("library(")
+        ).strip()
     supp_block = f"\n{clean_code}\n"
 
     if already_present:  # force=True got us here — cut out the stale block first
