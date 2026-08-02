@@ -83,6 +83,8 @@ RUN_STATE = {
     "last_commit": None,
     "uploaded_paths": [],   # persists across the Spec -> Generate request boundary
     "uploaded_for_otype": None,  # which otype uploaded_paths belongs to
+    "sdtm_force_pending": False,  # a fresh upload just arrived -> force SDTM's next
+                                  # generate once, not every generate for that upload
 }
 
 # Uploads are saved here once per run and reused across the Spec -> Generate
@@ -128,6 +130,7 @@ def _resolve_uploads(files, otype):
     if new_uploads:
         RUN_STATE["uploaded_paths"] = new_uploads
         RUN_STATE["uploaded_for_otype"] = otype
+        RUN_STATE["sdtm_force_pending"] = True  # this is a genuinely new spec — force once
     elif RUN_STATE.get("uploaded_for_otype") != otype:
         return []
     return RUN_STATE["uploaded_paths"]
@@ -241,15 +244,18 @@ def generate_sdtm(lang, mode, spec_path=None):
 
     sdtm_assembler.py skips domains whose output file already exists unless
     --force is passed, so a hand-QC'd fix in sdtm_programs/ survives repeat
-    "Generate" clicks. An explicit spec upload is a deliberate request to
-    (re)generate from that spec, so it passes --force; the no-upload default
-    (sample spec, just viewing current output) does not.
+    "Generate" clicks. A genuinely new spec upload forces exactly ONE
+    generate (RUN_STATE["sdtm_force_pending"], set in _resolve_uploads and
+    consumed here) — not every subsequent click for that same upload, which
+    would otherwise redo already-finished domains from scratch every retry
+    (e.g. after a timeout) instead of skipping them and continuing.
 
     SDTM's pipeline only has a binary use_api flag today (no true Hybrid, this
     is a known asymmetry with ADSL) — Offline stays local-only; Hybrid and API
     both map to use_api=True since that's the only "reviewed" option SDTM has.
     """
-    force = spec_path is not None
+    force = spec_path is not None and RUN_STATE["sdtm_force_pending"]
+    RUN_STATE["sdtm_force_pending"] = False
     spec_path = spec_path or SDTM_SPEC
     out = {}
     if not os.path.exists(spec_path):
@@ -264,22 +270,47 @@ def generate_sdtm(lang, mode, spec_path=None):
     domains = [d for d in sdtm_assembler.list_domains(spec_path) if not d.startswith("SUPP")]
     ext = "R" if lang == "r" else "sas"
 
+    def read_back():
+        """Domains are written to disk one at a time as the subprocess works
+        through them, so even a timeout/crash partway through still leaves
+        real, valid files for whatever finished — read those back instead of
+        discarding everything."""
+        found = {}
+        for domain in domains:
+            path = os.path.join("sdtm_programs", f"{domain.lower()}.{ext}")
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    found[domain.lower()] = f.read()
+        return found
+
     cmd = [sys.executable, "sdtm_assembler.py", spec_path, "--lang", lang]
     if mode == "offline":
         cmd.append("--offline")
     if force:
         cmd.append("--force")
+    # A full spec (18+ domains) in API mode has run at ~70-100s/domain in
+    # testing — 10 minutes was nowhere near enough and threw away every
+    # domain that DID finish. Scale with domain count instead of a flat cap.
+    timeout_s = max(600, 150 * (len(domains) + 6))
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        partial = read_back()
+        if partial:
+            partial["(note)"] = (f"Timed out after {timeout_s}s with {len(partial)} of "
+                                 f"{len(domains)} domains done — showing what finished. "
+                                 f"Generate again to pick up the rest (already-done domains "
+                                 f"are skipped unless you re-upload).")
+            return partial
+        return {"(error)": f"Timed out after {timeout_s}s with no domains completed yet."}
     except subprocess.CalledProcessError as e:
+        partial = read_back()
+        if partial:
+            partial["(note)"] = f"sdtm_assembler failed partway through — showing what finished."
+            return partial
         return {"(error)": f"sdtm_assembler failed:\n{e.stderr}"}
 
-    for domain in domains:
-        path = os.path.join("sdtm_programs", f"{domain.lower()}.{ext}")
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                out[domain.lower()] = f.read()
-    return out
+    return read_back()
 
 
 # ---------------------------------------------------------------------------
