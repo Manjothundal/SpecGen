@@ -173,7 +173,7 @@
           {% elif mode == 'api' %}Best quality · specs sent to API
           {% else %}Drafts local · review via API{% endif %}
         </span>
-        <input type="hidden" name="otype" value="{{ otype or 'adam' }}">
+        <input type="hidden" name="otype" id="controlform-otype" value="{{ otype or 'adam' }}">
         <div class="agents">
           <span class="agent"><span class="chip {{ 'local' if (mode or 'hybrid') != 'api' else 'api' }}"></span><b>Writer</b> <span class="mono">{{ writer_model }}</span></span>
           <span class="agent"><span class="chip {{ 'local' if (mode or 'hybrid') == 'offline' else 'api' }}"></span><b>Improver/Reviewer</b> <span class="mono">{{ reviewer_model }}</span></span>
@@ -363,6 +363,17 @@
   }
   otypeEl.addEventListener("change", syncUploadCopy);
   syncUploadCopy();
+
+  // Keep the modebar's own hidden otype field in sync with the Output
+  // dropdown above. Without this, picking e.g. SDTM here but then clicking
+  // a Mode/Language button (a SEPARATE form, submitted before you ever
+  // click "Parse spec") would submit that OTHER form's stale, page-load-time
+  // otype value — silently reverting your Output choice back to whatever it
+  // was before, and the page would re-render with the dropdown visually
+  // snapped back too. Any upload+parse after that would go in under the
+  // wrong otype.
+  const controlformOtype = document.getElementById("controlform-otype");
+  otypeEl.addEventListener("change", () => { controlformOtype.value = otypeEl.value; });
 </script>
 </body>
 </html>
