@@ -138,6 +138,71 @@ the outputs.
       - spec_differ.py: v1 vs v2 comparison (new / changed / deleted / unchanged)
       - spec_patcher.py: replaces changed blocks via BEGIN/END markers, appends new, rebuilds keep
       - Open: log patch runs to runlog.csv; update catalog params instead of bypassing; em-dash encoding fix
+      - [x] Phase 6b: wired into the web app as "Update ADSL from a new spec version"
+            (ADaM tab, Spec screen — SAS only, only once ADSL has been generated at
+            least once). Two-step flow mirroring the app's existing Parse->Generate
+            shape: POST /spec_diff previews the diff (new/changed/deleted counts and
+            variable names) against `adsl_spec_path` — the spec ADSL was actually last
+            generated from, tracked in state since generate_adam itself is a pure
+            function with no state access — WITHOUT touching the program; POST
+            /apply_patch is the separate, deliberate commit. Runs as a background job
+            (same _GENERATE_LOCKS/job_status/job_note machinery as Generate, tagged
+            with a new `job_kind` field so the Generate screen and this panel don't
+            show each other's status) — patch_program calls the model once per
+            changed/new variable, which can take a while, and the single-threaded dev
+            server would otherwise be unable to serve any other request (including
+            another tab's Generate polling) while it ran. No abort support for patch
+            jobs specifically (patch_program doesn't check a cancel_event) — an
+            accepted, narrower scope than Generate's abort, since patches only touch
+            a handful of variables rather than a whole spec.
+            The real payoff versus a full regenerate: _patch_blocks() surgically
+            updates only the touched blocks in state — every OTHER variable's block
+            (code AND approved/signed-off status) is left completely alone, so
+            updating one changed variable doesn't force re-review of the 20 others
+            that didn't change.
+            Three real bugs fixed in spec_patcher.py while wiring it up (Phase 6's
+            open items above were a symptom of the same underlying issues, not fully
+            separate items):
+              - `from config import WRITER, REVIEWER` at module level — the exact
+                stale-import bug already fixed once this session in generator.py (binds
+                the name at import time, so the web app's Mode switcher would have
+                silently done nothing for patches). Switched to explicit writer_mode/
+                reviewer_mode params threaded from the route, config.WRITER/REVIEWER
+                read as a fallback only for the CLI/test_patcher.py path.
+              - The "changed" variable path was a raw one-shot generate_api() call with
+                NO Improver or Reviewer step — patched blocks silently skipped QC
+                entirely, unlike every other code path in the app, which always runs
+                Writer->Improver->Reviewer. New shared `_build_block()` mirrors
+                assemble_adsl's main-step loop exactly (including the QC FLAG marker
+                on FAIL and the use_macros-gated exact-match/pattern-hint logic), used
+                for both the changed and new-variable paths.
+              - patch_program took a file PATH and read it internally — meant the web
+                app would have had to write its in-memory (possibly hand-edited via
+                "Send back to Improver") program out to disk first just to patch it,
+                risking staleness. Changed to take the program TEXT directly; the
+                caller (web app or the CLI smoke script) reads/writes wherever the
+                program actually lives.
+            Verified directly against the repo's real adam_spec.xlsx -> adam_spec_v2.xlsx
+            pair (1 new var, 2 changed, 23 unchanged): AGEGR1 (exact catalog match)
+            correctly substituted the validated macro call; ITTFL (no match) correctly
+            went through Writer/Improver/Reviewer; AGEGR2 (new) was correctly added;
+            the original adsl.sas on disk was confirmed untouched (proving the
+            text-based interface has no file side effects).
+            Known limitation, NOT introduced by this change — pre-existing in the
+            whole macro-substitution design since Phase 4.5: an exact catalog match's
+            `call` is a static template string, not reparametrized from the new
+            derivation rule — so if AGEGR1's cut points change from 65|80 to 65|75,
+            the substituted macro call still says `cuts=65|80` unless the catalog
+            entry itself is hand-updated. Flagging this rather than silently
+            "fixing" it, since it'd need the model to write a customized call guided
+            by the macro as a hint (closer to the pattern-match path) rather than a
+            direct substitution — a real design change, not a bug fix.
+            Scope not carried over from the CLI engine: BDS/SDTM/TLF (no BEGIN/END
+            per-variable markers to patch — SDTM/TLF's generation is domain/table-
+            level, not variable-level, same reason the macro catalog needed different
+            wiring for them in Phase 4.5d) and ADSL's R path (different block format,
+            no marker-based regex patching for it either) are both out of scope here,
+            unchanged from before.
 - [ ] Phase 7: Draft spec generation (aCRF + protocol + SAP -> proposed spec)
 - [x] Phase 8: R output alongside SAS (admiral-style pipelines; language toggle)
       - [x] ADaM BDS (ADVS/ADLB/ADEG/ADTR/ADAE/ADCM/ADRS/ADTTE) — bds_assembler.py, full parity via --lang
@@ -339,17 +404,9 @@ the outputs.
   model doesn't rewrite the whole file, how the result re-enters Review &
   sign off for QC). No existing infra for this; would be new end to end.
 - Update an already-generated program when its SPEC changes, from inside the
-  web app — spec_differ.py (v1 vs v2 comparison) and spec_patcher.py (replays
-  a diff onto an existing .sas program via its BEGIN/END markers) already
-  exist and are marked CORE WORKING (Phase 6), but: SAS-only, ADSL-only (the
-  BEGIN/END markers this relies on only exist for ADSL's per-variable blocks
-  today — BDS/SDTM/TLF are one block per file with no sub-file markers to
-  patch), and it's a standalone CLI script never wired into app.py/the web
-  UI. Phase 6's own open items (log patch runs to runlog.csv, catalog-aware
-  params, em-dash encoding) are still outstanding too. Wiring this into the
-  web app is the bigger lift of the two "edit" asks, since real UI (upload
-  spec v2, show the diff, review just the touched blocks) is needed on top
-  of the (mostly working) engine.
+  web app — DONE, see Phase 6b. Still SAS/ADSL-only (BDS/SDTM/TLF have no
+  per-variable BEGIN/END markers to patch); em-dash encoding fix from Phase
+  6's original open items not separately revisited.
 - SDTM: a real 3-mode (Offline/Hybrid/API) pipeline instead of today's binary
   use_api flag, so its Mode switcher stops collapsing Hybrid into API
 - Log checker: parse SAS .log, flag ERRORs / WARNINGs / NOTEs, suggest fixes

@@ -60,6 +60,8 @@ import config
 from assembler import assemble_adsl, gen_block, clean, known_variables, _r_add_comma
 from improver import improve_block
 from reviewer import review_block
+from spec_differ import diff_specs
+from spec_patcher import patch_program
 
 app = Flask(__name__)
 
@@ -99,11 +101,19 @@ def _new_otype_state():
         "active_screen": "spec",   # which of the 4 steps this tab currently shows
         "note": None,               # last message shown on this tab, if any
         "job_status": "idle",       # idle | running | done | aborted | error
+        "job_kind": None,           # "generate" | "patch" — which screen's job this is, so
+                                    # the Generate screen and the Spec screen's "Update from
+                                    # new spec" panel each only show their OWN running/note UI
         "job_note": None,           # shown on the Generate screen while running/after abort
         "use_macros": True,        # ADaM only: use the validated company macro catalog for
                                    # ADSL SAS where an exact match exists, instead of always
                                    # going through Writer/Improver/Reviewer. No effect on
                                    # SDTM/TLF, or on ADaM's R path (no R macro catalog exists).
+        "adsl_spec_path": None,      # ADaM only: the spec file ADSL was last generated from —
+                                    # the "v1" baseline an "Update from new spec" diff compares
+                                    # against. None until ADSL has been generated at least once.
+        "spec_diff": None,           # ADaM only: pending diff preview, set by /spec_diff
+        "pending_spec_v2": None,     # ADaM only: uploaded v2 spec path awaiting /apply_patch
     }
 
 
@@ -607,6 +617,35 @@ def _rebuild_blocks(state, otype, programs, adsl_context):
     state["adsl_available"] = (adsl_context or {}).get("available", [])
 
 
+def _patch_blocks(state, diff, new_program):
+    """After spec_patcher.patch_program() returns a new full ADSL program,
+    surgically update just the touched blocks instead of a full
+    _rebuild_blocks — every OTHER variable's block (code, QC badge, AND
+    approved status) is left completely alone. That's the actual value of
+    patching over a full regenerate: updating one changed variable doesn't
+    force re-review of the 20 others that didn't change."""
+    parsed = {b["var"]: b for b in parse_adsl_blocks(new_program)}
+    touched = {c["variable"] for c in diff["changed"]} | set(diff["new"])
+
+    for var in touched:
+        b = parsed.get(var)
+        if not b:
+            continue
+        key = f"adam:adsl:{var}"
+        state["blocks"][key] = {"label": var, "code": b["code"], "qc": b["qc"],
+                                "approved": False, "kind": "adsl_var", "var": var}
+        if key not in state["block_order"]:
+            state["block_order"].append(key)
+
+    for var in diff["deleted"]:
+        key = f"adam:adsl:{var}"
+        state["blocks"].pop(key, None)
+        if key in state["block_order"]:
+            state["block_order"].remove(key)
+
+    state["programs"]["adsl"] = new_program
+
+
 def _signoff_counts(state):
     total = len(state["blocks"])
     approved = sum(1 for b in state["blocks"].values() if b["approved"])
@@ -719,6 +758,109 @@ def parse_spec():
     return _render(active_otype=otype)
 
 
+def _run_patch_job(diff, v2_path, writer_mode, reviewer_mode, use_macros):
+    """Background thread target for /apply_patch — same non-blocking
+    rationale as _run_generate_job: patch_program calls the model once per
+    changed/new variable, which can take a while, and Flask's single-
+    threaded dev server would otherwise be unable to serve ANY other
+    request (including another tab's Generate polling) while it's in
+    flight. ADaM only — spec-driven patching only exists for ADSL SAS."""
+    state = RUN_STATE["otypes"]["adam"]
+    try:
+        new_program, _ = patch_program(state["programs"]["adsl"], state["adsl_spec_path"], v2_path,
+                                       writer_mode=writer_mode, reviewer_mode=reviewer_mode,
+                                       use_macros=use_macros)
+        _patch_blocks(state, diff, new_program)
+        state["adsl_spec_path"] = v2_path
+        state["spec_diff"] = None
+        state["pending_spec_v2"] = None
+        state["exported_files"] = []
+        state["last_commit"] = None
+        state["active_screen"] = "review"
+        state["job_status"] = "done"
+        state["job_note"] = (f"Patched {len(diff['changed'])} changed, {len(diff['new'])} new, "
+                             f"{len(diff['deleted'])} deleted variable(s) — only the touched "
+                             f"blocks need re-review; everything else kept its approval.")
+    except Exception as e:
+        state["job_status"] = "error"
+        state["job_note"] = f"Patch failed: {e}"
+    finally:
+        _GENERATE_LOCKS["adam"].release()
+
+
+@app.route("/spec_diff", methods=["POST"])
+def spec_diff():
+    """Preview step: diff a newly uploaded spec (v2) against the spec ADSL
+    was actually generated from (state["adsl_spec_path"], tracked in
+    _run_generate_job) and show what would change, WITHOUT touching the
+    program yet — /apply_patch is the separate, deliberate commit step."""
+    state = RUN_STATE["otypes"]["adam"]
+    if not state.get("adsl_spec_path") or "adsl" not in state.get("programs", {}):
+        return _render(active_otype="adam", note_otype="adam",
+                      note="Generate ADSL at least once before updating it from a new spec.")
+    if state["lang"] != "sas":
+        return _render(active_otype="adam", note_otype="adam",
+                      note="Update from a new spec is SAS-only today.")
+
+    files = request.files.getlist("spec_v2")
+    if not files or not files[0].filename:
+        return _render(active_otype="adam", note_otype="adam",
+                      note="Choose a spec file to compare against the current one.")
+
+    v2_dir = os.path.join(UPLOAD_DIR, "adam_spec_v2")
+    os.makedirs(v2_dir, exist_ok=True)
+    v2_path = os.path.join(v2_dir, secure_filename(files[0].filename))
+    files[0].save(v2_path)
+
+    try:
+        diff = diff_specs(state["adsl_spec_path"], v2_path)
+    except Exception as e:
+        return _render(active_otype="adam", note_otype="adam", note=f"Could not diff specs: {e}")
+
+    if not diff["changed"] and not diff["new"] and not diff["deleted"]:
+        return _render(active_otype="adam", note_otype="adam",
+                      note="No differences from the current spec — nothing to patch.")
+
+    state["spec_diff"] = diff
+    state["pending_spec_v2"] = v2_path
+    return _render(active_otype="adam")
+
+
+@app.route("/apply_patch", methods=["POST"])
+def apply_patch():
+    state = RUN_STATE["otypes"]["adam"]
+    diff = state.get("spec_diff")
+    v2_path = state.get("pending_spec_v2")
+    if not diff or not v2_path:
+        return _render(active_otype="adam", note_otype="adam", note="No pending update to apply.")
+
+    lock = _GENERATE_LOCKS["adam"]
+    if not lock.acquire(blocking=False):
+        return _render(active_otype="adam", note_otype="adam",
+                      note="A generation is already running on this tab — wait for it to "
+                          "finish before applying this update.")
+
+    writer_mode, reviewer_mode = MODE_MAP.get(state["mode"], (None, None))
+    state["job_status"] = "running"
+    state["job_kind"] = "patch"
+    state["job_note"] = None
+
+    threading.Thread(target=_run_patch_job,
+                     args=(diff, v2_path, writer_mode, reviewer_mode, state["use_macros"]),
+                     daemon=True).start()
+
+    return _render(active_otype="adam")
+
+
+@app.route("/cancel_patch", methods=["POST"])
+def cancel_patch():
+    """Discard a previewed diff without applying it."""
+    state = RUN_STATE["otypes"]["adam"]
+    state["spec_diff"] = None
+    state["pending_spec_v2"] = None
+    return _render(active_otype="adam")
+
+
 def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending, use_macros=True):
     """Background thread target for /generate. Doing the (potentially slow)
     generation work off the request thread is what makes /abort possible —
@@ -736,6 +878,12 @@ def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending, use_ma
             programs, adsl_context = generate_adam(lang, mode, acrf_path, adsl_spec_path,
                                                     domain=domain, cancel_event=ctrl["cancel_event"],
                                                     use_macros=use_macros)
+            if "adsl" in programs:
+                # "Update from new spec" diffs against whatever spec ADSL was
+                # actually generated from, so it has to be tracked here where
+                # the resolved path (upload or ADAM_SPEC default) is known —
+                # generate_adam itself is a pure function with no state access.
+                state["adsl_spec_path"] = adsl_spec_path or ADAM_SPEC
         elif otype == "tlf":
             programs = generate_tlf(lang, shells=uploaded or None, domain=domain,
                                     cancel_event=ctrl["cancel_event"], use_macros=use_macros)
@@ -804,6 +952,7 @@ def generate():
     ctrl["cancel_event"].clear()
     ctrl["proc"] = None
     state["job_status"] = "running"
+    state["job_kind"] = "generate"
     state["job_note"] = None
 
     threading.Thread(target=_run_generate_job,

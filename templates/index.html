@@ -241,6 +241,41 @@
               {% endfor %}
             </div>
             {% endif %}
+
+            {% if otype == 'adam' and t.adsl_spec_path and t.lang == 'sas' %}
+            <div style="margin-top:26px;padding-top:18px;border-top:1px solid var(--line);">
+              <h3 style="font-size:.95rem;margin-bottom:4px;">Update ADSL from a new spec version</h3>
+              <p class="hint">Already generated ADSL? Upload a revised spec to patch just the
+                variables that changed — everything else keeps its code and sign-off status
+                instead of needing full re-review. SAS only.</p>
+
+              {% if t.job_status == 'running' and t.job_kind == 'patch' %}
+              <div class="note" style="background:#E2F1F2;border-color:#B7DDE0;display:flex;align-items:center;gap:10px;">
+                <span class="spin">⏳</span> Patching ADSL…
+              </div>
+              {% elif t.spec_diff %}
+                {% set d = t.spec_diff %}
+                <div class="signoff">
+                  <b>{{ d.changed | length }} changed</b>, <b>{{ d.new | length }} new</b>,
+                  <b>{{ d.deleted | length }} deleted</b>, {{ d.unchanged | length }} unchanged.
+                  {% if d.changed %}<br><span class="mono">Changed: {% for c in d.changed %}{{ c.variable }}{{ ", " if not loop.last }}{% endfor %}</span>{% endif %}
+                  {% if d.new %}<br><span class="mono">New: {{ d.new | join(", ") }}</span>{% endif %}
+                  {% if d.deleted %}<br><span class="mono">Deleted: {{ d.deleted | join(", ") }}</span>{% endif %}
+                </div>
+                <form class="inline" method="post" action="/apply_patch">
+                  <button type="submit" class="btn primary">Apply patch</button>
+                </form>
+                <form class="inline" method="post" action="/cancel_patch">
+                  <button type="submit" class="btn ghost">Cancel</button>
+                </form>
+              {% else %}
+                <form method="post" action="/spec_diff" enctype="multipart/form-data">
+                  <input type="file" name="spec_v2" accept=".xlsx" style="margin-right:10px;">
+                  <button type="submit" class="btn ghost">Preview update</button>
+                </form>
+              {% endif %}
+            </div>
+            {% endif %}
           </section>
 
           <!-- SCREEN 2: GENERATE -->
@@ -248,7 +283,7 @@
             <h2>Generate the program(s)</h2>
             <p class="hint">Uses the spec parsed in step 1 (same uploaded file, if any). {{ domain_note }}</p>
 
-            <div class="generating-block" style="{{ '' if t.job_status == 'running' else 'display:none;' }}">
+            <div class="generating-block" style="{{ '' if (t.job_status == 'running' and t.job_kind == 'generate') else 'display:none;' }}">
               <div class="note" style="background:#E2F1F2;border-color:#B7DDE0;">
                 <span class="spin">⏳</span> Generating {{ label | upper }} ({{ t.lang | upper }})…
                 <span class="job-note-text">{{ t.job_note or '' }}</span>
@@ -259,8 +294,8 @@
               </form>
             </div>
 
-            <div class="generate-form-block" style="{{ 'display:none;' if t.job_status == 'running' else '' }}">
-              {% if t.job_status == 'aborted' or t.job_status == 'error' %}
+            <div class="generate-form-block" style="{{ 'display:none;' if (t.job_status == 'running' and t.job_kind == 'generate') else '' }}">
+              {% if t.job_kind == 'generate' and (t.job_status == 'aborted' or t.job_status == 'error') %}
               <div class="note">{{ t.job_note }}</div>
               {% endif %}
               <form method="post" action="/generate">
@@ -299,6 +334,7 @@
             <h2>Review &amp; sign off</h2>
             <p class="hint">Nothing exports until every block below is approved.</p>
             {% if t.note %}<div class="note">{{ t.note }}</div>{% endif %}
+            {% if t.job_kind == 'patch' and t.job_status in ('done', 'error') %}<div class="note">{{ t.job_note }}</div>{% endif %}
             <div class="signoff">Signed off: <b>{{ t.approved }} of {{ t.total_blocks }}</b> blocks {% if t.total_blocks and t.approved == t.total_blocks %}— ready to export{% endif %}</div>
             <div class="review">
               {% for key in t.block_order %}

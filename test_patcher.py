@@ -1,7 +1,10 @@
 from spec_patcher import patch_program
 
+with open("adsl.sas", encoding="utf-8", errors="replace") as f:
+    original = f.read()
+
 program, diff = patch_program(
-    sas_file="adsl.sas",
+    original,
     spec_v1="adam_spec.xlsx",
     spec_v2="adam_spec_v2.xlsx"
 )

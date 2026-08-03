@@ -1,35 +1,67 @@
 from spec_differ import diff_specs
-from assembler import gen_block, clean, improve_block
+from assembler import gen_block, clean, improve_block, known_variables
 from reviewer import review_block
-from macro_lookup import load_catalog, find_macro
-from assembler import known_variables
+from macro_lookup import load_catalog, find_macro, find_by_pattern
 import pandas as pd
 import re
-from generator import generate_api
 from runlog import log_run
-from config import WRITER, REVIEWER
 from generator import model_name
+import config
 
 catalog = load_catalog()
 
-def patch_program(sas_file, spec_v1, spec_v2):
-    """Patch an existing .sas program based on spec changes."""
 
+def _build_block(var, row, available, writer_mode=None, reviewer_mode=None, use_macros=True):
+    """Generate one variable's wrapped SAS BEGIN/END block. Mirrors
+    assemble_adsl's main-step loop exactly (exact catalog match used
+    directly when use_macros, else Writer->Improver->Reviewer with an
+    optional pattern hint) so a patched block gets the identical QC
+    treatment — including the "QC FLAG" marker on FAIL — that a freshly
+    generated one would. Patcher-only bug this replaced: the old "changed"
+    path was a raw one-shot API call with no Improver/Reviewer step at all,
+    so patched variables silently skipped QC review entirely."""
+    match = find_macro(var, catalog) if use_macros else None
+    if match:
+        inner = f"/* {var}: using validated macro */\n{match['call']}"
+        return f"/*-- BEGIN {var} --*/\n{inner}\n/*-- END {var} --*/"
+
+    pmatch = find_by_pattern(var, str(row["Derivation"]), catalog) if use_macros else None
+    block = gen_block(row, language="sas", writer_mode=writer_mode)
+    block = clean(improve_block(block, row, available, language="sas", mode=reviewer_mode))
+    verdict = review_block(block, available, language="sas", mode=reviewer_mode)
+    if verdict.startswith("FAIL"):
+        block = "/* QC FLAG: " + verdict + " */\n" + block
+    if pmatch:
+        block = pmatch["suggested_call"] + "\n" + block
+    return f"/*-- BEGIN {var} --*/\n{block}\n/*-- END {var} --*/"
+
+
+def patch_program(program, spec_v1, spec_v2, writer_mode=None, reviewer_mode=None, use_macros=True,
+                  output_label="adsl.sas"):
+    """Patch an ADSL SAS program (as text, not a file path — the caller
+    reads/writes wherever the program actually lives, e.g. the web app's
+    in-memory state rather than a stale copy on disk) based on spec changes:
+    regenerate each changed variable's block, remove deleted ones, add new
+    ones, then update the keep list and header. Unaffected variables are
+    left byte-for-byte untouched — that's the point versus a full
+    regenerate, and it's what lets the web app preserve their sign-off/
+    approval status across an update instead of forcing full re-review.
+
+    SAS only (ADSL's R path has its own mutate()-chain block format that
+    this marker-based regex patching doesn't handle) — same scope as the
+    macro catalog before this, not a new limitation introduced here.
+    """
     diff = diff_specs(spec_v1, spec_v2)
-
-    with open(sas_file, encoding="utf-8", errors="replace") as f:
-        program = f.read()
 
     spec = pd.read_excel(spec_v2, sheet_name="Variables")
     available = known_variables(spec)
 
-    print(f"\nPatching {sas_file}")
+    print(f"\nPatching {output_label}")
     print(f"  Changed : {[c['variable'] for c in diff['changed']]}")
     print(f"  New     : {diff['new']}")
     print(f"  Deleted : {diff['deleted']}")
 
-    # 1. Replace changed variable blocks — direct API call, no catalog anywhere
-    # 1. Replace changed variable blocks — now catalog-aware
+    # 1. Replace changed variable blocks
     for change in diff["changed"]:
         var = change["variable"]
         row = spec[spec["Variable"] == var]
@@ -37,32 +69,7 @@ def patch_program(sas_file, spec_v1, spec_v2):
             continue
         row = row.iloc[0]
 
-        match = find_macro(var, catalog)
-        macro_hint = ""
-        if match:
-            macro_hint = (
-                f"\nA related validated macro exists in the catalog for a similar pattern:\n"
-                f"{match['call']}\n"
-                f"The derivation rule has CHANGED — adapt the logic to the new rule below. "
-                f"Do not reuse the macro call verbatim if the rule no longer matches it."
-            )
-
-        print(f"  Generating fresh: {var}" + (" (catalog hint found)" if match else ""))
-        direct_prompt = f"""You are a senior clinical SAS programmer.
-Write SAS 9.4 derivation logic for this ADaM variable.
-Variable: {var}
-Label: {row['Label']}
-Type: {row['Type']}, Length: {row['Length']}
-Derivation rule: {row['Derivation']}
-{macro_hint}
-Output ONLY the SAS code: length, label, and derivation logic.
-No data/set/run statements. No explanation. No markdown fences.
-One brief comment line, then the code."""
-
-        inner = generate_api(direct_prompt).strip()
-        print(f"  Generated: {inner[:100]}")
-        inner = inner.replace("```sas", "").replace("```", "").strip()
-        new_block = f"/*-- BEGIN {var} --*/\n{inner}\n/*-- END {var} --*/"
+        new_block = _build_block(var, row, available, writer_mode, reviewer_mode, use_macros)
 
         pattern = rf"/\*-- BEGIN {re.escape(var)} --\*/.*?/\*-- END {re.escape(var)} --\*/"
         if re.search(pattern, program, re.DOTALL):
@@ -84,7 +91,7 @@ One brief comment line, then the code."""
         if row.empty:
             continue
         row = row.iloc[0]
-        new_block = make_block(var, row, available)
+        new_block = _build_block(var, row, available, writer_mode, reviewer_mode, use_macros)
         program = program.replace("  keep ", f"{new_block}\n\n  keep ")
         print(f"  Added   : {var}")
 
@@ -102,26 +109,23 @@ One brief comment line, then the code."""
             "/* Generated by sas-program-generator */\n/* Updated: spec v2 patch */"
         )
 
-    # 6. Log this patch run
+    # 6. Log this patch run. writer_mode/reviewer_mode fall back to
+    # config.WRITER/REVIEWER (read as module attributes, not `from config
+    # import ...`, for the same reason generator.py does — a plain import
+    # binds the name at import time and never sees a later override) only
+    # for logging when the caller didn't pass an explicit mode (e.g. the
+    # test_patcher.py smoke script); the web app always passes one.
     n_touched = len(diff["changed"]) + len(diff["new"])
+    eff_writer = writer_mode or config.WRITER
+    eff_reviewer = reviewer_mode or config.REVIEWER
     log_run(
         spec_v2,
-        f"patch/{WRITER}-writer/{REVIEWER}-reviewer",
-        model_name(WRITER),
-        model_name(REVIEWER),
-        model_name(REVIEWER),
+        f"patch/{eff_writer}-writer/{eff_reviewer}-reviewer",
+        model_name(eff_writer),
+        model_name(eff_reviewer),
+        model_name(eff_reviewer),
         n_touched,
-        sas_file.replace(".sas", "_v2.sas"),
+        output_label,
     )
 
     return program, diff
-
-
-def make_block(var, row, available, force_generate=False):
-    """Generate a wrapped block for one variable."""
-    match = find_macro(var, catalog)
-    if match and not force_generate:
-        inner = f"/* {var}: using validated macro */\n{match['call']}"
-    else:
-        inner = clean(improve_block(gen_block(row, skip_macro=True), row, available))
-    return f"/*-- BEGIN {var} --*/\n{inner}\n/*-- END {var} --*/"
