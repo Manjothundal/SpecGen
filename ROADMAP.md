@@ -379,6 +379,19 @@ the outputs.
             /job_status mid-run, aborted, confirmed the tab recovered to
             job_status "aborted" with a partial-results note and no dangling
             lock (next Generate click worked immediately, not blocked).
+      - [x] Piece 7: Export & audit's file list was dead text — `<li>{{ f }}</li>`
+            for each exported path, no way to view or actually get the file short
+            of finding it on disk yourself. Each exported file is now a card
+            (same "view code" expandable style as Review & sign off) with an
+            inline preview (read from disk at render time — _read_exported_previews)
+            and a real Download link. New GET /download route validates
+            otype+path against that TAB'S OWN exported_files list before
+            serving anything — an app-controlled list, not an arbitrary path
+            taken from the query string — so it can't be used to fetch any
+            other file on disk; verified directly (a file that exists but was
+            never exported, and a `../../` traversal attempt, both 404).
+            Verified live end-to-end: generate -> approve -> export -> click
+            Download -> real file, correct content, correct filename.
 
 ## Open items (near-term)
 - Test against a fuller, realistic ADSL spec (60-100+ variables)

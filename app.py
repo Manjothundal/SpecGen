@@ -50,7 +50,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 import pandas as pd
 import openpyxl
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
 import bds_assembler as bds
@@ -652,6 +652,22 @@ def _signoff_counts(state):
     return approved, total
 
 
+def _read_exported_previews(exported_files):
+    """Export & audit used to show exported files as a dead list of path
+    strings — no way to actually see or get the file short of finding it on
+    disk yourself. Read each one's content at render time so the Export
+    screen can show an expandable preview per file, matching the Review
+    screen's existing "view code" card style."""
+    previews = {}
+    for path in exported_files:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                previews[path] = f.read()
+        except OSError as e:
+            previews[path] = f"(could not read file: {e})"
+    return previews
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -675,6 +691,7 @@ def _render(active_otype=None, note=None, note_otype=None):
             writer_model=config.LOCAL_MODEL if mode in ("offline", "hybrid") else config.API_MODEL,
             reviewer_model=config.API_MODEL if mode in ("hybrid", "api") else config.LOCAL_MODEL,
             note=note if note_otype == ot else None,
+            exported_previews=_read_exported_previews(state["exported_files"]),
         )
 
     return render_template(
@@ -1042,6 +1059,21 @@ def export():
     state["exported_files"] = written
     state["active_screen"] = "export"
     return _render(active_otype=otype, note_otype=otype, note=f"Exported {len(written)} file(s).")
+
+
+@app.route("/download", methods=["GET"])
+def download():
+    """Serve one exported file for download. otype+path must match an
+    entry in that tab's OWN exported_files — an app-controlled list, not an
+    arbitrary path taken from the query string — so this can't be used to
+    fetch any other file on disk."""
+    otype = request.args.get("otype", "adam")
+    otype = otype if otype in OTYPES else "adam"
+    path = request.args.get("path", "")
+    state = RUN_STATE["otypes"][otype]
+    if path not in state["exported_files"]:
+        return "Not an exported file for this tab.", 404
+    return send_file(os.path.abspath(path), as_attachment=True, download_name=os.path.basename(path))
 
 
 @app.route("/commit", methods=["POST"])

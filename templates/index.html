@@ -385,9 +385,21 @@
               <button type="submit" class="btn primary" {% if not t.total_blocks or t.approved < t.total_blocks %}disabled{% endif %}>Export program(s)</button>
             </form>
             {% if t.exported_files %}
-            <ul class="mono" style="margin-bottom:14px;font-size:.82rem;color:var(--slate);">
-              {% for f in t.exported_files %}<li>{{ f }}</li>{% endfor %}
-            </ul>
+            <div class="review" style="margin-bottom:14px;">
+              {% for f in t.exported_files %}
+              <div class="card">
+                <div class="head">
+                  <span class="mono">{{ f }}</span>
+                  <a class="mini ok" style="text-decoration:none;margin-left:auto;"
+                     href="/download?otype={{ otype }}&path={{ f | urlencode }}">Download</a>
+                </div>
+                <details>
+                  <summary>view code</summary>
+                  <pre class="codepane">{{ t.exported_previews.get(f, '') }}</pre>
+                </details>
+              </div>
+              {% endfor %}
+            </div>
             <form method="post" action="/commit">
               <input type="hidden" name="otype" value="{{ otype }}">
               <button type="submit" class="btn ghost">Commit to Git (add, commit, push)</button>
