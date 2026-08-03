@@ -40,7 +40,7 @@ def _read_shell(shell_path):
 # SAS demographics table
 # ---------------------------------------------------------------------------
 
-def _generate_demog_sas(meta, rows):
+def _generate_demog_sas(meta, rows, use_macros=True):
     """
     SAS demographics table with full REPORT assembly.
 
@@ -48,6 +48,12 @@ def _generate_demog_sas(meta, rows):
     formatted value per treatment arm) into one stacked dataset _results,
     keyed by (ord, roworder, rowlabel, colname, value). The REPORT block then
     transposes colname->columns (one per arm + Total) and renders proc report.
+
+    use_macros: this generator is fully deterministic (no model calls), so
+    "using a macro" means literally emitting the company macro CALL in place
+    of the equivalent longhand PROC SQL / expression, not an LLM hint like
+    SDTM's — the two substitution points (Big-N denominator, n (%) display
+    formatting) are always the same regardless of the shell.
     """
     src_ds = str(meta["source_dataset"]).lower()        # adsl
     pop = meta["population"]                             # SAFFL
@@ -85,11 +91,11 @@ run;
     + f"""proc sort data=_tab; by _ARM; run;
 
 /* denominator N per arm, for categorical percentages */
-proc sql noprint;
+{"%tlf_bign(indata=_tab, armvar=_ARM, outdata=_bign);" if use_macros else '''proc sql noprint;
     create table _bign as
     select _ARM, count(distinct USUBJID) as bigN
     from _tab group by _ARM;
-quit;
+quit;'''}
 {END_SAS.format(var="TABLE_SETUP")}""")
 
     ord_n = 0
@@ -135,8 +141,8 @@ data _c_{var};
     grouplabel = "{label}";
     roworder = 100 + rank({var});   /* order categories after group label */
     rowlabel = strip(vvalue({var}));
-    if bigN > 0 then value = strip(put(n, 8.)) || " (" || strip(put(100*n/bigN, 8.1)) || "%)";
-    else value = strip(put(n, 8.));
+    {"value = %tlf_pctfmt(n=n, bign=bigN, dec=1);" if use_macros else '''if bigN > 0 then value = strip(put(n, 8.)) || " (" || strip(put(100*n/bigN, 8.1)) || "%)";
+    else value = strip(put(n, 8.));'''}
     keep ord grouplabel roworder rowlabel _ARM value;
 run;"""
         else:
@@ -311,7 +317,7 @@ demog_table
 # (big-N) from ADSL population. One subject counted once per row.
 # ---------------------------------------------------------------------------
 
-def _generate_ae_sas(meta, rows):
+def _generate_ae_sas(meta, rows, use_macros=True):
     denom = str(meta["denom_dataset"]).lower()      # adsl
     numer = str(meta["numer_dataset"]).lower()      # adae
     pop = meta["population"]                          # SAFFL
@@ -353,11 +359,11 @@ data _num;
 run;
 {total_sas}
 
-proc sql noprint;
+{"%tlf_bign(indata=_den, armvar=_ARM, outdata=_bign);" if use_macros else '''proc sql noprint;
     create table _bign as
     select _ARM, count(distinct USUBJID) as bigN
     from _den group by _ARM;
-quit;
+quit;'''}
 {END_SAS.format(var="TABLE_SETUP")}""")
 
     for _, r in rows.iterrows():
@@ -396,8 +402,8 @@ data _ae_{order};
     ord = {order}; roworder = 1; indent = {indent};
     rowlabel = "{label}";
     if n = . then n = 0;
-    if bigN > 0 then value = strip(put(n,8.)) || " (" || strip(put(100*n/bigN,8.1)) || "%)";
-    else value = strip(put(n,8.));
+    {"value = %tlf_pctfmt(n=n, bign=bigN, dec=1);" if use_macros else '''if bigN > 0 then value = strip(put(n,8.)) || " (" || strip(put(100*n/bigN,8.1)) || "%)";
+    else value = strip(put(n,8.));'''}
     keep ord roworder indent rowlabel _ARM value;
 run;"""
         prog.append(f"{BEGIN_SAS.format(var='ROW'+str(order))}\n{block}\n{END_SAS.format(var='ROW'+str(order))}")
@@ -505,15 +511,17 @@ ae_table
 # Dispatcher
 # ---------------------------------------------------------------------------
 
-def generate_table(shell_path, language=None):
+def generate_table(shell_path, language=None, use_macros=True):
+    """use_macros: SAS only — there's no R macro catalog (same as ADaM/SDTM),
+    so the R builders don't take this param at all; it's a no-op in R mode."""
     language = (language or config.LANGUAGE).lower()
     meta, rows = _read_shell(shell_path)
     # Table type is inferred from the shell: an AE-style shell names a
     # numerator dataset + TEAE flag; a demographics shell does not.
     is_ae = "numer_dataset" in meta and "teae_flag" in meta
     if is_ae:
-        return _generate_ae_r(meta, rows) if language == "r" else _generate_ae_sas(meta, rows)
-    return _generate_demog_r(meta, rows) if language == "r" else _generate_demog_sas(meta, rows)
+        return _generate_ae_r(meta, rows) if language == "r" else _generate_ae_sas(meta, rows, use_macros)
+    return _generate_demog_r(meta, rows) if language == "r" else _generate_demog_sas(meta, rows, use_macros)
 
 
 if __name__ == "__main__":
@@ -521,6 +529,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate TLF programs (SAS or R).")
     parser.add_argument("--lang", choices=["sas", "r"], default=None)
     parser.add_argument("--shell", default="sample_shell_demographics.xlsx")
+    parser.add_argument("--no-macros", action="store_true",
+                        help="Don't use the company macro catalog (%%tlf_bign/%%tlf_pctfmt) "
+                             "in generated SAS — emit the equivalent longhand code instead "
+                             "(default: use the macros). No effect in R mode.")
     args = parser.parse_args()
 
     lang = (args.lang or config.LANGUAGE).lower()
@@ -531,7 +543,7 @@ if __name__ == "__main__":
     meta, _ = _read_shell(args.shell)
     table_id = str(meta.get("table_id", "table")).replace(".", "_")
 
-    code = generate_table(args.shell, language=lang)
+    code = generate_table(args.shell, language=lang, use_macros=not args.no_macros)
     path = os.path.join(out_dir, f"t_{table_id}.{ext}")
     with open(path, "w", encoding="utf-8") as f:
         f.write(code)

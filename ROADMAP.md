@@ -44,10 +44,53 @@ the outputs.
             goes through Writer/Improver instead; AGEGR1N is present in the output
             either way. Only affects the SAS path — the catalog has no R macros, so R
             generation already always used Writer/Improver/Reviewer regardless.
-            Scope note: this toggles the EXISTING 15-variable ADSL catalog. Extending
-            macro coverage to SDTM/BDS domains would need an actual company macro
-            library for those domains authored by the team — none exists in this repo
-            to wire up, so that's a separate future undertaking, not part of this piece.
+            Scope note: this toggled the EXISTING 15-variable ADSL catalog only —
+            SDTM/TLF coverage followed in Phase 4.5d below.
+      - [x] Phase 4.5d: extended the macro catalog and the "use company macros"
+            toggle to SDTM and TLF. macro_catalog.csv gained a `scope` column
+            (adam/sdtm/tlf, all 15 existing rows backfilled to adam so ADaM's
+            lookup behavior is unchanged) plus 5 new illustrative macros (self-
+            authored, matching the existing ADSL demo style — not a real
+            company's macro library, since none exists in this repo to pull
+            from; the user chose this over pasting in real macros or leaving
+            the catalog empty). New macros/*.sas: sdtm_dtc.sas (raw date/time ->
+            ISO 8601 --DTC, preserving partial dates), sdtm_seq.sas (--SEQ
+            numbering within USUBJID), sdtm_suppqual.sas (build one SUPP-- row
+            from a non-standard variable), tlf_bign.sas (Big-N denominator per
+            arm), tlf_pctfmt.sas (standard n (%) display format, an inline
+            open-code macro rather than a data-step one since it's used as an
+            expression).
+            The two otypes needed genuinely different wiring, not just a copy
+            of ADaM's pattern, because they generate differently:
+              - SDTM generates a whole domain per model call (not per-variable
+                like ADSL), so an exact "skip the Writer, substitute this call"
+                approach doesn't fit — macro_lookup.find_sdtm_macros() does a
+                suffix match (e.g. any variable ending "SEQ") against the
+                domain's variable list and the matches are appended to that
+                domain's prompt as a hint for the Writer to use where it
+                actually fits (build_domain_prompt/generate_domain_program/
+                generate_single_domain/append_supp_domain/generate_all_domains/
+                _run_concurrently and a new --no-macros CLI flag all thread
+                use_macros through). It's advisory, same spirit as the existing
+                find_by_pattern ADaM hint — not a guarantee the Writer uses it.
+              - TLF has NO model calls at all (pure deterministic Python string
+                templates — confirmed by reading tlf_assembler.py, not
+                assumed), so "using a macro" there means literally branching
+                the generated code between the macro CALL and the equivalent
+                longhand PROC SQL/expression at codegen time. Two exact
+                substitution points, both duplicated identically across the
+                demographics and AE-summary table generators: the Big-N
+                PROC SQL block (-> %tlf_bign call) and the n (%) display
+                expression (-> %tlf_pctfmt call, an inline macro since it
+                produces a value, not a step). generate_table/
+                _generate_demog_sas/_generate_ae_sas take use_macros; the R
+                generators are untouched (no R macro concept, same as ADaM).
+            Verified directly: build_domain_prompt with/without use_macros for
+            a real AE-domain variable list (hint present/absent correctly);
+            generate_table with/without use_macros for both table types
+            (macro calls present/absent correctly, R output byte-identical
+            either way); the full toggle round-tripped through the live
+            /generate route and persisted in per-tab state correctly.
 - [x] Phase 5: SDTM + TLF generation
       - [x] 5a: aCRF parser (PDF/Word annotations → structured domain/variable metadata) — acrf_parser.py
       - [x] 5b: Draft SDTM spec from aCRF metadata (human reviews and completes before pipeline) — sdtm_spec_builder.py

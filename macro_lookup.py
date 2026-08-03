@@ -16,16 +16,37 @@ def load_catalog():
     return pd.read_csv(CATALOG_FILE)
 
 def find_macro(variable, catalog):
-    """Exact variable-name lookup. Returns row dict or None."""
-    match = catalog[catalog["variable"] == variable]
+    """Exact variable-name lookup, ADaM scope only. Returns row dict or None.
+    (SDTM/TLF catalog rows use non-variable-name values in this column —
+    suffix globs like "*SEQ", or "all" — so they'd never accidentally
+    exact-match a real ADaM variable name even without this filter, but
+    scoping explicitly keeps the two lookup styles from ever crossing.)"""
+    match = catalog[(catalog["scope"] == "adam") & (catalog["variable"] == variable)]
     if not match.empty:
         return match.iloc[0].to_dict()
     return None
 
+def find_sdtm_macros(variables, catalog):
+    """Suffix-pattern lookup for SDTM: which catalog macros (scope=sdtm)
+    are relevant to at least one variable in this domain's variable list?
+    Unlike ADaM's exact per-variable match, SDTM programs are generated one
+    whole domain at a time, so this returns every macro that MIGHT apply —
+    used as hints in the domain prompt for the Writer to use where it
+    actually fits, not a forced substitution. variables: list of variable
+    name strings (e.g. ["AESEQ", "AETERM", "AESTDTC", ...])."""
+    sdtm_rows = catalog[catalog["scope"] == "sdtm"]
+    upper_vars = [str(v).upper() for v in variables]
+    hits = []
+    for _, row in sdtm_rows.iterrows():
+        suffix = str(row["variable"]).lstrip("*").upper()
+        if any(v.endswith(suffix) for v in upper_vars):
+            hits.append(row.to_dict())
+    return hits
+
 def find_by_pattern(variable, derivation, catalog):
     """
     Agentic lookup: ask Claude which derivation pattern fits,
-    then find the best macro for that pattern.
+    then find the best macro for that pattern. ADaM scope only.
     Returns a row dict with a suggested_call key, or None.
     """
     prompt = f"""You are a clinical SAS programming expert.
@@ -52,7 +73,7 @@ Reply with ONLY the pattern name, nothing else."""
         return None
 
     # Find the first catalog row matching this pattern
-    matches = catalog[catalog["pattern"] == pattern]
+    matches = catalog[(catalog["scope"] == "adam") & (catalog["pattern"] == pattern)]
     if matches.empty:
         return None
 

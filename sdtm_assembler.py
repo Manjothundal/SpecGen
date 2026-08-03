@@ -58,6 +58,9 @@ from config import WRITER, REVIEWER, LOCAL_MODEL, API_MODEL
 from generator import generate_local, generate_api, review_sas
 from improver import improve_block
 from runlog import log_run
+from macro_lookup import load_catalog, find_sdtm_macros
+
+_macro_catalog = load_catalog()
 
 # Domains generate concurrently (see generate_all_domains); log_run() appends
 # a row to a shared CSV, and two threads finishing at the same instant could
@@ -622,35 +625,61 @@ Generate the complete R script. No explanations, just the code, no markdown fenc
 
 # ── Build prompt router ─────────────────────────────────────────────
 
-def build_domain_prompt(domain, variables, language="sas"):
-    """Route to the correct prompt builder based on domain class."""
+def _macro_hint_block(domain, variables, language):
+    """Company macros (scope=sdtm) whose suffix pattern matches a variable
+    in this domain, formatted as a prompt hint. SAS only — the catalog has
+    no R macros, same as ADaM's R path. Unlike ADaM's per-variable exact
+    match (which can skip the Writer entirely), SDTM generates a whole
+    domain per prompt, so a matching macro is offered as a suggestion for
+    the Writer to use where it fits, not a forced substitution — the Writer
+    still decides whether/how to invoke it in context."""
+    if language == "r":
+        return ""
+    var_names = [v["Variable"] for v in variables if v.get("Variable")]
+    hints = find_sdtm_macros(var_names, _macro_catalog)
+    if not hints:
+        return ""
+    lines = ["\n\nValidated company macros available for this domain — use them where "
+            "they fit instead of writing the equivalent logic from scratch:"]
+    for h in hints:
+        lines.append(f"- {h['call']}\n  ({h['purpose']})")
+    return "\n".join(lines)
+
+
+def build_domain_prompt(domain, variables, language="sas", use_macros=True):
+    """Route to the correct prompt builder based on domain class, then
+    append any relevant company macro hints (see _macro_hint_block)."""
     dclass = get_domain_class(domain)
 
     if dclass == "DM":
-        return build_dm_prompt(domain, variables, language)
+        prompt = build_dm_prompt(domain, variables, language)
     elif dclass == "Events":
-        return build_events_prompt(domain, variables, language)
+        prompt = build_events_prompt(domain, variables, language)
     elif dclass == "Interventions":
-        return build_interventions_prompt(domain, variables, language)
+        prompt = build_interventions_prompt(domain, variables, language)
     elif dclass == "Findings":
-        return build_findings_prompt(domain, variables, language)
+        prompt = build_findings_prompt(domain, variables, language)
     elif dclass == "Findings About Events":
-        return build_fae_prompt(domain, variables, language)
+        prompt = build_fae_prompt(domain, variables, language)
     elif dclass == "SUPP":
-        return build_supp_prompt(domain, variables, language)
+        prompt = build_supp_prompt(domain, variables, language)
     else:
-        return build_events_prompt(domain, variables, language)
+        prompt = build_events_prompt(domain, variables, language)
+
+    if use_macros:
+        prompt += _macro_hint_block(domain, variables, language)
+    return prompt
 
 
 # ── Three-agent pipeline ────────────────────────────────────────────
 
-def generate_domain_program(domain, variables, use_api=True, language="sas"):
+def generate_domain_program(domain, variables, use_api=True, language="sas", use_macros=True):
     """
     Generate a complete SAS or R program for one SDTM domain
     using the three-agent pipeline: Writer -> Improver -> Reviewer.
     """
     dclass = get_domain_class(domain)
-    prompt = build_domain_prompt(domain, variables, language)
+    prompt = build_domain_prompt(domain, variables, language, use_macros)
     lang_name = "R" if language == "r" else "SAS"
 
     print(f"\n  [{domain}] Generating {lang_name} program ({dclass}, {len(variables)} variables)")
@@ -814,7 +843,8 @@ run;
 
 # ── Main entry points ───────────────────────────────────────────────
 
-def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=False, language="sas"):
+def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=False, language="sas",
+                           use_macros=True):
     """Generate the SAS or R program for one domain.
 
     By default, skips generation if output_dir/<domain>.<ext> already exists —
@@ -835,7 +865,8 @@ def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=Fa
         print(f"  No variables found for domain {domain}")
         return None
 
-    code, writer_model = generate_domain_program(domain, variables, use_api=use_api, language=language)
+    code, writer_model = generate_domain_program(domain, variables, use_api=use_api, language=language,
+                                                 use_macros=use_macros)
     if not code:
         print(f"  Failed to generate code for {domain}")
         return None
@@ -871,7 +902,8 @@ SAS_FOOTER_MARKER = "/*-- Final sort and output verification --*/"
 R_FOOTER_MARKER = "# -- Verification -- #"
 
 
-def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=False, language="sas"):
+def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=False, language="sas",
+                       use_macros=True):
     """Generate a SUPP-- domain and append its code into its PARENT domain's
     output file (e.g. SUPPAE lives inside ae.sas/ae.R) instead of writing a
     separate program. SUPP-- is a supplemental-qualifier view of the same
@@ -910,7 +942,8 @@ def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=F
         print(f"  No variables found for domain {supp_domain}")
         return None
 
-    code, writer_model = generate_domain_program(supp_domain, variables, use_api=use_api, language=language)
+    code, writer_model = generate_domain_program(supp_domain, variables, use_api=use_api, language=language,
+                                                 use_macros=use_macros)
     if not code:
         print(f"  Failed to generate code for {supp_domain}")
         return None
@@ -961,9 +994,11 @@ def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=F
     return parent_file
 
 
-def _run_concurrently(fn, domain_list, max_workers, xlsx_path, output_dir, use_api, force, language):
-    """Run fn(xlsx_path, domain, output_dir, use_api, force=force, language=language)
-    for every domain in domain_list at once (up to max_workers in flight),
+def _run_concurrently(fn, domain_list, max_workers, xlsx_path, output_dir, use_api, force, language,
+                      use_macros=True):
+    """Run fn(xlsx_path, domain, output_dir, use_api, force=force, language=language,
+    use_macros=use_macros) for every domain in domain_list at once (up to
+    max_workers in flight),
     instead of one at a time. Each domain's own Writer->Improver->Reviewer
     calls are the slow part (~60-100s observed, 3 sequential API round-trips
     generating/reviewing a full program) — the domains themselves don't
@@ -980,7 +1015,8 @@ def _run_concurrently(fn, domain_list, max_workers, xlsx_path, output_dir, use_a
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_domain = {
-            executor.submit(fn, xlsx_path, domain, output_dir, use_api, force=force, language=language): domain
+            executor.submit(fn, xlsx_path, domain, output_dir, use_api, force=force, language=language,
+                            use_macros=use_macros): domain
             for domain in domain_list
         }
         for future in as_completed(future_to_domain):
@@ -999,7 +1035,7 @@ def _run_concurrently(fn, domain_list, max_workers, xlsx_path, output_dir, use_a
 
 
 def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, force=False,
-                         language="sas", max_workers=5):
+                         language="sas", max_workers=5, use_macros=True):
     """
     Generate SAS or R programs for all domains in the spec.
     Processes standard domains first, then SUPP domains
@@ -1033,7 +1069,7 @@ def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, forc
     # file to exist before this phase starts, so it can't overlap the next
     results, failed = _run_concurrently(
         generate_single_domain, std_domains, max_workers,
-        xlsx_path, output_dir, use_api, force=force, language=language,
+        xlsx_path, output_dir, use_api, force=force, language=language, use_macros=use_macros,
     )
 
     # SUPP domains after (they reference parent domain) — appended into the
@@ -1042,7 +1078,7 @@ def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, forc
     # so running them concurrently with each other is safe too.
     supp_results, supp_failed = _run_concurrently(
         append_supp_domain, supp_domains, max_workers,
-        xlsx_path, output_dir, use_api, force=force, language=language,
+        xlsx_path, output_dir, use_api, force=force, language=language, use_macros=use_macros,
     )
     results.update(supp_results)
     failed.extend(supp_failed)
@@ -1085,6 +1121,10 @@ if __name__ == "__main__":
                              "Domains are independent API-bound work, so running "
                              "several at once is much faster than one at a time; "
                              "raise/lower to match your API rate limit.")
+    parser.add_argument("--no-macros", action="store_true",
+                        help="Don't offer the validated company macro catalog as a "
+                             "hint to the Writer (default: offered where a domain's "
+                             "variables match one, e.g. --DTC/--SEQ/SUPP qualifiers)")
 
     args = parser.parse_args()
 
@@ -1092,8 +1132,9 @@ if __name__ == "__main__":
         domains = [d.strip().upper() for d in args.domain.split(",")]
         generate_all_domains(args.spec, args.output,
                              use_api=not args.offline, domains=domains, force=args.force,
-                             language=args.lang, max_workers=args.workers)
+                             language=args.lang, max_workers=args.workers,
+                             use_macros=not args.no_macros)
     else:
         generate_all_domains(args.spec, args.output,
                              use_api=not args.offline, force=args.force, language=args.lang,
-                             max_workers=args.workers)
+                             max_workers=args.workers, use_macros=not args.no_macros)

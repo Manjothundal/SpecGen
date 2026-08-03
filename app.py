@@ -324,11 +324,16 @@ def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all",
     return out, adsl_context
 
 
-def generate_tlf(lang, shells=None, domain="all", cancel_event=None):
+def generate_tlf(lang, shells=None, domain="all", cancel_event=None, use_macros=True):
     """Return dict {name: code} for each shell (uploaded, or the sample shells).
 
     domain: "all" (default), or one specific shell's table_id (e.g. "14.1.1")
     to generate only that table.
+
+    use_macros: passed straight through to tlf.generate_table — SAS only,
+    substitutes the %tlf_bign/%tlf_pctfmt company macro calls for the
+    equivalent longhand code (TLF generation has no model calls at all, so
+    this is a direct codegen branch, not a hint). No effect in R mode.
     """
     domain = (domain or "all").lower()
     out = {}
@@ -341,11 +346,11 @@ def generate_tlf(lang, shells=None, domain="all", cancel_event=None):
         tid = str(meta.get("table_id", "table"))
         if domain != "all" and domain != tid.lower():
             continue
-        out[f"t_{tid.replace('.', '_')}"] = tlf.generate_table(shell, language=lang)
+        out[f"t_{tid.replace('.', '_')}"] = tlf.generate_table(shell, language=lang, use_macros=use_macros)
     return out
 
 
-def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False, ctrl=None):
+def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False, ctrl=None, use_macros=True):
     """Run sdtm_assembler.py as a subprocess, then read the .sas/.R files back.
 
     sdtm_assembler.py skips domains whose output file already exists unless
@@ -371,6 +376,11 @@ def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False,
     immediately (SDTM is the one otype whose generation is a real OS process,
     so it's the one that can be killed outright rather than just stopped
     between iterations).
+
+    use_macros: passed to sdtm_assembler.py as --no-macros when False.
+    Offered to the Writer as a hint where a domain's variables match a
+    catalog entry (e.g. --DTC/--SEQ/SUPP qualifiers) — not a forced
+    substitution, since SDTM generation goes through the model.
     """
     domain = (domain or "all").upper() if domain != "all" else "all"
     single_domain_forced = domain != "all"
@@ -413,6 +423,8 @@ def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False,
         cmd.append("--force")
     if single_domain_forced:
         cmd.extend(["--domain", domain])
+    if not use_macros:
+        cmd.append("--no-macros")
     # A full spec (18+ domains) in API mode has run at ~70-100s/domain in
     # testing — 10 minutes was nowhere near enough and threw away every
     # domain that DID finish. Scale with domain count instead of a flat cap.
@@ -726,10 +738,11 @@ def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending, use_ma
                                                     use_macros=use_macros)
         elif otype == "tlf":
             programs = generate_tlf(lang, shells=uploaded or None, domain=domain,
-                                    cancel_event=ctrl["cancel_event"])
+                                    cancel_event=ctrl["cancel_event"], use_macros=use_macros)
         else:
             programs = generate_sdtm(lang, mode, spec_path=uploaded[0] if uploaded else None,
-                                     domain=domain, force_pending=force_pending, ctrl=ctrl)
+                                     domain=domain, force_pending=force_pending, ctrl=ctrl,
+                                     use_macros=use_macros)
 
         result_note = programs.pop("(note)", None) if isinstance(programs, dict) else None
 
@@ -773,10 +786,12 @@ def generate():
     state["mode"] = mode
     state["lang"] = lang
     state["selected_domain"] = domain
-    if otype == "adam":
-        # Checkbox: present in the form only when checked, absent when not —
-        # standard HTML behavior, no hidden-fallback field needed.
-        state["use_macros"] = "use_macros" in request.form
+    # Checkbox: present in the form only when checked, absent when not —
+    # standard HTML behavior, no hidden-fallback field needed. All 3 tabs
+    # have this control now (ADaM: exact-match substitution in ADSL SAS;
+    # SDTM: hint offered to the Writer per domain; TLF: direct codegen
+    # substitution, since TLF has no model calls at all).
+    state["use_macros"] = "use_macros" in request.form
 
     # Uploaded files only exist on request.files for THIS request, so they
     # must be saved to disk here, synchronously, before the background
