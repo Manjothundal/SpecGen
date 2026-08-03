@@ -165,9 +165,11 @@ the outputs.
                 pushes to origin/main for real — verified live: a real ADSL regeneration
                 was approved, exported, and committed+pushed through the app itself
                 (commit 18073bb).
-              - State is one in-memory RUN_STATE dict — a deliberate choice: this is a
-                single-operator local tool on Flask's synchronous dev server, so there's
-                only ever one run in flight; no session/DB layer was worth adding.
+              - State was one in-memory RUN_STATE dict — a deliberate choice given this
+                is a single-operator local tool on Flask's synchronous dev server, so
+                there's only ever one run in flight; no session/DB layer was worth
+                adding. (Superseded by Piece 5 below — split into per-otype slices,
+                still one dict, no DB.)
               - Progress is synchronous by design (click Generate, wait, see the
                 finished result) — true live per-variable streaming would need a
                 background job + SSE/polling, deferred as a future enhancement.
@@ -175,6 +177,33 @@ the outputs.
                 true Hybrid) — the Mode switcher maps Hybrid to the same behavior as
                 API for SDTM. Rearchitecting SDTM's pipeline to a real 3-mode model is
                 separate future scope.
+      - [x] Piece 5: ADaM/SDTM/TLF split into three independent tabs, replacing the
+            single shared "Output:" dropdown from Piece 2. The shared dropdown had
+            caused a real class of bugs: a stray Mode/Language form submission could
+            silently revert the dropdown mid-flow (patched once with a JS sync, but
+            the underlying sharing was still there to break again), and an upload for
+            one otype could bleed into another if the dropdown changed without a
+            fresh upload. Root fix instead of another patch: RUN_STATE is now
+            `{"active_otype": ..., "otypes": {"adam": {...}, "sdtm": {...}, "tlf":
+            {...}}}` — each tab has its own lang/mode/routing/programs/blocks/
+            uploaded_paths/etc via a `_new_otype_state()` slice, and its own upload
+            subfolder (`UPLOAD_DIR/<otype>/`) so same-named files across tabs can't
+            collide. otype is no longer a form field the user can edit — every
+            tab's forms carry a hardcoded hidden `otype` input, and /approve and
+            /send_back recover otype from the block_key's existing `"{otype}:{name}"`
+            prefix instead of a separate field, so there is no longer any path by
+            which one tab's submission can act on another tab's state. Frontend:
+            a Jinja `otype_tab()` macro renders each tab's full 4-screen markup
+            (called once per otype) inside a `.tabpanel[data-otype]`, with a small
+            top-level tab bar (`goTab()`) toggling which panel is visible; the
+            per-tab step-nav JS (`go()`) is scoped to query only within the
+            currently active tab's own panel, so it can't cross-toggle another
+            tab's screens. The old `controlform`/`controlform-otype` JS sync hack
+            from Piece 4 is gone — each tab's modebar is self-contained, so there's
+            nothing left to desync. Verified: Flask-test-client isolation test
+            (parse+generate SDTM, then parse ADaM, confirmed SDTM's routing/
+            available_domains/mode were untouched) and a live curl smoke test of
+            parse/generate against all 3 tabs on the running server.
 
 ## Open items (near-term)
 - Test against a fuller, realistic ADSL spec (60-100+ variables)

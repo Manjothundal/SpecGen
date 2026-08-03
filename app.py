@@ -1,13 +1,20 @@
 """
 app.py — SpecGen web app (Flask).
 
-A 4-screen flow modeled on docs/specgen_ui_mockup (1).html: Spec -> Generate ->
-Review & sign off -> Export & audit. (Compare & verify is not implemented —
-it's Phase 9, a from-scratch RTF/Word/PDF diff engine that doesn't exist yet.)
+Three independent tabs — ADaM, SDTM, TLF — each with its own 4-screen flow
+modeled on docs/specgen_ui_mockup (1).html: Spec -> Generate -> Review &
+sign off -> Export & audit. (Compare & verify is not implemented — it's
+Phase 9, a from-scratch RTF/Word/PDF diff engine that doesn't exist yet.)
 
-State lives in one in-memory dict (RUN_STATE) — this is a single-operator
-local tool running on Flask's synchronous dev server, so there is only ever
-one run in flight; no session/DB layer is needed.
+Each tab has its own state slice (RUN_STATE["otypes"][otype]) — this is a
+single-operator local tool running on Flask's synchronous dev server, so
+there's still only ever one run in flight per tab; no session/DB layer is
+needed. The tabs used to share one flat state behind a single "Output:"
+dropdown, which caused real bugs (uploading a spec for one otype bleeding
+into another, a stray form submission silently reverting the dropdown) —
+splitting them into genuinely independent slices, with otype implicit per
+tab's own forms rather than a shared editable field, removes that whole
+class of bug rather than patching around it.
 
   ADaM : BDS datasets (ADVS/ADLB/ADEG/ADTR/ADAE/ADCM/ADRS/ADTTE) are pure
          deterministic string templates in bds_assembler.py — no model calls,
@@ -59,6 +66,7 @@ ACRF = "acrf_metadata.xlsx"
 ADAM_SPEC = "adam_spec_full.xlsx"
 SDTM_SPEC = "sdtm_spec_draft.xlsx"
 SHELLS = ["sample_shell_demographics.xlsx", "sample_shell_ae.xlsx"]
+OTYPES = ("adam", "sdtm", "tlf")
 
 # Mode switcher (Offline/Hybrid/API) -> (writer_mode, reviewer_mode). Only
 # affects ADSL and SDTM generation — BDS datasets are deterministic string
@@ -69,73 +77,82 @@ MODE_MAP = {
     "api": ("api", "api"),
 }
 
+
+def _new_otype_state():
+    return {
+        "lang": "sas",
+        "mode": "hybrid",
+        "routing": None,
+        "programs": {},
+        "blocks": {},        # block_key -> {label, code, qc, approved, kind, var}
+        "block_order": [],
+        "main_step_rows": {},  # var -> row dict, for ADSL "send back to Improver"
+        "adsl_available": [],
+        "exported_files": [],
+        "last_commit": None,
+        "uploaded_paths": [],   # persists across the Spec -> Generate request boundary
+        "sdtm_force_pending": False,  # a fresh upload just arrived -> force SDTM's next
+                                      # generate once, not every generate for that upload
+        "available_domains": [],  # domain/dataset choices for the current spec
+        "selected_domain": "all",  # "all", or one specific domain/dataset name
+        "active_screen": "spec",   # which of the 4 steps this tab currently shows
+        "note": None,               # last message shown on this tab, if any
+    }
+
+
+# Each tab is fully independent — otype is which tab's forms you're
+# submitting, never a value one form can hand off to another.
 RUN_STATE = {
-    "otype": None,
-    "lang": "sas",
-    "mode": "hybrid",
-    "routing": None,
-    "programs": {},
-    "blocks": {},        # block_key -> {label, code, qc, approved, kind, var}
-    "block_order": [],
-    "main_step_rows": {},  # var -> row dict, for ADSL "send back to Improver"
-    "adsl_available": [],
-    "exported_files": [],
-    "last_commit": None,
-    "uploaded_paths": [],   # persists across the Spec -> Generate request boundary
-    "uploaded_for_otype": None,  # which otype uploaded_paths belongs to
-    "sdtm_force_pending": False,  # a fresh upload just arrived -> force SDTM's next
-                                  # generate once, not every generate for that upload
-    "available_domains": [],  # domain/dataset choices for the current otype+spec
-    "selected_domain": "all",  # "all", or one specific domain/dataset name
+    "active_otype": "adam",   # which TAB is visually active on page load
+    "otypes": {ot: _new_otype_state() for ot in OTYPES},
 }
 
 # Uploads are saved here once per run and reused across the Spec -> Generate
 # requests (the Spec screen's upload should still apply when you later click
-# Generate, without re-uploading) — cleared only when a new upload replaces it.
+# Generate, without re-uploading) — cleared only when a new upload replaces
+# it. Namespaced by otype subfolder so two tabs uploading same-named files
+# can't collide.
 UPLOAD_DIR = tempfile.mkdtemp(prefix="specgen_run_")
 
 # Generation (especially SDTM with --force, or ADSL) can legitimately take
 # minutes with zero progress feedback in the UI — indistinguishable from
 # "stuck" to someone waiting on it. Without this, re-clicking Generate during
 # a slow run spawns ANOTHER overlapping sdtm_assembler.py/assemble_adsl call
-# on top of the first instead of just waiting for it.
-_GENERATE_LOCK = threading.Lock()
+# on top of the first instead of just waiting for it. One lock per tab, so
+# a slow SDTM run doesn't block clicking Generate on the ADaM tab.
+_GENERATE_LOCKS = {ot: threading.Lock() for ot in OTYPES}
 
 
 # ---------------------------------------------------------------------------
 # Upload handling
 # ---------------------------------------------------------------------------
 
-def _save_uploads(files):
-    """Save any non-empty uploaded files into UPLOAD_DIR. Returns saved paths,
-    or [] if no files were submitted (caller should then fall back to
-    RUN_STATE["uploaded_paths"] from a prior request in this run)."""
+def _save_uploads(files, otype):
+    """Save any non-empty uploaded files into this tab's own upload
+    subfolder. Returns saved paths, or [] if no files were submitted
+    (caller should then fall back to this tab's previously stored paths)."""
     saved = []
+    otype_dir = os.path.join(UPLOAD_DIR, otype)
     for f in files:
         if f and f.filename:
-            path = os.path.join(UPLOAD_DIR, secure_filename(f.filename))
+            os.makedirs(otype_dir, exist_ok=True)
+            path = os.path.join(otype_dir, secure_filename(f.filename))
             f.save(path)
             saved.append(path)
     return saved
 
 
 def _resolve_uploads(files, otype):
-    """New files this request replace any previously uploaded ones; otherwise
-    reuse what's already stored in RUN_STATE from an earlier step — but ONLY
-    if it was uploaded for the SAME otype. Without this, uploading a file for
-    one otype (e.g. an SDTM spec) then switching to another (e.g. TLF) would
-    silently hand that same file to the new otype's generator, which expects
-    a completely different sheet structure and crashes instead of falling
-    back to the sample defaults.
-    """
-    new_uploads = _save_uploads(files)
+    """New files this request replace any previously uploaded ones for THIS
+    tab; otherwise reuse what's already stored from an earlier step. Each
+    tab has its own bucket, so there's no cross-otype case to guard against
+    the way there used to be with one shared upload slot."""
+    state = RUN_STATE["otypes"][otype]
+    new_uploads = _save_uploads(files, otype)
     if new_uploads:
-        RUN_STATE["uploaded_paths"] = new_uploads
-        RUN_STATE["uploaded_for_otype"] = otype
-        RUN_STATE["sdtm_force_pending"] = True  # this is a genuinely new spec — force once
-    elif RUN_STATE.get("uploaded_for_otype") != otype:
-        return []
-    return RUN_STATE["uploaded_paths"]
+        state["uploaded_paths"] = new_uploads
+        state["sdtm_force_pending"] = True  # this is a genuinely new spec — force once
+    return state["uploaded_paths"]
 
 
 def _sheet_names(path):
@@ -293,20 +310,21 @@ def generate_tlf(lang, shells=None, domain="all"):
     return out
 
 
-def generate_sdtm(lang, mode, spec_path=None, domain="all"):
+def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False):
     """Run sdtm_assembler.py as a subprocess, then read the .sas/.R files back.
 
     sdtm_assembler.py skips domains whose output file already exists unless
     --force is passed, so a hand-QC'd fix in sdtm_programs/ survives repeat
     "Generate" clicks. A genuinely new spec upload forces exactly ONE
-    generate (RUN_STATE["sdtm_force_pending"], set in _resolve_uploads and
-    consumed here) — not every subsequent click for that same upload, which
-    would otherwise redo already-finished domains from scratch every retry
-    (e.g. after a timeout) instead of skipping them and continuing.
-    Explicitly picking ONE domain from the dropdown is also treated as a
-    deliberate "(re)generate this now" request, so it forces just that domain
-    regardless of whether it already exists — "all" still respects the
-    default skip-if-exists behavior.
+    generate (force_pending, sourced from this tab's own
+    sdtm_force_pending flag, set in _resolve_uploads and consumed by the
+    caller before this runs) — not every subsequent click for that same
+    upload, which would otherwise redo already-finished domains from scratch
+    every retry (e.g. after a timeout) instead of skipping them and
+    continuing. Explicitly picking ONE domain from the dropdown is also
+    treated as a deliberate "(re)generate this now" request, so it forces
+    just that domain regardless of whether it already exists — "all" still
+    respects the default skip-if-exists behavior.
 
     SDTM's pipeline only has a binary use_api flag today (no true Hybrid, this
     is a known asymmetry with ADSL) — Offline stays local-only; Hybrid and API
@@ -314,8 +332,7 @@ def generate_sdtm(lang, mode, spec_path=None, domain="all"):
     """
     domain = (domain or "all").upper() if domain != "all" else "all"
     single_domain_forced = domain != "all"
-    force = single_domain_forced or (spec_path is not None and RUN_STATE["sdtm_force_pending"])
-    RUN_STATE["sdtm_force_pending"] = False
+    force = single_domain_forced or (spec_path is not None and force_pending)
     spec_path = spec_path or SDTM_SPEC
     out = {}
     if not os.path.exists(spec_path):
@@ -410,11 +427,14 @@ def regenerate_adsl_block(var):
     """Re-run Writer -> Improver -> Reviewer for ONE ADSL variable and splice
     the result back into the stored adsl program text (fresh offsets each
     time, so repeated re-generation of different blocks stays correct even
-    though earlier edits changed the surrounding text's length)."""
-    lang = RUN_STATE["lang"]
-    writer_mode, reviewer_mode = MODE_MAP.get(RUN_STATE["mode"], (None, None))
-    row = RUN_STATE["main_step_rows"][var]
-    available = RUN_STATE["adsl_available"]
+    though earlier edits changed the surrounding text's length). ADSL only
+    ever lives under the ADaM tab, so this always operates on that tab's
+    own state."""
+    state = RUN_STATE["otypes"]["adam"]
+    lang = state["lang"]
+    writer_mode, reviewer_mode = MODE_MAP.get(state["mode"], (None, None))
+    row = state["main_step_rows"][var]
+    available = state["adsl_available"]
 
     block = gen_block(row, language=lang, writer_mode=writer_mode)
     block = clean(improve_block(block, row, available, language=lang, mode=reviewer_mode))
@@ -444,23 +464,23 @@ def regenerate_adsl_block(var):
             new_body = f"    # QC FLAG: {verdict}\n" + new_body
         pattern = _r_block_pattern(var)
 
-    program = RUN_STATE["programs"]["adsl"]
+    program = state["programs"]["adsl"]
     m = pattern.search(program)
     if m:
         program = program[:m.start(1)] + new_body + program[m.end(1):]
-        RUN_STATE["programs"]["adsl"] = program
+        state["programs"]["adsl"] = program
 
     key = "adam:adsl:" + var
-    RUN_STATE["blocks"][key]["code"] = new_body
-    RUN_STATE["blocks"][key]["qc"] = qc
-    RUN_STATE["blocks"][key]["approved"] = False
+    state["blocks"][key]["code"] = new_body
+    state["blocks"][key]["qc"] = qc
+    state["blocks"][key]["approved"] = False
 
 
 # ---------------------------------------------------------------------------
 # Block bookkeeping shared by the Generate / Review screens
 # ---------------------------------------------------------------------------
 
-def _rebuild_blocks(otype, programs, adsl_context):
+def _rebuild_blocks(state, otype, programs, adsl_context):
     blocks = {}
     order = []
 
@@ -479,15 +499,15 @@ def _rebuild_blocks(otype, programs, adsl_context):
                       "approved": False, "kind": "file", "var": None}
         order.append(key)
 
-    RUN_STATE["blocks"] = blocks
-    RUN_STATE["block_order"] = order
-    RUN_STATE["main_step_rows"] = (adsl_context or {}).get("main_step_rows", {})
-    RUN_STATE["adsl_available"] = (adsl_context or {}).get("available", [])
+    state["blocks"] = blocks
+    state["block_order"] = order
+    state["main_step_rows"] = (adsl_context or {}).get("main_step_rows", {})
+    state["adsl_available"] = (adsl_context or {}).get("available", [])
 
 
-def _signoff_counts():
-    total = len(RUN_STATE["blocks"])
-    approved = sum(1 for b in RUN_STATE["blocks"].values() if b["approved"])
+def _signoff_counts(state):
+    total = len(state["blocks"])
+    approved = sum(1 for b in state["blocks"].values() if b["approved"])
     return approved, total
 
 
@@ -495,21 +515,32 @@ def _signoff_counts():
 # Routes
 # ---------------------------------------------------------------------------
 
-def _render(active_screen="spec", note=None):
-    approved, total = _signoff_counts()
+def _render(active_otype=None, note=None, note_otype=None):
+    """Render the whole page — all three tabs' content at once (same pattern
+    the 4 step-screens already used: everything is in the DOM, CSS/JS toggles
+    visibility), so switching tabs client-side needs no server round-trip and
+    can never lose another tab's state."""
+    if active_otype:
+        RUN_STATE["active_otype"] = active_otype
+
+    tabs = {}
+    for ot in OTYPES:
+        state = RUN_STATE["otypes"][ot]
+        approved, total = _signoff_counts(state)
+        mode = state["mode"]
+        tabs[ot] = dict(
+            state,
+            approved=approved, total_blocks=total,
+            writer_model=config.LOCAL_MODEL if mode in ("offline", "hybrid") else config.API_MODEL,
+            reviewer_model=config.API_MODEL if mode in ("hybrid", "api") else config.LOCAL_MODEL,
+            note=note if note_otype == ot else None,
+        )
+
     return render_template(
         "index.html",
-        otype=RUN_STATE["otype"], lang=RUN_STATE["lang"], mode=RUN_STATE["mode"],
-        routing=RUN_STATE["routing"],
-        block_order=RUN_STATE["block_order"], blocks=RUN_STATE["blocks"],
-        approved=approved, total_blocks=total,
-        exported_files=RUN_STATE["exported_files"], last_commit=RUN_STATE["last_commit"],
+        active_otype=RUN_STATE["active_otype"],
+        tabs=tabs,
         runlog_rows=_read_runlog_tail(),
-        writer_model=config.LOCAL_MODEL if RUN_STATE["mode"] == "offline" else
-                    (config.LOCAL_MODEL if RUN_STATE["mode"] == "hybrid" else config.API_MODEL),
-        reviewer_model=config.API_MODEL if RUN_STATE["mode"] in ("hybrid", "api") else config.LOCAL_MODEL,
-        available_domains=RUN_STATE["available_domains"], selected_domain=RUN_STATE["selected_domain"],
-        active_screen=active_screen, note=note,
     )
 
 
@@ -526,21 +557,24 @@ def _read_runlog_tail(n=8):
     return rows
 
 
+def _otype_from_request(default="adam"):
+    otype = request.form.get("otype", default)
+    return otype if otype in OTYPES else default
+
+
 @app.route("/", methods=["GET"])
 def index():
-    return _render("spec")
+    return _render()
 
 
 @app.route("/parse", methods=["POST"])
 def parse_spec():
-    # Fall back to whatever was already selected (RUN_STATE), not a hardcoded
-    # default — the Spec screen's own "Parse spec" form doesn't carry lang/mode
-    # fields, so defaulting to "sas"/"hybrid" here would silently wipe out a
-    # Language/Mode choice made via the modebar just before parsing.
-    otype = request.form.get("otype", RUN_STATE["otype"] or "adam")
-    lang = request.form.get("lang", RUN_STATE["lang"])
-    mode = request.form.get("mode", RUN_STATE["mode"])
-    RUN_STATE.update(otype=otype, lang=lang, mode=mode)
+    otype = _otype_from_request()
+    state = RUN_STATE["otypes"][otype]
+    # Each tab's own modebar carries its own hardcoded otype, mode, lang —
+    # there's no shared field for another tab's action to clobber.
+    state["mode"] = request.form.get("mode", state["mode"])
+    state["lang"] = request.form.get("lang", state["lang"])
 
     uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
     routing = {}
@@ -574,27 +608,34 @@ def parse_spec():
                 shell_table_ids[os.path.basename(shell)] = meta.get("table_id", "?")
         routing["Shells"] = shell_table_ids
         available_domains = list(shell_table_ids.values())
-    RUN_STATE["routing"] = routing
-    RUN_STATE["available_domains"] = available_domains
-    RUN_STATE["selected_domain"] = "all"  # reset on every fresh parse
 
-    return _render("generate")
+    state["routing"] = routing
+    state["available_domains"] = available_domains
+    state["selected_domain"] = "all"  # reset on every fresh parse
+    state["active_screen"] = "generate"
+
+    return _render(active_otype=otype)
 
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    if not _GENERATE_LOCK.acquire(blocking=False):
-        return _render("generate", note="A generation is already running — please wait for it "
-                                        "to finish instead of clicking Generate again. Large specs "
-                                        "with --force (an uploaded spec) can legitimately take "
-                                        "several minutes with no progress shown.")
+    otype = _otype_from_request()
+    state = RUN_STATE["otypes"][otype]
+    lock = _GENERATE_LOCKS[otype]
+    if not lock.acquire(blocking=False):
+        return _render(active_otype=otype, note_otype=otype,
+                      note="A generation is already running — please wait for it "
+                          "to finish instead of clicking Generate again. Large specs "
+                          "with --force (an uploaded spec) can legitimately take "
+                          "several minutes with no progress shown.")
     try:
-        otype = request.form.get("otype", RUN_STATE["otype"] or "adam")
-        lang = request.form.get("lang", RUN_STATE["lang"])
-        mode = request.form.get("mode", RUN_STATE["mode"])
+        mode = request.form.get("mode", state["mode"])
+        lang = request.form.get("lang", state["lang"])
         domain = request.form.get("domain", "all") or "all"
+        state["mode"] = mode
+        state["lang"] = lang
+        state["selected_domain"] = domain
         note = None
-        RUN_STATE.update(otype=otype, lang=lang, mode=mode, selected_domain=domain)
 
         uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
         adsl_context = None
@@ -605,99 +646,114 @@ def generate():
             elif otype == "tlf":
                 programs = generate_tlf(lang, shells=uploaded or None, domain=domain)
             else:
-                programs = generate_sdtm(lang, mode, spec_path=uploaded[0] if uploaded else None, domain=domain)
+                force_pending = state["sdtm_force_pending"]
+                state["sdtm_force_pending"] = False
+                programs = generate_sdtm(lang, mode, spec_path=uploaded[0] if uploaded else None,
+                                         domain=domain, force_pending=force_pending)
         except Exception as e:
             # An uploaded file can be almost anything (wrong sheet names, wrong
             # shape, corrupted) — surface that as a normal in-app error instead
             # of a raw Flask traceback page, and leave any earlier successful
             # run's blocks/programs alone rather than partially overwriting them.
-            return _render("generate", note=f"Generation failed: {e}")
+            return _render(active_otype=otype, note_otype=otype, note=f"Generation failed: {e}")
 
-        RUN_STATE["programs"] = programs
-        RUN_STATE["exported_files"] = []
-        RUN_STATE["last_commit"] = None
-        _rebuild_blocks(otype, programs, adsl_context)
+        state["programs"] = programs
+        state["exported_files"] = []
+        state["last_commit"] = None
+        _rebuild_blocks(state, otype, programs, adsl_context)
+        state["active_screen"] = "review"
     finally:
-        _GENERATE_LOCK.release()
+        lock.release()
 
-    return _render("review", note=note)
+    return _render(active_otype=otype, note_otype=otype, note=note)
 
 
 @app.route("/approve", methods=["POST"])
 def approve():
-    key = request.form.get("block_key")
-    if key in RUN_STATE["blocks"]:
-        RUN_STATE["blocks"][key]["approved"] = True
-    return _render("review")
+    key = request.form.get("block_key", "")
+    otype = key.split(":", 1)[0] if ":" in key else "adam"
+    otype = otype if otype in OTYPES else "adam"
+    state = RUN_STATE["otypes"][otype]
+    if key in state["blocks"]:
+        state["blocks"][key]["approved"] = True
+    return _render(active_otype=otype)
 
 
 @app.route("/send_back", methods=["POST"])
 def send_back():
-    key = request.form.get("block_key")
-    block = RUN_STATE["blocks"].get(key)
+    key = request.form.get("block_key", "")
+    otype = key.split(":", 1)[0] if ":" in key else "adam"
+    otype = otype if otype in OTYPES else "adam"
+    state = RUN_STATE["otypes"][otype]
+    block = state["blocks"].get(key)
     if block and block["kind"] == "adsl_var":
         regenerate_adsl_block(block["var"])
-    return _render("review")
+    return _render(active_otype=otype)
 
 
 @app.route("/export", methods=["POST"])
 def export():
-    approved, total = _signoff_counts()
+    otype = _otype_from_request()
+    state = RUN_STATE["otypes"][otype]
+    approved, total = _signoff_counts(state)
     if total == 0 or approved < total:
-        return _render("export", note="Export locked: not every block is approved yet.")
+        return _render(active_otype=otype, note_otype=otype,
+                      note="Export locked: not every block is approved yet.")
 
-    ext = "R" if RUN_STATE["lang"] == "r" else "sas"
-    otype = RUN_STATE["otype"]
+    ext = "R" if state["lang"] == "r" else "sas"
     written = []
     if otype == "adam":
-        for name, code in RUN_STATE["programs"].items():
+        for name, code in state["programs"].items():
             path = "adsl.%s" % ext if name == "adsl" else os.path.join("adam_programs", f"{name}.{ext}")
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(code)
             written.append(path)
     elif otype == "tlf":
-        for name, code in RUN_STATE["programs"].items():
+        for name, code in state["programs"].items():
             path = os.path.join("tlf_programs", f"{name}.{ext}")
             os.makedirs("tlf_programs", exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(code)
             written.append(path)
     else:  # sdtm — sdtm_assembler.py already wrote these to disk during Generate
-        written = [os.path.join("sdtm_programs", f"{name}.sas") for name in RUN_STATE["programs"]]
+        written = [os.path.join("sdtm_programs", f"{name}.sas") for name in state["programs"]]
 
-    RUN_STATE["exported_files"] = written
-    return _render("export", note=f"Exported {len(written)} file(s).")
+    state["exported_files"] = written
+    state["active_screen"] = "export"
+    return _render(active_otype=otype, note_otype=otype, note=f"Exported {len(written)} file(s).")
 
 
 @app.route("/commit", methods=["POST"])
 def commit():
-    files = RUN_STATE["exported_files"]
+    otype = _otype_from_request()
+    state = RUN_STATE["otypes"][otype]
+    files = state["exported_files"]
     if not files:
-        RUN_STATE["last_commit"] = {"ok": False, "message": "Nothing exported yet."}
-        return _render("export")
+        state["last_commit"] = {"ok": False, "message": "Nothing exported yet."}
+        return _render(active_otype=otype)
 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    msg = (f"Generate {RUN_STATE['otype'].upper()} ({RUN_STATE['lang'].upper()}) "
-          f"via SpecGen app — mode={RUN_STATE['mode']}, {ts}")
+    msg = (f"Generate {otype.upper()} ({state['lang'].upper()}) "
+          f"via SpecGen app — mode={state['mode']}, {ts}")
     try:
         subprocess.run(["git", "add", "--"] + files, check=True, capture_output=True, text=True)
         commit_res = subprocess.run(["git", "commit", "-m", msg], capture_output=True, text=True)
         if commit_res.returncode != 0:
-            RUN_STATE["last_commit"] = {"ok": False, "message": commit_res.stdout + commit_res.stderr}
-            return _render("export")
+            state["last_commit"] = {"ok": False, "message": commit_res.stdout + commit_res.stderr}
+            return _render(active_otype=otype)
         push_res = subprocess.run(["git", "push", "origin", "main"], capture_output=True, text=True)
         short_hash = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
                                     capture_output=True, text=True).stdout.strip()
         ok = push_res.returncode == 0
-        RUN_STATE["last_commit"] = {
+        state["last_commit"] = {
             "ok": ok, "hash": short_hash,
             "message": msg if ok else msg + "\n\nPush failed:\n" + push_res.stdout + push_res.stderr,
         }
     except Exception as e:
-        RUN_STATE["last_commit"] = {"ok": False, "message": str(e)}
+        state["last_commit"] = {"ok": False, "message": str(e)}
 
-    return _render("export")
+    return _render(active_otype=otype)
 
 
 if __name__ == "__main__":

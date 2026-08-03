@@ -21,6 +21,18 @@
   .sub{color:var(--slate); margin:6px 0 22px; max-width:72ch;}
   .mono{font-family:Consolas, Menlo, monospace;}
 
+  .tabbar{display:flex; gap:6px; margin-bottom:14px;}
+  .tabbtn{
+    border:1px solid var(--line); background:#fff; color:var(--slate);
+    font:inherit; font-size:.88rem; font-weight:600; padding:9px 20px;
+    border-radius:9px 9px 0 0; cursor:pointer; border-bottom:0;
+    position:relative; top:1px;
+  }
+  .tabbtn.on{background:var(--paper); color:var(--ink); border-bottom:1px solid var(--paper);}
+
+  .tabpanel{display:none;}
+  .tabpanel.on{display:block;}
+
   .window{
     background:var(--paper); border:1px solid var(--line); border-radius:10px;
     box-shadow:0 18px 50px rgba(20,35,46,.14); overflow:hidden;
@@ -146,234 +158,230 @@
 <body>
 <div class="wrap">
   <h1>SpecGen</h1>
-  <p class="sub">Spec-to-program generation in SAS or R: parse a spec, run the three-agent pipeline, review and sign off block by block, then export and commit.</p>
+  <p class="sub">Spec-to-program generation in SAS or R: parse a spec, run the three-agent pipeline, review and sign off block by block, then export and commit. ADaM, SDTM, and TLF are independent tabs below — each keeps its own spec, mode/language, and generated programs, so switching tabs never touches another tab's state.</p>
 
-  <div class="window">
-    <div class="titlebar">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="brand">SpecGen</span>
-      <span class="mono">— output: {{ (otype or 'adam') | upper }}</span>
-    </div>
-
-    <form method="post" action="/parse" id="controlform">
-      <div class="modebar">
-        <span class="seglabel">Mode</span>
-        <div class="seg">
-          <button type="submit" name="mode" value="offline" class="{{ 'on' if mode=='offline' or not mode else '' }}">Offline</button>
-          <button type="submit" name="mode" value="hybrid" class="{{ 'on' if mode=='hybrid' or not mode else '' }}">Hybrid</button>
-          <button type="submit" name="mode" value="api" class="{{ 'on' if mode=='api' else '' }}">API</button>
-        </div>
-        <span class="seglabel">Language</span>
-        <div class="seg lang">
-          <button type="submit" name="lang" value="sas" class="{{ 'on' if lang=='sas' or not lang else '' }}">SAS</button>
-          <button type="submit" name="lang" value="r" class="{{ 'on' if lang=='r' else '' }}">R</button>
-        </div>
-        <span class="privacy {{ mode or 'hybrid' }}">
-          {% if mode == 'offline' %}Specs never leave this machine
-          {% elif mode == 'api' %}Best quality · specs sent to API
-          {% else %}Drafts local · review via API{% endif %}
-        </span>
-        <input type="hidden" name="otype" id="controlform-otype" value="{{ otype or 'adam' }}">
-        <div class="agents">
-          <span class="agent"><span class="chip {{ 'local' if (mode or 'hybrid') != 'api' else 'api' }}"></span><b>Writer</b> <span class="mono">{{ writer_model }}</span></span>
-          <span class="agent"><span class="chip {{ 'local' if (mode or 'hybrid') == 'offline' else 'api' }}"></span><b>Improver/Reviewer</b> <span class="mono">{{ reviewer_model }}</span></span>
-        </div>
+  {% macro otype_tab(otype, label, domain_note, upload_label, upload_hint, allow_multiple) %}
+  {% set t = tabs[otype] %}
+  <div class="tabpanel {{ 'on' if active_otype == otype else '' }}" data-otype="{{ otype }}">
+    <div class="window">
+      <div class="titlebar">
+        <div class="dots"><span></span><span></span><span></span></div>
+        <span class="brand">SpecGen</span>
+        <span class="mono">— output: {{ label | upper }}</span>
       </div>
-    </form>
 
-    <div class="appbody">
-      <nav>
-        <button class="{{ 'on' if active_screen=='spec' else '' }}" onclick="go(0,this)"><span class="step">1</span> Spec</button>
-        <button class="{{ 'on' if active_screen=='generate' else '' }}" onclick="go(1,this)"><span class="step">2</span> Generate</button>
-        <button class="{{ 'on' if active_screen=='review' else '' }}" onclick="go(2,this)"><span class="step">3</span> Review &amp; sign off</button>
-        <button class="{{ 'on' if active_screen=='export' else '' }}" onclick="go(3,this)"><span class="step">4</span> Export &amp; audit</button>
-        <button class="disabled" title="Not built yet — Phase 9"><span class="step">5</span> Compare &amp; verify</button>
-      </nav>
-
-      <main>
-        <!-- SCREEN 1: SPEC -->
-        <section class="screen {{ 'on' if active_screen=='spec' else '' }}">
-          <h2>Load the specification</h2>
-          <p class="hint">Choose an output type and (optionally) upload its input file(s). Leave the upload empty to use the project's sample inputs.</p>
-          <form method="post" action="/parse" enctype="multipart/form-data">
-            <label class="field" for="otype">Output:</label>
-            <select name="otype" id="otype">
-              <option value="sdtm" {% if otype == 'sdtm' %}selected{% endif %}>SDTM (18 domains)</option>
-              <option value="adam" {% if otype == 'adam' or not otype %}selected{% endif %}>ADaM (BDS + ADSL)</option>
-              <option value="tlf"  {% if otype == 'tlf'  %}selected{% endif %}>TLF (tables)</option>
-            </select>
-            <div class="drop">
-              <div>📄</div>
-              <div>
-                <div class="file mono" id="upload-label">ACRF metadata / ADaM spec (.xlsx)</div>
-                <div style="font-size:.78rem;color:var(--slate)" id="upload-hint">Leave blank to use the project's sample inputs.</div>
-              </div>
-              <input type="file" name="spec_file" id="spec_file" accept=".xlsx" style="margin-left:auto">
-            </div>
-            <button type="submit" class="btn primary">Parse spec</button>
-          </form>
-
-          {% if routing %}
-          <div style="margin-top:20px;">
-            {% for section, data in routing.items() %}
-              <h3 style="font-size:.9rem;margin:14px 0 6px;">{{ section }}</h3>
-              <table>
-                <tr><th>Key</th><th>Value</th></tr>
-                {% for k, v in data.items() %}
-                <tr><td class="mono">{{ k }}</td><td>{{ v }}</td></tr>
-                {% endfor %}
-              </table>
-            {% endfor %}
+      <form method="post" action="/parse">
+        <div class="modebar">
+          <span class="seglabel">Mode</span>
+          <div class="seg">
+            <button type="submit" name="mode" value="offline" class="{{ 'on' if t.mode=='offline' else '' }}">Offline</button>
+            <button type="submit" name="mode" value="hybrid" class="{{ 'on' if t.mode=='hybrid' else '' }}">Hybrid</button>
+            <button type="submit" name="mode" value="api" class="{{ 'on' if t.mode=='api' else '' }}">API</button>
           </div>
-          {% endif %}
-        </section>
+          <span class="seglabel">Language</span>
+          <div class="seg lang">
+            <button type="submit" name="lang" value="sas" class="{{ 'on' if t.lang=='sas' else '' }}">SAS</button>
+            <button type="submit" name="lang" value="r" class="{{ 'on' if t.lang=='r' else '' }}">R</button>
+          </div>
+          <span class="privacy {{ t.mode }}">
+            {% if t.mode == 'offline' %}Specs never leave this machine
+            {% elif t.mode == 'api' %}Best quality · specs sent to API
+            {% else %}Drafts local · review via API{% endif %}
+          </span>
+          <input type="hidden" name="otype" value="{{ otype }}">
+          <div class="agents">
+            <span class="agent"><span class="chip {{ 'local' if t.mode != 'api' else 'api' }}"></span><b>Writer</b> <span class="mono">{{ t.writer_model }}</span></span>
+            <span class="agent"><span class="chip {{ 'local' if t.mode == 'offline' else 'api' }}"></span><b>Improver/Reviewer</b> <span class="mono">{{ t.reviewer_model }}</span></span>
+          </div>
+        </div>
+      </form>
 
-        <!-- SCREEN 2: GENERATE -->
-        <section class="screen {{ 'on' if active_screen=='generate' else '' }}">
-          <h2>Generate the program(s)</h2>
-          <p class="hint">Uses the spec parsed in step 1 (same uploaded file, if any). BDS datasets are deterministic — Mode only affects ADSL/SDTM.
-          {% if otype == 'sdtm' %}SDTM's pipeline only has Offline/API today (no true Hybrid) — Hybrid behaves like API here.{% endif %}</p>
-          <form method="post" action="/generate">
-            <input type="hidden" name="otype" value="{{ otype or 'adam' }}">
-            <input type="hidden" name="lang" value="{{ lang or 'sas' }}">
-            <input type="hidden" name="mode" value="{{ mode or 'hybrid' }}">
-            {% if available_domains %}
-            <label class="field" for="domain">Domain:</label>
-            <select name="domain" id="domain">
-              <option value="all" {% if selected_domain == 'all' or not selected_domain %}selected{% endif %}>All domains</option>
-              {% for d in available_domains %}
-              <option value="{{ d }}" {% if selected_domain == d %}selected{% endif %}>{{ d }}</option>
+      <div class="appbody">
+        <nav>
+          <button class="{{ 'on' if t.active_screen=='spec' else '' }}" onclick="go('{{ otype }}',0,this)"><span class="step">1</span> Spec</button>
+          <button class="{{ 'on' if t.active_screen=='generate' else '' }}" onclick="go('{{ otype }}',1,this)"><span class="step">2</span> Generate</button>
+          <button class="{{ 'on' if t.active_screen=='review' else '' }}" onclick="go('{{ otype }}',2,this)"><span class="step">3</span> Review &amp; sign off</button>
+          <button class="{{ 'on' if t.active_screen=='export' else '' }}" onclick="go('{{ otype }}',3,this)"><span class="step">4</span> Export &amp; audit</button>
+          <button class="disabled" title="Not built yet — Phase 9"><span class="step">5</span> Compare &amp; verify</button>
+        </nav>
+
+        <main>
+          <!-- SCREEN 1: SPEC -->
+          <section class="screen {{ 'on' if t.active_screen=='spec' else '' }}">
+            <h2>Load the specification</h2>
+            <p class="hint">{{ upload_hint }}</p>
+            <form method="post" action="/parse" enctype="multipart/form-data">
+              <input type="hidden" name="otype" value="{{ otype }}">
+              <div class="drop">
+                <div>📄</div>
+                <div>
+                  <div class="file mono">{{ upload_label }}</div>
+                  <div style="font-size:.78rem;color:var(--slate)">{{ upload_hint }}</div>
+                </div>
+                <input type="file" name="spec_file" id="spec_file_{{ otype }}" {% if allow_multiple %}multiple{% endif %} accept=".xlsx" style="margin-left:auto">
+              </div>
+              <button type="submit" class="btn primary">Parse spec</button>
+            </form>
+
+            {% if t.routing %}
+            <div style="margin-top:20px;">
+              {% for section, data in t.routing.items() %}
+                <h3 style="font-size:.9rem;margin:14px 0 6px;">{{ section }}</h3>
+                <table>
+                  <tr><th>Key</th><th>Value</th></tr>
+                  {% for k, v in data.items() %}
+                  <tr><td class="mono">{{ k }}</td><td>{{ v }}</td></tr>
+                  {% endfor %}
+                </table>
               {% endfor %}
-            </select>
-            <p class="hint" style="margin:6px 0 12px;">Picking one domain (re)generates just that one, even if it already exists — "All domains" skips ones already done.</p>
+            </div>
             {% endif %}
-            <button type="submit" class="btn primary">Generate {{ (otype or 'adam') | upper }} ({{ (lang or 'sas') | upper }})</button>
-          </form>
-          {% if block_order %}
-          <div class="counts" style="margin-top:16px;color:var(--slate);font-size:.85rem;">
-            Generated {{ block_order | length }} block(s)/file(s) — see Review &amp; sign off.
-          </div>
-          {% endif %}
-        </section>
+          </section>
 
-        <!-- SCREEN 3: REVIEW & SIGN OFF -->
-        <section class="screen {{ 'on' if active_screen=='review' else '' }}">
-          <h2>Review &amp; sign off</h2>
-          <p class="hint">Nothing exports until every block below is approved.</p>
-          {% if note %}<div class="note">{{ note }}</div>{% endif %}
-          <div class="signoff">Signed off: <b>{{ approved }} of {{ total_blocks }}</b> blocks {% if total_blocks and approved == total_blocks %}— ready to export{% endif %}</div>
-          <div class="review">
-            {% for key in block_order %}
-              {% set b = blocks[key] %}
-              <div class="card">
-                <div class="head">
-                  <span class="mono">{{ b.label }}</span>
-                  {% if b.qc == 'FAIL' %}<span class="b qf">QC FLAG</span>
-                  {% elif b.qc == 'PASS' %}<span class="b q">QC PASS</span>
-                  {% else %}<span class="b none">NO QC GATE</span>{% endif %}
-                  {% if b.approved %}<span class="b approved">APPROVED</span>{% endif %}
+          <!-- SCREEN 2: GENERATE -->
+          <section class="screen {{ 'on' if t.active_screen=='generate' else '' }}">
+            <h2>Generate the program(s)</h2>
+            <p class="hint">Uses the spec parsed in step 1 (same uploaded file, if any). {{ domain_note }}</p>
+            <form method="post" action="/generate">
+              <input type="hidden" name="otype" value="{{ otype }}">
+              <input type="hidden" name="lang" value="{{ t.lang }}">
+              <input type="hidden" name="mode" value="{{ t.mode }}">
+              {% if t.available_domains %}
+              <label class="field" for="domain_{{ otype }}">Domain:</label>
+              <select name="domain" id="domain_{{ otype }}">
+                <option value="all" {% if t.selected_domain == 'all' %}selected{% endif %}>All domains</option>
+                {% for d in t.available_domains %}
+                <option value="{{ d }}" {% if t.selected_domain == d %}selected{% endif %}>{{ d }}</option>
+                {% endfor %}
+              </select>
+              <p class="hint" style="margin:6px 0 12px;">Picking one domain (re)generates just that one, even if it already exists — "All domains" skips ones already done.</p>
+              {% endif %}
+              <button type="submit" class="btn primary">Generate {{ label | upper }} ({{ t.lang | upper }})</button>
+            </form>
+            {% if t.block_order %}
+            <div class="counts" style="margin-top:16px;color:var(--slate);font-size:.85rem;">
+              Generated {{ t.block_order | length }} block(s)/file(s) — see Review &amp; sign off.
+            </div>
+            {% endif %}
+          </section>
+
+          <!-- SCREEN 3: REVIEW & SIGN OFF -->
+          <section class="screen {{ 'on' if t.active_screen=='review' else '' }}">
+            <h2>Review &amp; sign off</h2>
+            <p class="hint">Nothing exports until every block below is approved.</p>
+            {% if t.note %}<div class="note">{{ t.note }}</div>{% endif %}
+            <div class="signoff">Signed off: <b>{{ t.approved }} of {{ t.total_blocks }}</b> blocks {% if t.total_blocks and t.approved == t.total_blocks %}— ready to export{% endif %}</div>
+            <div class="review">
+              {% for key in t.block_order %}
+                {% set b = t.blocks[key] %}
+                <div class="card">
+                  <div class="head">
+                    <span class="mono">{{ b.label }}</span>
+                    {% if b.qc == 'FAIL' %}<span class="b qf">QC FLAG</span>
+                    {% elif b.qc == 'PASS' %}<span class="b q">QC PASS</span>
+                    {% else %}<span class="b none">NO QC GATE</span>{% endif %}
+                    {% if b.approved %}<span class="b approved">APPROVED</span>{% endif %}
+                  </div>
+                  <details>
+                    <summary>view code</summary>
+                    <pre class="codepane">{{ b.code }}</pre>
+                  </details>
+                  <div class="acts">
+                    <form class="inline" method="post" action="/approve">
+                      <input type="hidden" name="block_key" value="{{ key }}">
+                      <button type="submit" class="mini ok">{{ 'Approved' if b.approved else 'Approve' }}</button>
+                    </form>
+                    {% if b.kind == 'adsl_var' and b.qc == 'FAIL' %}
+                    <form class="inline" method="post" action="/send_back">
+                      <input type="hidden" name="block_key" value="{{ key }}">
+                      <button type="submit" class="mini">Send back to Improver</button>
+                    </form>
+                    {% endif %}
+                  </div>
                 </div>
-                <details>
-                  <summary>view code</summary>
-                  <pre class="codepane">{{ b.code }}</pre>
-                </details>
-                <div class="acts">
-                  <form class="inline" method="post" action="/approve">
-                    <input type="hidden" name="block_key" value="{{ key }}">
-                    <button type="submit" class="mini ok">{{ 'Approved' if b.approved else 'Approve' }}</button>
-                  </form>
-                  {% if b.kind == 'adsl_var' and b.qc == 'FAIL' %}
-                  <form class="inline" method="post" action="/send_back">
-                    <input type="hidden" name="block_key" value="{{ key }}">
-                    <button type="submit" class="mini">Send back to Improver</button>
-                  </form>
-                  {% endif %}
-                </div>
-              </div>
-            {% else %}
-              <p class="hint">Nothing generated yet — go to step 2.</p>
-            {% endfor %}
-          </div>
-        </section>
+              {% else %}
+                <p class="hint">Nothing generated yet — go to step 2.</p>
+              {% endfor %}
+            </div>
+          </section>
 
-        <!-- SCREEN 4: EXPORT & AUDIT -->
-        <section class="screen {{ 'on' if active_screen=='export' else '' }}">
-          <h2>Export &amp; audit trail</h2>
-          <p class="hint">Every run is logged: when, which mode and language, which models, what was written.</p>
-          {% if note %}<div class="note">{{ note }}</div>{% endif %}
-          <div class="auditrow">
-            <div class="kpi"><div class="n">{{ approved }} / {{ total_blocks }}</div><div class="l">blocks approved</div></div>
-            <div class="kpi"><div class="n">{{ (mode or 'hybrid') | capitalize }}</div><div class="l">mode of record for this run</div></div>
-            <div class="kpi"><div class="n">{{ exported_files | length }}</div><div class="l">file(s) exported</div></div>
-          </div>
-          <form method="post" action="/export" style="margin-bottom:10px;">
-            <button type="submit" class="btn primary" {% if not total_blocks or approved < total_blocks %}disabled{% endif %}>Export program(s)</button>
-          </form>
-          {% if exported_files %}
-          <ul class="mono" style="margin-bottom:14px;font-size:.82rem;color:var(--slate);">
-            {% for f in exported_files %}<li>{{ f }}</li>{% endfor %}
-          </ul>
-          <form method="post" action="/commit">
-            <button type="submit" class="btn ghost">Commit to Git (add, commit, push)</button>
-          </form>
-          {% endif %}
-          {% if last_commit %}
-            <div class="commit-result {{ 'ok' if last_commit.ok else 'fail' }}">{{ last_commit.message }}{% if last_commit.ok %} ({{ last_commit.hash }}){% endif %}</div>
-          {% endif %}
+          <!-- SCREEN 4: EXPORT & AUDIT -->
+          <section class="screen {{ 'on' if t.active_screen=='export' else '' }}">
+            <h2>Export &amp; audit trail</h2>
+            <p class="hint">Every run is logged: when, which mode and language, which models, what was written.</p>
+            {% if t.note %}<div class="note">{{ t.note }}</div>{% endif %}
+            <div class="auditrow">
+              <div class="kpi"><div class="n">{{ t.approved }} / {{ t.total_blocks }}</div><div class="l">blocks approved</div></div>
+              <div class="kpi"><div class="n">{{ t.mode | capitalize }}</div><div class="l">mode of record for this run</div></div>
+              <div class="kpi"><div class="n">{{ t.exported_files | length }}</div><div class="l">file(s) exported</div></div>
+            </div>
+            <form method="post" action="/export" style="margin-bottom:10px;">
+              <input type="hidden" name="otype" value="{{ otype }}">
+              <button type="submit" class="btn primary" {% if not t.total_blocks or t.approved < t.total_blocks %}disabled{% endif %}>Export program(s)</button>
+            </form>
+            {% if t.exported_files %}
+            <ul class="mono" style="margin-bottom:14px;font-size:.82rem;color:var(--slate);">
+              {% for f in t.exported_files %}<li>{{ f }}</li>{% endfor %}
+            </ul>
+            <form method="post" action="/commit">
+              <input type="hidden" name="otype" value="{{ otype }}">
+              <button type="submit" class="btn ghost">Commit to Git (add, commit, push)</button>
+            </form>
+            {% endif %}
+            {% if t.last_commit %}
+              <div class="commit-result {{ 'ok' if t.last_commit.ok else 'fail' }}">{{ t.last_commit.message }}{% if t.last_commit.ok %} ({{ t.last_commit.hash }}){% endif %}</div>
+            {% endif %}
 
-          {% if runlog_rows %}
-          <h3 style="font-size:.9rem;margin:20px 0 8px;">Run log (most recent first)</h3>
-          <table>
-            <tr>{% for col in runlog_rows[0].keys() %}<th>{{ col }}</th>{% endfor %}</tr>
-            {% for row in runlog_rows %}
-            <tr>{% for v in row.values() %}<td class="mono">{{ v }}</td>{% endfor %}</tr>
-            {% endfor %}
-          </table>
-          {% endif %}
-        </section>
-      </main>
+            {% if runlog_rows %}
+            <h3 style="font-size:.9rem;margin:20px 0 8px;">Run log (most recent first, all tabs)</h3>
+            <table>
+              <tr>{% for col in runlog_rows[0].keys() %}<th>{{ col }}</th>{% endfor %}</tr>
+              {% for row in runlog_rows %}
+              <tr>{% for v in row.values() %}<td class="mono">{{ v }}</td>{% endfor %}</tr>
+              {% endfor %}
+            </table>
+            {% endif %}
+          </section>
+        </main>
+      </div>
     </div>
   </div>
+  {% endmacro %}
+
+  <div class="tabbar">
+    <button class="tabbtn {{ 'on' if active_otype == 'adam' else '' }}" data-otype="adam" onclick="goTab('adam')">ADaM</button>
+    <button class="tabbtn {{ 'on' if active_otype == 'sdtm' else '' }}" data-otype="sdtm" onclick="goTab('sdtm')">SDTM</button>
+    <button class="tabbtn {{ 'on' if active_otype == 'tlf' else '' }}" data-otype="tlf" onclick="goTab('tlf')">TLF</button>
+  </div>
+
+  {{ otype_tab('adam', 'adam',
+      'BDS datasets are deterministic — Mode only affects ADSL.',
+      'ACRF metadata and/or an ADaM spec (.xlsx) — either or both',
+      "A file with a 'By Domain' sheet drives BDS datasets; a file with a 'Variables' sheet drives ADSL. Leave blank to use both sample defaults.",
+      false) }}
+  {{ otype_tab('sdtm', 'sdtm',
+      "SDTM's pipeline only has Offline/API today (no true Hybrid) — Hybrid behaves like API here.",
+      'SDTM spec draft (.xlsx)',
+      "Leave blank to use the project's sample SDTM spec.",
+      false) }}
+  {{ otype_tab('tlf', 'tlf',
+      'Tables are deterministic from the mock shell — Mode has no effect here.',
+      'Mock shell(s) (.xlsx)',
+      "Leave blank to use the project's sample shells. Select multiple files for multiple tables.",
+      true) }}
 </div>
 
 <script>
-  const screens = document.querySelectorAll('.screen');
-  const navBtns = document.querySelectorAll('nav button');
-  function go(i, btn){
-    screens.forEach((s,k)=>s.classList.toggle('on', k===i));
-    navBtns.forEach(b=>b.classList.toggle('on', b===btn));
+  function go(otype, i, btn){
+    document.querySelectorAll('.tabpanel[data-otype="' + otype + '"] .screen')
+      .forEach((s,k)=>s.classList.toggle('on', k===i));
+    document.querySelectorAll('.tabpanel[data-otype="' + otype + '"] nav button')
+      .forEach(b=>b.classList.toggle('on', b===btn));
   }
-  const uploadCopy = {
-    sdtm: ["Upload your own SDTM spec draft (.xlsx)",
-           "Leave blank to use the project's sample SDTM spec."],
-    adam: ["Upload ACRF metadata and/or an ADaM spec (.xlsx) — either or both",
-           "A file with a 'By Domain' sheet drives BDS datasets; a file with a 'Variables' sheet drives ADSL. Leave blank to use both sample defaults."],
-    tlf:  ["Upload your own mock shell(s) (.xlsx)",
-           "Leave blank to use the project's sample shells. Select multiple files for multiple tables."],
-  };
-  const otypeEl = document.getElementById("otype");
-  const fileEl = document.getElementById("spec_file");
-  const labelEl = document.getElementById("upload-label");
-  const hintEl = document.getElementById("upload-hint");
-  function syncUploadCopy() {
-    const [label, hint] = uploadCopy[otypeEl.value];
-    labelEl.textContent = label;
-    hintEl.textContent = hint;
-    fileEl.multiple = (otypeEl.value === "tlf");
+  function goTab(otype){
+    document.querySelectorAll('.tabpanel').forEach(p => p.classList.toggle('on', p.dataset.otype === otype));
+    document.querySelectorAll('.tabbtn').forEach(b => b.classList.toggle('on', b.dataset.otype === otype));
   }
-  otypeEl.addEventListener("change", syncUploadCopy);
-  syncUploadCopy();
-
-  // Keep the modebar's own hidden otype field in sync with the Output
-  // dropdown above. Without this, picking e.g. SDTM here but then clicking
-  // a Mode/Language button (a SEPARATE form, submitted before you ever
-  // click "Parse spec") would submit that OTHER form's stale, page-load-time
-  // otype value — silently reverting your Output choice back to whatever it
-  // was before, and the page would re-render with the dropdown visually
-  // snapped back too. Any upload+parse after that would go in under the
-  // wrong otype.
-  const controlformOtype = document.getElementById("controlform-otype");
-  otypeEl.addEventListener("change", () => { controlformOtype.value = otypeEl.value; });
 </script>
 </body>
 </html>
