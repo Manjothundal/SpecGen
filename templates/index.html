@@ -276,6 +276,69 @@
               {% endif %}
             </div>
             {% endif %}
+
+            {% if otype == 'adam' and t.lang == 'sas' %}
+            <div style="margin-top:26px;padding-top:18px;border-top:1px solid var(--line);">
+              <h3 style="font-size:.95rem;margin-bottom:4px;">Bring in an existing program</h3>
+              <p class="hint">Upload an ADSL program from outside SpecGen (no BEGIN/END markers
+                needed) and use the current spec — including any per-variable Comment column —
+                to add missing variables or update ones that already exist. SAS only.</p>
+
+              {% if t.job_status == 'running' and t.job_kind in ('legacy_insert', 'legacy_update') %}
+              <div class="note" style="background:#E2F1F2;border-color:#B7DDE0;display:flex;align-items:center;gap:10px;">
+                <span class="spin">⏳</span> {{ 'Inserting new variables…' if t.job_kind == 'legacy_insert' else 'Locating and updating selected variables…' }}
+              </div>
+
+              {% elif t.legacy_update_preview %}
+                {% set p = t.legacy_update_preview %}
+                <div class="signoff">Preview for: <b class="mono">{{ p.targeted_vars | join(", ") }}</b> — review the diff, edit the program text if needed, then apply.</div>
+                {% if p.diff %}
+                <details style="margin-bottom:10px;">
+                  <summary>view diff</summary>
+                  <pre class="codepane">{{ p.diff }}</pre>
+                </details>
+                {% else %}
+                <p class="hint">The model reported no changes were needed.</p>
+                {% endif %}
+                <form method="post" action="/legacy_apply_update">
+                  <textarea name="program_text" class="mono" style="width:100%;min-height:260px;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:.8rem;margin-bottom:10px;">{{ p.program }}</textarea>
+                  <button type="submit" class="btn primary">Apply update</button>
+                </form>
+                <form method="post" action="/legacy_cancel_update" style="margin-top:8px;">
+                  <button type="submit" class="btn ghost">Cancel</button>
+                </form>
+
+              {% elif t.legacy_classification %}
+                <div class="signoff">Choose which variables to insert as new logic, and/or which
+                  to locate and update in place. Checkboxes are pre-set from a best-effort guess
+                  (does the variable name already appear as an assignment target?) — override
+                  either as needed.</div>
+                <table style="margin-bottom:10px;">
+                  <tr><th>Variable</th><th>Likely already present?</th><th>Insert as new</th><th>Locate &amp; update</th></tr>
+                  {% for c in t.legacy_classification %}
+                  <tr>
+                    <td class="mono">{{ c.variable }}</td>
+                    <td>{{ 'Yes' if c.present_guess else 'No' }}</td>
+                    <td><input type="checkbox" name="insert_var" value="{{ c.variable }}" form="legacyInsertForm" {% if not c.present_guess %}checked{% endif %}></td>
+                    <td><input type="checkbox" name="update_var" value="{{ c.variable }}" form="legacyUpdateForm" {% if c.present_guess %}checked{% endif %}></td>
+                  </tr>
+                  {% endfor %}
+                </table>
+                <form id="legacyInsertForm" class="inline" method="post" action="/legacy_insert">
+                  <button type="submit" class="btn primary">Insert selected as new blocks</button>
+                </form>
+                <form id="legacyUpdateForm" class="inline" method="post" action="/legacy_preview_update">
+                  <button type="submit" class="btn ghost">Preview full update for selected</button>
+                </form>
+
+              {% else %}
+                <form method="post" action="/legacy_upload" enctype="multipart/form-data">
+                  <input type="file" name="legacy_program" accept=".sas" style="margin-right:10px;">
+                  <button type="submit" class="btn ghost">Analyze</button>
+                </form>
+              {% endif %}
+            </div>
+            {% endif %}
           </section>
 
           <!-- SCREEN 2: GENERATE -->

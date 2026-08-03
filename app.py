@@ -61,7 +61,7 @@ from assembler import assemble_adsl, gen_block, clean, known_variables, _r_add_c
 from improver import improve_block
 from reviewer import review_block
 from spec_differ import diff_specs
-from spec_patcher import patch_program
+from spec_patcher import patch_program, locate_and_update, _build_block
 
 app = Flask(__name__)
 
@@ -114,6 +114,13 @@ def _new_otype_state():
                                     # against. None until ADSL has been generated at least once.
         "spec_diff": None,           # ADaM only: pending diff preview, set by /spec_diff
         "pending_spec_v2": None,     # ADaM only: uploaded v2 spec path awaiting /apply_patch
+        "legacy_upload_path": None,     # ADaM only: an uploaded existing (non-SpecGen) SAS
+                                        # program, awaiting classification/action
+        "legacy_classification": None,  # ADaM only: [{"variable","label","present_guess"}, ...]
+                                        # per current spec row, set by /legacy_upload
+        "legacy_update_preview": None,  # ADaM only: {"program", "diff", "targeted_vars"} once
+                                        # /legacy_preview_update has run — nothing is applied to
+                                        # state["programs"] until /legacy_apply_update
     }
 
 
@@ -875,6 +882,265 @@ def cancel_patch():
     state = RUN_STATE["otypes"]["adam"]
     state["spec_diff"] = None
     state["pending_spec_v2"] = None
+    return _render(active_otype="adam")
+
+
+def _classify_legacy_program(program, spec):
+    """Best-effort heuristic ONLY — flags a variable as "likely present" if
+    its name appears as an assignment target (`VAR =`) anywhere in the
+    program. Real legacy code can define a variable through a macro call,
+    different casing, a totally different pattern, or not at all — this is
+    just a starting point for the checkboxes' default state; the UI lets
+    the user override every one of them regardless of the guess."""
+    classification = []
+    for _, row in spec.iterrows():
+        var = row["Variable"]
+        present = bool(re.search(rf'\b{re.escape(var)}\s*=', program, re.IGNORECASE))
+        classification.append({"variable": var, "label": row["Label"], "present_guess": present})
+    return classification
+
+
+@app.route("/legacy_upload", methods=["POST"])
+def legacy_upload():
+    """Bring in an existing (non-SpecGen) ADSL program. Just saves the file
+    and classifies each current spec variable as likely-present/likely-
+    missing — /legacy_insert and /legacy_preview_update are the separate
+    action steps."""
+    state = RUN_STATE["otypes"]["adam"]
+    if state["lang"] != "sas":
+        return _render(active_otype="adam", note_otype="adam",
+                      note="Bringing in an existing program is SAS-only today.")
+
+    files = request.files.getlist("legacy_program")
+    if not files or not files[0].filename:
+        return _render(active_otype="adam", note_otype="adam",
+                      note="Choose an existing .sas program to bring in.")
+
+    legacy_dir = os.path.join(UPLOAD_DIR, "adam_legacy")
+    os.makedirs(legacy_dir, exist_ok=True)
+    legacy_path = os.path.join(legacy_dir, secure_filename(files[0].filename))
+    files[0].save(legacy_path)
+
+    adsl_spec_path = state.get("adsl_spec_path") or ADAM_SPEC
+    if not os.path.exists(adsl_spec_path):
+        return _render(active_otype="adam", note_otype="adam",
+                      note=f"No ADaM spec available to classify against ({adsl_spec_path} not found).")
+
+    try:
+        with open(legacy_path, encoding="utf-8", errors="replace") as f:
+            program = f.read()
+        spec = pd.read_excel(adsl_spec_path, sheet_name="Variables")
+    except Exception as e:
+        return _render(active_otype="adam", note_otype="adam", note=f"Could not read upload or spec: {e}")
+
+    state["legacy_upload_path"] = legacy_path
+    state["legacy_classification"] = _classify_legacy_program(program, spec)
+    return _render(active_otype="adam")
+
+
+def _run_legacy_insert_job(selected_vars, writer_mode, reviewer_mode, use_macros):
+    """Background thread target for /legacy_insert — same non-blocking
+    rationale as _run_generate_job/_run_patch_job. Reuses spec_patcher's
+    _build_block() directly (Comment/Derivation-aware, catalog-aware,
+    QC-reviewed) — identical machinery to spec_patcher's own new-variable
+    path, just appended into an uploaded program instead of one this app
+    already tracked."""
+    state = RUN_STATE["otypes"]["adam"]
+    try:
+        legacy_path = state["legacy_upload_path"]
+        adsl_spec_path = state.get("adsl_spec_path") or ADAM_SPEC
+        with open(legacy_path, encoding="utf-8", errors="replace") as f:
+            program = f.read()
+        spec = pd.read_excel(adsl_spec_path, sheet_name="Variables")
+        available = known_variables(spec)
+
+        new_blocks = {}
+        for var in selected_vars:
+            row = spec[spec["Variable"] == var]
+            if row.empty:
+                continue
+            new_blocks[var] = _build_block(var, row.iloc[0], available, writer_mode, reviewer_mode, use_macros)
+
+        if not new_blocks:
+            state["job_status"] = "error"
+            state["job_note"] = "No valid variables selected to insert."
+            return
+
+        insert_text = "\n\n".join(new_blocks.values())
+        if "  keep " in program:
+            program = program.replace("  keep ", f"{insert_text}\n\n  keep ", 1)
+        else:
+            # No recognizable `keep` statement — this is genuinely arbitrary
+            # uploaded code, not something SpecGen wrote, so there's no safe
+            # assumption about where derivation logic should end. Append at
+            # the end rather than guessing wrong.
+            program = program.rstrip() + "\n\n" + insert_text + "\n"
+
+        state["programs"]["adsl"] = program
+
+        # A previous full-update (see /legacy_apply_update) may have left a
+        # single opaque "file" block for this program — now stale, since the
+        # program just changed underneath it via a different mechanism.
+        stale_key = "adam:adsl_legacy"
+        if stale_key in state["blocks"]:
+            state["blocks"].pop(stale_key, None)
+            if stale_key in state["block_order"]:
+                state["block_order"].remove(stale_key)
+
+        parsed = {b["var"]: b for b in parse_adsl_blocks(program)}
+        for var in new_blocks:
+            b = parsed.get(var)
+            if not b:
+                continue
+            key = f"adam:adsl:{var}"
+            state["blocks"][key] = {"label": var, "code": b["code"], "qc": b["qc"],
+                                    "approved": False, "kind": "adsl_var", "var": var}
+            if key not in state["block_order"]:
+                state["block_order"].append(key)
+
+        _, derived, ex_summary, main_step = route_adsl_spec(spec)
+        state["main_step_rows"] = {r["Variable"]: r.to_dict() for _, r in main_step.iterrows()}
+        state["adsl_available"] = available
+        state["adsl_spec_path"] = adsl_spec_path
+        state["legacy_upload_path"] = None
+        state["legacy_classification"] = None
+        state["exported_files"] = []
+        state["last_commit"] = None
+        state["active_screen"] = "review"
+        state["job_status"] = "done"
+        state["job_note"] = f"Inserted {len(new_blocks)} new variable(s) into the uploaded program."
+    except Exception as e:
+        state["job_status"] = "error"
+        state["job_note"] = f"Insert failed: {e}"
+    finally:
+        _GENERATE_LOCKS["adam"].release()
+
+
+@app.route("/legacy_insert", methods=["POST"])
+def legacy_insert():
+    state = RUN_STATE["otypes"]["adam"]
+    if not state.get("legacy_classification"):
+        return _render(active_otype="adam", note_otype="adam", note="Upload and analyze a program first.")
+
+    selected_vars = request.form.getlist("insert_var")
+    if not selected_vars:
+        return _render(active_otype="adam", note_otype="adam", note="Select at least one variable to insert.")
+
+    lock = _GENERATE_LOCKS["adam"]
+    if not lock.acquire(blocking=False):
+        return _render(active_otype="adam", note_otype="adam",
+                      note="A generation is already running on this tab — wait for it to finish.")
+
+    writer_mode, reviewer_mode = MODE_MAP.get(state["mode"], (None, None))
+    state["job_status"] = "running"
+    state["job_kind"] = "legacy_insert"
+    state["job_note"] = None
+
+    threading.Thread(target=_run_legacy_insert_job,
+                     args=(selected_vars, writer_mode, reviewer_mode, state["use_macros"]),
+                     daemon=True).start()
+
+    return _render(active_otype="adam")
+
+
+def _run_legacy_update_job(target_vars):
+    """Background thread target for /legacy_preview_update. Calls
+    spec_patcher.locate_and_update() once for every selected variable
+    together (see that function's docstring for why batched) — a PREVIEW
+    only, nothing is written to state["programs"] here."""
+    state = RUN_STATE["otypes"]["adam"]
+    try:
+        legacy_path = state["legacy_upload_path"]
+        adsl_spec_path = state.get("adsl_spec_path") or ADAM_SPEC
+        with open(legacy_path, encoding="utf-8", errors="replace") as f:
+            program = f.read()
+        spec = pd.read_excel(adsl_spec_path, sheet_name="Variables")
+
+        new_program, diff = locate_and_update(program, spec, target_vars)
+
+        state["legacy_update_preview"] = {
+            "program": new_program,
+            "diff": "".join(diff),
+            "targeted_vars": target_vars,
+        }
+        state["job_status"] = "done"
+        state["job_note"] = (f"Preview ready for {len(target_vars)} variable(s) — review the "
+                             f"diff and edit the text below before applying.")
+    except Exception as e:
+        state["job_status"] = "error"
+        state["job_note"] = f"Preview failed: {e}"
+    finally:
+        _GENERATE_LOCKS["adam"].release()
+
+
+@app.route("/legacy_preview_update", methods=["POST"])
+def legacy_preview_update():
+    state = RUN_STATE["otypes"]["adam"]
+    if not state.get("legacy_classification"):
+        return _render(active_otype="adam", note_otype="adam", note="Upload and analyze a program first.")
+
+    target_vars = request.form.getlist("update_var")
+    if not target_vars:
+        return _render(active_otype="adam", note_otype="adam", note="Select at least one variable to update.")
+
+    lock = _GENERATE_LOCKS["adam"]
+    if not lock.acquire(blocking=False):
+        return _render(active_otype="adam", note_otype="adam",
+                      note="A generation is already running on this tab — wait for it to finish.")
+
+    state["job_status"] = "running"
+    state["job_kind"] = "legacy_update"
+    state["job_note"] = None
+
+    threading.Thread(target=_run_legacy_update_job, args=(target_vars,), daemon=True).start()
+
+    return _render(active_otype="adam")
+
+
+@app.route("/legacy_apply_update", methods=["POST"])
+def legacy_apply_update():
+    """Commit a previewed full-update — uses whatever text is in the
+    submitted textarea, NOT necessarily state["legacy_update_preview"]'s
+    original proposal, since the user may have hand-edited it (the "live
+    editing" step). The whole program becomes one opaque "file" block (same
+    kind BDS/SDTM/TLF programs already use) rather than forcing per-variable
+    tracking onto content that was never structured that way."""
+    state = RUN_STATE["otypes"]["adam"]
+    preview = state.get("legacy_update_preview")
+    if not preview:
+        return _render(active_otype="adam", note_otype="adam", note="No pending update to apply.")
+
+    edited_program = request.form.get("program_text", preview["program"])
+
+    # A prior normal generate/insert may have left per-variable adsl blocks —
+    # now stale, since this program replaces that content wholesale via a
+    # different (whole-file) mechanism.
+    stale_keys = [k for k in state["block_order"] if k.startswith("adam:adsl:")]
+    for k in stale_keys:
+        state["blocks"].pop(k, None)
+        state["block_order"].remove(k)
+
+    key = "adam:adsl_legacy"
+    state["programs"]["adsl"] = edited_program
+    state["blocks"][key] = {"label": "adsl.sas (uploaded program, updated)", "code": edited_program,
+                            "qc": "NONE", "approved": False, "kind": "file", "var": None}
+    if key not in state["block_order"]:
+        state["block_order"].append(key)
+
+    state["legacy_upload_path"] = None
+    state["legacy_classification"] = None
+    state["legacy_update_preview"] = None
+    state["exported_files"] = []
+    state["last_commit"] = None
+    state["active_screen"] = "review"
+    return _render(active_otype="adam")
+
+
+@app.route("/legacy_cancel_update", methods=["POST"])
+def legacy_cancel_update():
+    """Discard a previewed full-update without applying it."""
+    state = RUN_STATE["otypes"]["adam"]
+    state["legacy_update_preview"] = None
     return _render(active_otype="adam")
 
 

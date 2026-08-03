@@ -407,6 +407,78 @@ the outputs.
             Verified live: correct save-dialog invocation with the right
             suggested filename, both for a plain filename and for one with
             a path separator in it (only the basename is suggested).
+      - [x] Piece 8: Comment column (spec) + "Bring in an existing program"
+            (ADaM tab, SAS only). Two related asks: a free-text Comment column
+            in the spec for per-variable mapping notes/overrides beyond the
+            formal Derivation rule, and the ability to upload a program
+            SpecGen didn't generate — no BEGIN/END markers to rely on — and
+            update it using the spec.
+              - Comment: one change, in prompt_builder.py only. build_prompt()
+                is the single place every variable-level Writer call already
+                goes through (assemble_adsl's main loop, spec_patcher's
+                _build_block, app.py's regenerate_adsl_block) — reading
+                row.get("Comment", "") there and appending an "Additional
+                instructions: ..." line after Derivation (when present; safe
+                no-op for specs without the column) made it available
+                everywhere at once, no other file touched. Verified directly:
+                present/absent renders correctly, both SAS and R.
+              - "Bring in an existing program": upload -> /legacy_upload
+                classifies each current spec variable as likely-present/
+                likely-missing via a best-effort regex heuristic (variable
+                name as an assignment target) — a hint for the checkboxes'
+                default state only, fully overridable, not authoritative
+                (documented as such in the UI). Two independent action paths
+                from there, matching how differently ADSL generation already
+                works for "new" vs. "needs the model to reason about existing
+                code":
+                  - Insert (new logic): reuses spec_patcher._build_block()
+                    verbatim — already Comment/Derivation-aware, catalog-
+                    aware, QC-reviewed — appended before `keep` (or at the
+                    file's end with no assumption made about structure, if no
+                    `keep` is found — genuinely arbitrary uploaded code has no
+                    guaranteed shape). Freshly wrapped in real BEGIN/END
+                    markers, so these merge into state["blocks"] exactly like
+                    spec_patcher's own new-variable path already does.
+                  - Full update (locate + rewrite existing logic): a NEW
+                    spec_patcher.locate_and_update() — one BATCHED model call
+                    (not one per variable) containing the whole uploaded
+                    program plus every selected variable's Derivation/Comment,
+                    asking the model to return the complete program with just
+                    those variables' logic found and rewritten. Kept as a
+                    preview only (diffed via stdlib difflib against the
+                    original) — never touches state["programs"] until the
+                    user explicitly applies it, per their explicit ask for a
+                    review step before anything is committed, not a blind
+                    patch. Verified live with a real API call against a hand-
+                    written 1-variable legacy program: correctly located the
+                    existing (wrong) SAFFL assignment and rewrote it to match
+                    the actual spec rule, diff showing only that one change.
+                    On Apply, since a whole-program rewrite can't produce
+                    clean per-variable markers around content that was never
+                    structured that way, the result becomes a single opaque
+                    "file" block — reusing the *existing* kind:"file" pattern
+                    _rebuild_blocks already uses for BDS/SDTM/TLF programs —
+                    rather than forcing a third block representation onto it;
+                    any stale per-variable blocks from an earlier normal
+                    generate/insert are removed at apply time so Review &
+                    sign off doesn't show duplicate/conflicting entries for
+                    the same file. The diff + an editable `<textarea>`
+                    pre-filled with the proposal (submitted verbatim on
+                    Apply) IS the review step for this path — the "live
+                    editing before applying" the user specifically asked for.
+              - Both action paths run as background jobs (new job_kind values
+                "legacy_insert"/"legacy_update", same _GENERATE_LOCKS/
+                job_status machinery as Generate/patch) for the same reason
+                patch got one: they can call the model, and Flask's single-
+                threaded dev server would otherwise stall on any other
+                request while they ran.
+              - Verified route-level end to end (real Writer/Improver/
+                Reviewer and real API calls, not mocked): upload+classify
+                correctly flags a present variable (SAFFL) vs. a missing one
+                (AGEGR1); insert correctly appends AGEGR1 as a real macro-
+                matched block while leaving the original SAFFL line
+                untouched; apply/cancel correctly replace-vs-discard the
+                preview and clean up stale per-variable blocks.
 
 ## Open items (near-term)
 - Test against a fuller, realistic ADSL spec (60-100+ variables)

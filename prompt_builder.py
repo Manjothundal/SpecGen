@@ -4,6 +4,19 @@ import config
 catalog = load_catalog()
 
 
+def _comment_line(row):
+    """Optional per-variable free-text instruction from a spec's Comment
+    column — supplements Derivation rather than replacing it (mapping notes,
+    overrides, anything the formal derivation rule doesn't capture). Safe
+    for specs without a Comment column at all (row.get returns "" for a
+    pandas Series or plain dict alike) and for pandas' NaN-for-empty-cell
+    convention (same "nan" string check the existing Format handling uses)."""
+    comment = str(row.get("Comment", "")).strip()
+    if not comment or comment.lower() == "nan":
+        return ""
+    return f"Additional instructions: {comment}\n"
+
+
 def build_prompt(row, skip_macro=False, context_vars=None, language=None):
     """Turn one spec row into an instruction for the AI.
 
@@ -43,10 +56,12 @@ NOTE: This macro is validated and handles missing values. Adapt the call for thi
     else:
         macro_section = ""
 
+    comment_line = _comment_line(row)
+
     if language == "sas":
-        return _build_sas_prompt(row, format_line, macro_section, context_vars)
+        return _build_sas_prompt(row, format_line, macro_section, context_vars, comment_line)
     elif language == "r":
-        return _build_r_prompt(row, format_line, context_vars)
+        return _build_r_prompt(row, format_line, context_vars, comment_line)
     else:
         raise ValueError(f"Unknown language: {language!r} (expected 'sas' or 'r')")
 
@@ -55,7 +70,7 @@ NOTE: This macro is validated and handles missing values. Adapt the call for thi
 # SAS prompt body — unchanged from the original build_prompt
 # ---------------------------------------------------------------------------
 
-def _build_sas_prompt(row, format_line, macro_section, context_vars):
+def _build_sas_prompt(row, format_line, macro_section, context_vars, comment_line=""):
     available_vars = context_vars or "all needed SDTM variables (from DM, EX, etc.)"
 
     prompt = f"""You are a senior clinical SAS programmer.
@@ -65,7 +80,7 @@ Variable: {row['Variable']}
 Label: {row['Label']}
 Type: {row['Type']}, Length: {row['Length']}
 {format_line}Derivation rule: {row['Derivation']}
-{macro_section}
+{comment_line}{macro_section}
 Rules:
 - Output ONLY the derivation logic statements (length, label, format, if/then, assignments).
 - Do NOT include data, set, merge, or run statements - the code will be inserted into an existing data step.
@@ -94,7 +109,7 @@ Style rules:
 # R prompt body — plain tidyverse (dplyr), mirrors the SAS derivation logic
 # ---------------------------------------------------------------------------
 
-def _build_r_prompt(row, format_line, context_vars):
+def _build_r_prompt(row, format_line, context_vars, comment_line=""):
     available_vars = context_vars or "all needed SDTM variables (from DM, EX, etc.)"
 
     prompt = f"""You are a senior clinical R programmer working in the tidyverse.
@@ -104,7 +119,7 @@ Variable: {row['Variable']}
 Label: {row['Label']}
 Type: {row['Type']}, Length: {row['Length']}
 {format_line}Derivation rule: {row['Derivation']}
-
+{comment_line}
 Rules:
 - Output ONLY the derivation expression(s) for this one variable — the
   right-hand side(s) that assign it. The code will be inserted inside an

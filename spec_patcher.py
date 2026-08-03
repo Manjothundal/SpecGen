@@ -4,8 +4,9 @@ from reviewer import review_block
 from macro_lookup import load_catalog, find_macro, find_by_pattern
 import pandas as pd
 import re
+import difflib
 from runlog import log_run
-from generator import model_name
+from generator import model_name, generate_api
 import config
 
 catalog = load_catalog()
@@ -129,3 +130,79 @@ def patch_program(program, spec_v1, spec_v2, writer_mode=None, reviewer_mode=Non
     )
 
     return program, diff
+
+
+def _var_instruction(row):
+    """One variable's rule + optional Comment, as plain instruction text
+    (not prompt_builder's per-line format — this is embedded inside a list
+    of several variables in one combined prompt, not a standalone Writer
+    call)."""
+    text = f"Derivation rule: {row['Derivation']}"
+    comment = str(row.get("Comment", "")).strip()
+    if comment and comment.lower() != "nan":
+        text += f"\nAdditional instructions: {comment}"
+    return text
+
+
+def locate_and_update(program, spec, target_vars):
+    """For an EXISTING program this app didn't generate (no BEGIN/END
+    markers to rely on), ask the model to locate each of target_vars'
+    current derivation — wherever and however it's actually written — and
+    rewrite just that logic to match its spec row, in one combined call
+    rather than one round-trip per variable: far cheaper, and more
+    reliable for the model to stay consistent across than N independent
+    edits to code it doesn't already know.
+
+    This is a PREVIEW step only — it never writes anywhere. The caller is
+    expected to diff the result against `program` and let a human review
+    (and hand-edit, if needed) it before anything is actually applied.
+
+    Returns (new_program, diff_lines) — diff_lines is a
+    difflib.unified_diff list, empty if the model reported no changes.
+    """
+    var_blocks = []
+    for var in target_vars:
+        row = spec[spec["Variable"] == var]
+        if row.empty:
+            continue
+        row = row.iloc[0]
+        var_blocks.append(f"- {var} (Label: {row['Label']}, Type: {row['Type']}, "
+                          f"Length: {row['Length']})\n  " + _var_instruction(row).replace("\n", "\n  "))
+    vars_text = "\n".join(var_blocks)
+
+    prompt = f"""You are a senior clinical SAS programmer maintaining an existing SDTM/ADaM program.
+
+Below is the CURRENT program in full. Locate where each of the following
+variables is currently derived — they may exist anywhere in the program,
+under any structure or naming the original author used — and update ONLY
+that logic to match the rule given for it. If a variable isn't derived
+anywhere yet, add it near the most sensible existing similar logic.
+
+Variables to locate and update:
+{vars_text}
+
+Rules:
+- Return the COMPLETE program, start to finish — every line, not just the
+  changed parts.
+- Change ONLY what's needed for the listed variables. Do not reformat,
+  rename, reorder, or otherwise "improve" any other part of the program.
+- Do not add commentary before or after the code. Do not use markdown fences.
+- Preserve the program's existing style and conventions exactly everywhere
+  you are not changing logic.
+
+CURRENT PROGRAM:
+{program}"""
+
+    new_program = generate_api(prompt).strip()
+    if new_program.startswith("```"):
+        new_program = new_program.split("\n", 1)[1] if "\n" in new_program else ""
+    if new_program.endswith("```"):
+        new_program = new_program.rsplit("```", 1)[0]
+    new_program = new_program.strip()
+
+    diff = list(difflib.unified_diff(
+        program.splitlines(keepends=True),
+        new_program.splitlines(keepends=True),
+        fromfile="original", tofile="proposed",
+    ))
+    return new_program, diff
