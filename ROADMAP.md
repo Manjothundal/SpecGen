@@ -392,6 +392,21 @@ the outputs.
             never exported, and a `../../` traversal attempt, both 404).
             Verified live end-to-end: generate -> approve -> export -> click
             Download -> real file, correct content, correct filename.
+            Follow-up: a plain `<a download>` can't choose WHERE the browser
+            saves a file — that's entirely up to the browser's own settings
+            (its configured downloads folder, unless the user separately
+            turned on "always ask" themselves). Changed the Download button
+            to call a new downloadTo() JS helper using the File System
+            Access API (window.showSaveFilePicker()) — a genuine native
+            Save As dialog the user can pick any folder/drive in, same
+            experience as the upload fields' own browse dialog. Chromium-
+            only (Chrome/Edge; Firefox/Safari don't implement this API), so
+            it falls back to a normal browser download — not an error —
+            when unsupported, and to the same fallback if the user cancels
+            vs. any other failure (checked via the picker's own AbortError).
+            Verified live: correct save-dialog invocation with the right
+            suggested filename, both for a plain filename and for one with
+            a path separator in it (only the basename is suggested).
 
 ## Open items (near-term)
 - Test against a fuller, realistic ADSL spec (60-100+ variables)

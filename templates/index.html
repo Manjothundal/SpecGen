@@ -390,8 +390,8 @@
               <div class="card">
                 <div class="head">
                   <span class="mono">{{ f }}</span>
-                  <a class="mini ok" style="text-decoration:none;margin-left:auto;"
-                     href="/download?otype={{ otype }}&path={{ f | urlencode }}">Download</a>
+                  <button type="button" class="mini ok" style="margin-left:auto;"
+                          onclick="downloadTo('/download?otype={{ otype }}&path={{ f | urlencode }}', '{{ f.split('/')[-1].split('\\')[-1] }}')">Download to…</button>
                 </div>
                 <details>
                   <summary>view code</summary>
@@ -461,6 +461,31 @@
   function goTab(otype){
     document.querySelectorAll('.tabpanel').forEach(p => p.classList.toggle('on', p.dataset.otype === otype));
     document.querySelectorAll('.tabbtn').forEach(b => b.classList.toggle('on', b.dataset.otype === otype));
+  }
+
+  // "Download to..." lets the user pick the folder/drive themselves, like
+  // the upload fields let them browse for a file — a plain <a download>
+  // can't do that; the browser alone decides where it lands (its configured
+  // downloads folder, unless the user separately enabled "always ask" in
+  // their own browser settings). window.showSaveFilePicker() is the real
+  // native Save As dialog, but it's Chromium-only (Chrome/Edge) — Firefox
+  // and Safari don't implement it, so this falls back to a normal browser
+  // download (whatever the browser itself decides) rather than failing.
+  async function downloadTo(url, suggestedName) {
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({ suggestedName });
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('Download failed: ' + resp.status);
+        const writable = await handle.createWritable();
+        await resp.body.pipeTo(writable);
+        return;
+      } catch (e) {
+        if (e.name === 'AbortError') return;  // user cancelled the picker — not an error
+        console.error('Save As failed, falling back to a normal download:', e);
+      }
+    }
+    window.location.href = url;
   }
 
   // Generation runs in a background thread on the server (see app.py's
