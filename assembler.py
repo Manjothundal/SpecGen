@@ -43,12 +43,20 @@ def gen_block(row, skip_macro=False, language=None, writer_mode=None):
 # pair). None falls back to config.WRITER/config.REVIEWER, same as today.
 # ---------------------------------------------------------------------------
 
-def assemble_adsl(spec, derived, ex_summary, main_step, language=None, writer_mode=None, reviewer_mode=None):
+def assemble_adsl(spec, derived, ex_summary, main_step, language=None, writer_mode=None,
+                  reviewer_mode=None, cancel_event=None):
+    """cancel_event: optional threading.Event — checked once per variable in the
+    main-step loop so a slow ADSL run (up to 3 model calls per variable) can be
+    aborted between variables. The partial program returned on abort keeps
+    whatever variables finished; unfinished ones are simply absent from the
+    output (the trailing keep/select list still names every spec variable, so
+    a partial program won't run as-is in SAS/R — that's expected, matching how
+    a partial SDTM abort leaves some domains unfinished too)."""
     language = (language or config.LANGUAGE).lower()
     if language == "sas":
-        return _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode, reviewer_mode)
+        return _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode, reviewer_mode, cancel_event)
     elif language == "r":
-        return _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode, reviewer_mode)
+        return _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode, reviewer_mode, cancel_event)
     else:
         raise ValueError(f"Unknown language: {language!r} (expected 'sas' or 'r')")
 
@@ -57,7 +65,7 @@ def assemble_adsl(spec, derived, ex_summary, main_step, language=None, writer_mo
 # SAS PATH — unchanged from the original assemble_adsl
 # ===========================================================================
 
-def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None):
+def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None, cancel_event=None):
     parts = []
 
     # ---- Header
@@ -211,6 +219,9 @@ def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, r
     # main-step derived variables, in spec Order
     available = known_variables(spec)
     for i, row in main_step.sort_values("Order").iterrows():
+        if cancel_event is not None and cancel_event.is_set():
+            parts.append(f"/* -- generation aborted by user before variable {row['Variable']} -- */")
+            break
         # Skip variables already derived as macro side effects
         if row["Variable"] in MACRO_SIDE_EFFECTS:
             print("Side effect (skipped):", row["Variable"])
@@ -379,7 +390,7 @@ mh_summary <- mh |>
   )'''
 
 
-def _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None):
+def _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None, cancel_event=None):
     parts = []
 
     # ---- Header + libraries
@@ -413,6 +424,9 @@ def _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode=None, rev
     # ---- main-step derived variables, in spec Order (each an inner mutate expr)
     available = known_variables(spec)
     for i, row in main_step.sort_values("Order").iterrows():
+        if cancel_event is not None and cancel_event.is_set():
+            parts.append(f"    # -- generation aborted by user before variable {row['Variable']} -- #")
+            break
         if row["Variable"] in MACRO_SIDE_EFFECTS:
             print("Side effect (skipped):", row["Variable"])
             continue

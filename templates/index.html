@@ -153,6 +153,11 @@
   .commit-result.fail{background:var(--red-bg); color:var(--red);}
 
   form.inline{display:inline;}
+
+  .generating-block .note{display:flex; align-items:center; gap:10px;}
+  .spin{display:inline-block; animation:spin 1.4s linear infinite;}
+  @keyframes spin{from{transform:rotate(0deg);} to{transform:rotate(360deg);}}
+  .job-note-text{color:var(--slate); font-size:.82rem; margin-left:auto;}
 </style>
 </head>
 <body>
@@ -239,25 +244,43 @@
           </section>
 
           <!-- SCREEN 2: GENERATE -->
-          <section class="screen {{ 'on' if t.active_screen=='generate' else '' }}">
+          <section class="screen {{ 'on' if t.active_screen=='generate' else '' }}" data-job-status="{{ t.job_status }}">
             <h2>Generate the program(s)</h2>
             <p class="hint">Uses the spec parsed in step 1 (same uploaded file, if any). {{ domain_note }}</p>
-            <form method="post" action="/generate">
-              <input type="hidden" name="otype" value="{{ otype }}">
-              <input type="hidden" name="lang" value="{{ t.lang }}">
-              <input type="hidden" name="mode" value="{{ t.mode }}">
-              {% if t.available_domains %}
-              <label class="field" for="domain_{{ otype }}">Domain:</label>
-              <select name="domain" id="domain_{{ otype }}">
-                <option value="all" {% if t.selected_domain == 'all' %}selected{% endif %}>All domains</option>
-                {% for d in t.available_domains %}
-                <option value="{{ d }}" {% if t.selected_domain == d %}selected{% endif %}>{{ d }}</option>
-                {% endfor %}
-              </select>
-              <p class="hint" style="margin:6px 0 12px;">Picking one domain (re)generates just that one, even if it already exists — "All domains" skips ones already done.</p>
+
+            <div class="generating-block" style="{{ '' if t.job_status == 'running' else 'display:none;' }}">
+              <div class="note" style="background:#E2F1F2;border-color:#B7DDE0;">
+                <span class="spin">⏳</span> Generating {{ label | upper }} ({{ t.lang | upper }})…
+                <span class="job-note-text">{{ t.job_note or '' }}</span>
+              </div>
+              <form method="post" action="/abort">
+                <input type="hidden" name="otype" value="{{ otype }}">
+                <button type="submit" class="btn ghost">Abort</button>
+              </form>
+            </div>
+
+            <div class="generate-form-block" style="{{ 'display:none;' if t.job_status == 'running' else '' }}">
+              {% if t.job_status == 'aborted' or t.job_status == 'error' %}
+              <div class="note">{{ t.job_note }}</div>
               {% endif %}
-              <button type="submit" class="btn primary">Generate {{ label | upper }} ({{ t.lang | upper }})</button>
-            </form>
+              <form method="post" action="/generate">
+                <input type="hidden" name="otype" value="{{ otype }}">
+                <input type="hidden" name="lang" value="{{ t.lang }}">
+                <input type="hidden" name="mode" value="{{ t.mode }}">
+                {% if t.available_domains %}
+                <label class="field" for="domain_{{ otype }}">Domain:</label>
+                <select name="domain" id="domain_{{ otype }}">
+                  <option value="all" {% if t.selected_domain == 'all' %}selected{% endif %}>All domains</option>
+                  {% for d in t.available_domains %}
+                  <option value="{{ d }}" {% if t.selected_domain == d %}selected{% endif %}>{{ d }}</option>
+                  {% endfor %}
+                </select>
+                <p class="hint" style="margin:6px 0 12px;">Picking one domain (re)generates just that one, even if it already exists — "All domains" skips ones already done.</p>
+                {% endif %}
+                <button type="submit" class="btn primary">Generate {{ label | upper }} ({{ t.lang | upper }})</button>
+              </form>
+            </div>
+
             {% if t.block_order %}
             <div class="counts" style="margin-top:16px;color:var(--slate);font-size:.85rem;">
               Generated {{ t.block_order | length }} block(s)/file(s) — see Review &amp; sign off.
@@ -382,6 +405,28 @@
     document.querySelectorAll('.tabpanel').forEach(p => p.classList.toggle('on', p.dataset.otype === otype));
     document.querySelectorAll('.tabbtn').forEach(b => b.classList.toggle('on', b.dataset.otype === otype));
   }
+
+  // Generation runs in a background thread on the server (see app.py's
+  // _run_generate_job) — the page that comes back from POST /generate just
+  // shows a "generating..." state, not the finished result. Poll each tab
+  // whose Generate screen loaded in that state until the server reports it's
+  // no longer running, then reload to pick up the real result (new Review
+  // screen, or an abort/error note) — same reload-on-change approach as the
+  // rest of this app (no client-side DOM patching anywhere else either).
+  document.querySelectorAll('.screen[data-job-status="running"]').forEach(screen => {
+    const otype = screen.closest('.tabpanel').dataset.otype;
+    const poll = setInterval(() => {
+      fetch('/job_status?otype=' + otype)
+        .then(r => r.json())
+        .then(data => {
+          if (data.status !== 'running') {
+            clearInterval(poll);
+            window.location.reload();
+          }
+        })
+        .catch(() => {});  // transient fetch error — just try again next tick
+    }, 2000);
+  });
 </script>
 </body>
 </html>

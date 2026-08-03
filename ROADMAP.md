@@ -173,6 +173,8 @@ the outputs.
               - Progress is synchronous by design (click Generate, wait, see the
                 finished result) — true live per-variable streaming would need a
                 background job + SSE/polling, deferred as a future enhancement.
+                (Generate itself became a background job in Piece 6 below, for
+                Abort's sake — per-variable progress detail is still deferred.)
               - Known asymmetry: SDTM's pipeline only has a binary use_api flag (no
                 true Hybrid) — the Mode switcher maps Hybrid to the same behavior as
                 API for SDTM. Rearchitecting SDTM's pipeline to a real 3-mode model is
@@ -204,6 +206,50 @@ the outputs.
             (parse+generate SDTM, then parse ADaM, confirmed SDTM's routing/
             available_domains/mode were untouched) and a live curl smoke test of
             parse/generate against all 3 tabs on the running server.
+      - [x] Piece 6: Abort button on the Generate screen. Required turning
+            /generate from a blocking request into a background-thread job per
+            tab (`_run_generate_job`, tracked in `_JOB_CTRL[otype]`) — a request
+            handler stuck in subprocess.run()/assemble_adsl() for minutes can't
+            also service a separate /abort POST meant to interrupt it, so
+            /generate now just starts the thread and returns immediately
+            (confirmed live: 47ms response), and the Generate screen polls
+            `/job_status?otype=...` every 2s while running, reloading once the
+            job leaves "running". Each otype cancels differently since only one
+            of the three actually spawns an OS process:
+              - SDTM: generate_sdtm switched from `subprocess.run()` to `Popen`
+                so the live process handle can be stored in `_JOB_CTRL[otype]
+                ["proc"]` and `.terminate()`d immediately from /abort. Also
+                switched stdout/stderr from `capture_output=True` (a pipe) to a
+                disk-backed `tempfile.TemporaryFile` — sdtm_assembler's per-
+                variable progress printing over a multi-minute run can exceed
+                the ~64KB OS pipe buffer, and an undrained Popen pipe deadlocks
+                the child the moment that fills; a file never applies that
+                backpressure. Found and fixed a real race during testing: since
+                /abort's terminate() call comes from a different thread than
+                generate_sdtm's own poll loop, `while proc.poll() is None`
+                could exit (process already dead) before the loop body ever
+                ran again to notice `cancel_event` was set — misreporting a
+                clean abort as "sdtm_assembler failed partway through." Fixed
+                by checking `cancel_event` once more after the loop
+                unconditionally, not only inside it.
+              - ADaM: assemble_adsl (both SAS and R paths in assembler.py) takes
+                an optional `cancel_event`, checked once per variable at the
+                top of the main-step loop — up to 3 model calls per variable,
+                so checking between variables (not mid-call) was the natural
+                granularity. Verified directly (no server involved): calling
+                assemble_adsl with a pre-set cancel_event returns instantly
+                with zero model calls and an "aborted before variable X"
+                marker in the output.
+              - TLF: generate_tlf checks cancel_event between shells — mostly
+                symmetry, since BDS/TLF generation is fast deterministic string
+                templates with little to abort in practice.
+            Whatever finished before an abort is kept (same partial-result
+            philosophy as the existing SDTM timeout handling) — the tab lands
+            on the Review screen with just the completed items instead of
+            nothing. Verified live end-to-end: started an SDTM run, polled
+            /job_status mid-run, aborted, confirmed the tab recovered to
+            job_status "aborted" with a partial-results note and no dangling
+            lock (next Generate click worked immediately, not blocked).
 
 ## Open items (near-term)
 - Test against a fuller, realistic ADSL spec (60-100+ variables)

@@ -36,6 +36,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime
 
 # assembler.py's gen_block/improve_block/review_block print progress messages
@@ -49,7 +50,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 import pandas as pd
 import openpyxl
-from flask import Flask, render_template, request
+from flask import Flask, jsonify, render_template, request
 from werkzeug.utils import secure_filename
 
 import bds_assembler as bds
@@ -97,6 +98,8 @@ def _new_otype_state():
         "selected_domain": "all",  # "all", or one specific domain/dataset name
         "active_screen": "spec",   # which of the 4 steps this tab currently shows
         "note": None,               # last message shown on this tab, if any
+        "job_status": "idle",       # idle | running | done | aborted | error
+        "job_note": None,           # shown on the Generate screen while running/after abort
     }
 
 
@@ -121,6 +124,17 @@ UPLOAD_DIR = tempfile.mkdtemp(prefix="specgen_run_")
 # on top of the first instead of just waiting for it. One lock per tab, so
 # a slow SDTM run doesn't block clicking Generate on the ADaM tab.
 _GENERATE_LOCKS = {ot: threading.Lock() for ot in OTYPES}
+
+# Generation runs in a background thread per tab (see _run_generate_job) so
+# the /generate request returns immediately instead of blocking for minutes —
+# that's what makes a real Abort button possible: an /abort POST is a normal,
+# fast request the (single-threaded) dev server can service right away
+# because the worker thread doing the slow work isn't tied up in a request
+# handler. cancel_event is checked cooperatively (SDTM's subprocess is killed
+# outright; ADaM's per-variable ADSL loop and TLF's per-shell loop check it
+# between iterations). proc holds SDTM's live subprocess.Popen, if any, so
+# /abort can terminate it immediately rather than waiting for a poll.
+_JOB_CTRL = {ot: {"cancel_event": threading.Event(), "proc": None} for ot in OTYPES}
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +237,7 @@ def _adam_available_datasets(acrf_path, adsl_spec_path):
 # Generators
 # ---------------------------------------------------------------------------
 
-def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all"):
+def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all", cancel_event=None):
     """Return (programs, adsl_context). programs: {name: code}. adsl_context
     is {"main_step_rows": {...}, "available": [...]} when ADSL was generated,
     else None (used later for "send back to Improver").
@@ -232,8 +246,15 @@ def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all")
     other value (a specific dataset name — advs/adlb/adeg/adtr/adae/adcm/
     adrs/adtte/adsl) generates only that one dataset, skipping the rest
     entirely rather than generating everything and discarding it.
+
+    cancel_event: optional threading.Event for the Abort button. BDS datasets
+    are near-instant string templates, so it's only checked between them for
+    consistency; ADSL is where it matters — its Writer/Improver/Reviewer loop
+    (up to 3 model calls per variable) checks it once per variable via
+    assemble_adsl's own cancel_event param.
     """
     domain = (domain or "all").lower()
+    cancelled = lambda: cancel_event is not None and cancel_event.is_set()
 
     def want(name):
         return domain in ("all", name)
@@ -249,6 +270,8 @@ def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all")
 
         for dom, src, code in [("VS", "vs", "ADVS"), ("LB", "lb", "ADLB"),
                                ("EG", "eg", "ADEG"), ("TR", "tr", "ADTR")]:
+            if cancelled():
+                return out, adsl_context
             if dom not in present or not want(code.lower()):
                 continue
             try:
@@ -276,12 +299,12 @@ def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all")
                 out.pop("adrs", None)
 
     adsl_spec_path = adsl_spec_path or ADAM_SPEC
-    if want("adsl") and os.path.exists(adsl_spec_path):
+    if not cancelled() and want("adsl") and os.path.exists(adsl_spec_path):
         spec = pd.read_excel(adsl_spec_path, sheet_name="Variables")
         _, derived, ex_summary, main_step = route_adsl_spec(spec)
         out["adsl"] = assemble_adsl(spec, derived, ex_summary, main_step,
                                     language=lang, writer_mode=writer_mode,
-                                    reviewer_mode=reviewer_mode)
+                                    reviewer_mode=reviewer_mode, cancel_event=cancel_event)
         adsl_context = {
             "main_step_rows": {row["Variable"]: row.to_dict()
                               for _, row in main_step.iterrows()},
@@ -291,7 +314,7 @@ def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all")
     return out, adsl_context
 
 
-def generate_tlf(lang, shells=None, domain="all"):
+def generate_tlf(lang, shells=None, domain="all", cancel_event=None):
     """Return dict {name: code} for each shell (uploaded, or the sample shells).
 
     domain: "all" (default), or one specific shell's table_id (e.g. "14.1.1")
@@ -300,6 +323,8 @@ def generate_tlf(lang, shells=None, domain="all"):
     domain = (domain or "all").lower()
     out = {}
     for shell in (shells or SHELLS):
+        if cancel_event is not None and cancel_event.is_set():
+            break
         if not os.path.exists(shell):
             continue
         meta, _ = tlf._read_shell(shell)
@@ -310,7 +335,7 @@ def generate_tlf(lang, shells=None, domain="all"):
     return out
 
 
-def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False):
+def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False, ctrl=None):
     """Run sdtm_assembler.py as a subprocess, then read the .sas/.R files back.
 
     sdtm_assembler.py skips domains whose output file already exists unless
@@ -329,12 +354,18 @@ def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False)
     SDTM's pipeline only has a binary use_api flag today (no true Hybrid, this
     is a known asymmetry with ADSL) — Offline stays local-only; Hybrid and API
     both map to use_api=True since that's the only "reviewed" option SDTM has.
+
+    ctrl: optional {"cancel_event": threading.Event, "proc": None} dict shared
+    with the route layer's /abort handler — this function stores the live
+    Popen in ctrl["proc"] the moment it starts so /abort can terminate() it
+    immediately (SDTM is the one otype whose generation is a real OS process,
+    so it's the one that can be killed outright rather than just stopped
+    between iterations).
     """
     domain = (domain or "all").upper() if domain != "all" else "all"
     single_domain_forced = domain != "all"
     force = single_domain_forced or (spec_path is not None and force_pending)
     spec_path = spec_path or SDTM_SPEC
-    out = {}
     if not os.path.exists(spec_path):
         return {"(error)": f"{spec_path} not found in project folder."}
 
@@ -354,9 +385,9 @@ def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False)
 
     def read_back():
         """Domains are written to disk one at a time as the subprocess works
-        through them, so even a timeout/crash partway through still leaves
-        real, valid files for whatever finished — read those back instead of
-        discarding everything."""
+        through them, so even a timeout/crash/abort partway through still
+        leaves real, valid files for whatever finished — read those back
+        instead of discarding everything."""
         found = {}
         for d in domains:
             path = os.path.join("sdtm_programs", f"{d.lower()}.{ext}")
@@ -376,10 +407,58 @@ def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False)
     # testing — 10 minutes was nowhere near enough and threw away every
     # domain that DID finish. Scale with domain count instead of a flat cap.
     timeout_s = max(600, 150 * (len(domains if single_domain_forced else all_domains) + 6))
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        partial = read_back()
+
+    # stdout/stderr go to a real disk-backed temp file, not a pipe: sdtm_assembler
+    # prints progress per variable/domain, which over a multi-minute run can
+    # exceed the OS pipe buffer (~64KB) — a plain Popen(..., stdout=PIPE) that
+    # isn't drained concurrently would then deadlock the child the first time
+    # its write() blocks. A file never applies that backpressure.
+    log_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+    proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, text=True)
+    if ctrl is not None:
+        ctrl["proc"] = proc
+
+    start = time.time()
+    while proc.poll() is None:
+        if ctrl is not None and ctrl["cancel_event"].is_set():
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            break
+        if time.time() - start > timeout_s:
+            break  # still running past the timeout — handled below, not aborted
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+
+    # Checked AFTER the loop, not just inside it: /abort can terminate() the
+    # process directly from a different thread (for an instant kill rather
+    # than waiting for this loop's next 1s poll tick), which can make
+    # `proc.poll() is None` go false and exit the while loop on its condition
+    # before the body ever runs again to notice cancel_event was set.
+    aborted = ctrl is not None and ctrl["cancel_event"].is_set()
+
+    if ctrl is not None:
+        ctrl["proc"] = None
+
+    partial = read_back()
+    if aborted:
+        partial["(note)"] = (f"Aborted by user with {len(partial)} of {len(domains)} "
+                             f"domain(s) done — showing what finished. Generate again to "
+                             f"pick up the rest (already-done domains are skipped unless "
+                             f"you re-upload).")
+        return partial
+    if proc.poll() is None:  # still running past timeout_s and not aborted
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
         if partial:
             partial["(note)"] = (f"Timed out after {timeout_s}s with {len(partial)} of "
                                  f"{len(domains)} domains done — showing what finished. "
@@ -387,14 +466,15 @@ def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False)
                                  f"are skipped unless you re-upload).")
             return partial
         return {"(error)": f"Timed out after {timeout_s}s with no domains completed yet."}
-    except subprocess.CalledProcessError as e:
-        partial = read_back()
+    if proc.returncode != 0:
         if partial:
-            partial["(note)"] = f"sdtm_assembler failed partway through — showing what finished."
+            partial["(note)"] = "sdtm_assembler failed partway through — showing what finished."
             return partial
-        return {"(error)": f"sdtm_assembler failed:\n{e.stderr}"}
+        log_file.seek(0)
+        log_tail = log_file.read()[-4000:]
+        return {"(error)": f"sdtm_assembler failed:\n{log_tail}"}
 
-    return read_back()
+    return partial
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +697,55 @@ def parse_spec():
     return _render(active_otype=otype)
 
 
+def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending):
+    """Background thread target for /generate. Doing the (potentially slow)
+    generation work off the request thread is what makes /abort possible —
+    a request handler that's blocked in subprocess.run()/assemble_adsl() for
+    minutes can't also service the separate /abort POST that's supposed to
+    interrupt it; a request that just starts this thread and returns can.
+    Releases this otype's _GENERATE_LOCKS entry when done (acquired by the
+    /generate route before starting the thread)."""
+    state = RUN_STATE["otypes"][otype]
+    ctrl = _JOB_CTRL[otype]
+    try:
+        adsl_context = None
+        if otype == "adam":
+            acrf_path, adsl_spec_path = _classify_adam_uploads(uploaded)
+            programs, adsl_context = generate_adam(lang, mode, acrf_path, adsl_spec_path,
+                                                    domain=domain, cancel_event=ctrl["cancel_event"])
+        elif otype == "tlf":
+            programs = generate_tlf(lang, shells=uploaded or None, domain=domain,
+                                    cancel_event=ctrl["cancel_event"])
+        else:
+            programs = generate_sdtm(lang, mode, spec_path=uploaded[0] if uploaded else None,
+                                     domain=domain, force_pending=force_pending, ctrl=ctrl)
+
+        result_note = programs.pop("(note)", None) if isinstance(programs, dict) else None
+
+        state["programs"] = programs
+        state["exported_files"] = []
+        state["last_commit"] = None
+        _rebuild_blocks(state, otype, programs, adsl_context)
+        state["active_screen"] = "review"
+
+        if ctrl["cancel_event"].is_set():
+            state["job_status"] = "aborted"
+            state["job_note"] = result_note or "Generation aborted by user."
+        else:
+            state["job_status"] = "done"
+            state["job_note"] = result_note
+    except Exception as e:
+        # An uploaded file can be almost anything (wrong sheet names, wrong
+        # shape, corrupted) — surface that as a normal in-app note instead of
+        # an unhandled exception in a background thread (which Flask would
+        # never see), and leave any earlier successful run's blocks/programs
+        # alone rather than partially overwriting them.
+        state["job_status"] = "error"
+        state["job_note"] = f"Generation failed: {e}"
+    finally:
+        _GENERATE_LOCKS[otype].release()
+
+
 @app.route("/generate", methods=["POST"])
 def generate():
     otype = _otype_from_request()
@@ -625,47 +754,59 @@ def generate():
     if not lock.acquire(blocking=False):
         return _render(active_otype=otype, note_otype=otype,
                       note="A generation is already running — please wait for it "
-                          "to finish instead of clicking Generate again. Large specs "
-                          "with --force (an uploaded spec) can legitimately take "
-                          "several minutes with no progress shown.")
-    try:
-        mode = request.form.get("mode", state["mode"])
-        lang = request.form.get("lang", state["lang"])
-        domain = request.form.get("domain", "all") or "all"
-        state["mode"] = mode
-        state["lang"] = lang
-        state["selected_domain"] = domain
-        note = None
+                          "to finish, or use Abort, instead of clicking Generate again.")
 
-        uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
-        adsl_context = None
-        try:
-            if otype == "adam":
-                acrf_path, adsl_spec_path = _classify_adam_uploads(uploaded)
-                programs, adsl_context = generate_adam(lang, mode, acrf_path, adsl_spec_path, domain=domain)
-            elif otype == "tlf":
-                programs = generate_tlf(lang, shells=uploaded or None, domain=domain)
-            else:
-                force_pending = state["sdtm_force_pending"]
-                state["sdtm_force_pending"] = False
-                programs = generate_sdtm(lang, mode, spec_path=uploaded[0] if uploaded else None,
-                                         domain=domain, force_pending=force_pending)
-        except Exception as e:
-            # An uploaded file can be almost anything (wrong sheet names, wrong
-            # shape, corrupted) — surface that as a normal in-app error instead
-            # of a raw Flask traceback page, and leave any earlier successful
-            # run's blocks/programs alone rather than partially overwriting them.
-            return _render(active_otype=otype, note_otype=otype, note=f"Generation failed: {e}")
+    mode = request.form.get("mode", state["mode"])
+    lang = request.form.get("lang", state["lang"])
+    domain = request.form.get("domain", "all") or "all"
+    state["mode"] = mode
+    state["lang"] = lang
+    state["selected_domain"] = domain
 
-        state["programs"] = programs
-        state["exported_files"] = []
-        state["last_commit"] = None
-        _rebuild_blocks(state, otype, programs, adsl_context)
-        state["active_screen"] = "review"
-    finally:
-        lock.release()
+    # Uploaded files only exist on request.files for THIS request, so they
+    # must be saved to disk here, synchronously, before the background
+    # thread starts — the thread only gets back plain file paths.
+    uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
+    force_pending = state["sdtm_force_pending"]
+    state["sdtm_force_pending"] = False
 
-    return _render(active_otype=otype, note_otype=otype, note=note)
+    ctrl = _JOB_CTRL[otype]
+    ctrl["cancel_event"].clear()
+    ctrl["proc"] = None
+    state["job_status"] = "running"
+    state["job_note"] = None
+
+    threading.Thread(target=_run_generate_job,
+                     args=(otype, lang, mode, domain, uploaded, force_pending),
+                     daemon=True).start()
+
+    return _render(active_otype=otype)
+
+
+@app.route("/abort", methods=["POST"])
+def abort():
+    otype = _otype_from_request()
+    ctrl = _JOB_CTRL[otype]
+    ctrl["cancel_event"].set()
+    proc = ctrl["proc"]
+    if proc is not None and proc.poll() is None:
+        proc.terminate()  # SDTM only — ADaM/TLF notice cancel_event cooperatively instead
+
+    state = RUN_STATE["otypes"][otype]
+    if state["job_status"] == "running":
+        state["job_note"] = "Aborting — finishing up the current step…"
+    return _render(active_otype=otype)
+
+
+@app.route("/job_status", methods=["GET"])
+def job_status():
+    """Polled by the Generate screen while a job is running, so the page can
+    flip to the finished Review screen (or show the abort/error note) without
+    the user needing to refresh manually."""
+    otype = request.args.get("otype", "adam")
+    otype = otype if otype in OTYPES else "adam"
+    state = RUN_STATE["otypes"][otype]
+    return jsonify(status=state["job_status"], note=state["job_note"])
 
 
 @app.route("/approve", methods=["POST"])
