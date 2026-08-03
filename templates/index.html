@@ -237,6 +237,16 @@
             <input type="hidden" name="otype" value="{{ otype or 'adam' }}">
             <input type="hidden" name="lang" value="{{ lang or 'sas' }}">
             <input type="hidden" name="mode" value="{{ mode or 'hybrid' }}">
+            {% if available_domains %}
+            <label class="field" for="domain">Domain:</label>
+            <select name="domain" id="domain">
+              <option value="all" {% if selected_domain == 'all' or not selected_domain %}selected{% endif %}>All domains</option>
+              {% for d in available_domains %}
+              <option value="{{ d }}" {% if selected_domain == d %}selected{% endif %}>{{ d }}</option>
+              {% endfor %}
+            </select>
+            <p class="hint" style="margin:6px 0 12px;">Picking one domain (re)generates just that one, even if it already exists — "All domains" skips ones already done.</p>
+            {% endif %}
             <button type="submit" class="btn primary">Generate {{ (otype or 'adam') | upper }} ({{ (lang or 'sas') | upper }})</button>
           </form>
           {% if block_order %}

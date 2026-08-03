@@ -85,6 +85,8 @@ RUN_STATE = {
     "uploaded_for_otype": None,  # which otype uploaded_paths belongs to
     "sdtm_force_pending": False,  # a fresh upload just arrived -> force SDTM's next
                                   # generate once, not every generate for that upload
+    "available_domains": [],  # domain/dataset choices for the current otype+spec
+    "selected_domain": "all",  # "all", or one specific domain/dataset name
 }
 
 # Uploads are saved here once per run and reused across the Spec -> Generate
@@ -172,14 +174,53 @@ def route_adsl_spec(spec):
     return copies, derived, ex_summary, main_step
 
 
+# SDTM domain -> BDS dataset name, same presence logic generate_adam() uses.
+BDS_FINDINGS_MAP = [("VS", "advs"), ("LB", "adlb"), ("EG", "adeg"), ("TR", "adtr")]
+
+
+def _adam_available_datasets(acrf_path, adsl_spec_path):
+    """Which ADaM datasets this spec pair can actually produce — same
+    domain-presence checks generate_adam() uses, so the picker only offers
+    choices that will really generate something."""
+    available = []
+    acrf_path = acrf_path or ACRF
+    if os.path.exists(acrf_path):
+        acrf = pd.read_excel(acrf_path, sheet_name="By Domain")
+        present = set(acrf["Domain"].unique())
+        for dom, name in BDS_FINDINGS_MAP:
+            if dom in present:
+                available.append(name)
+        if "AE" in present:
+            available.append("adae")
+        if "CM" in present:
+            available.append("adcm")
+        if "RS" in present:
+            available.extend(["adrs", "adtte"])
+    adsl_spec_path = adsl_spec_path or ADAM_SPEC
+    if os.path.exists(adsl_spec_path):
+        available.append("adsl")
+    return available
+
+
 # ---------------------------------------------------------------------------
 # Generators
 # ---------------------------------------------------------------------------
 
-def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None):
+def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all"):
     """Return (programs, adsl_context). programs: {name: code}. adsl_context
     is {"main_step_rows": {...}, "available": [...]} when ADSL was generated,
-    else None (used later for "send back to Improver")."""
+    else None (used later for "send back to Improver").
+
+    domain: "all" (default) generates everything the spec(s) support; any
+    other value (a specific dataset name — advs/adlb/adeg/adtr/adae/adcm/
+    adrs/adtte/adsl) generates only that one dataset, skipping the rest
+    entirely rather than generating everything and discarding it.
+    """
+    domain = (domain or "all").lower()
+
+    def want(name):
+        return domain in ("all", name)
+
     writer_mode, reviewer_mode = MODE_MAP.get(mode, (None, None))
     out = {}
     adsl_context = None
@@ -191,7 +232,7 @@ def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None):
 
         for dom, src, code in [("VS", "vs", "ADVS"), ("LB", "lb", "ADLB"),
                                ("EG", "eg", "ADEG"), ("TR", "tr", "ADTR")]:
-            if dom not in present:
+            if dom not in present or not want(code.lower()):
                 continue
             try:
                 params = bds.build_param_spec_from_acrf(acrf, dom, dom + "TESTCD")
@@ -199,20 +240,26 @@ def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None):
                 continue
             out[code.lower()] = bds.generate_bds_domain(src, params, code, language=lang)
 
-        if "AE" in present:
+        if "AE" in present and want("adae"):
             out["adae"] = bds.generate_ae_domain("ADAE", language=lang)
-        if "CM" in present:
+        if "CM" in present and want("adcm"):
             out["adcm"] = bds.generate_cm_domain("ADCM", language=lang)
-        if "RS" in present:
+        if "RS" in present and (want("adrs") or want("adtte")):
             if lang == "r":
                 out["adrs"] = bds.generate_rs_domain_r("ADRS")
                 out["adtte"] = bds.generate_tte_domain_r("ADTTE")
             else:
                 out["adrs"] = bds.generate_rs_domain("ADRS")
                 out["adtte"] = bds.generate_tte_domain("ADTTE")
+            # ADRS/ADTTE are always derived together — if only one was asked
+            # for, still show just that one.
+            if domain == "adrs":
+                out.pop("adtte", None)
+            elif domain == "adtte":
+                out.pop("adrs", None)
 
     adsl_spec_path = adsl_spec_path or ADAM_SPEC
-    if os.path.exists(adsl_spec_path):
+    if want("adsl") and os.path.exists(adsl_spec_path):
         spec = pd.read_excel(adsl_spec_path, sheet_name="Variables")
         _, derived, ex_summary, main_step = route_adsl_spec(spec)
         out["adsl"] = assemble_adsl(spec, derived, ex_summary, main_step,
@@ -227,19 +274,26 @@ def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None):
     return out, adsl_context
 
 
-def generate_tlf(lang, shells=None):
-    """Return dict {name: code} for each shell (uploaded, or the sample shells)."""
+def generate_tlf(lang, shells=None, domain="all"):
+    """Return dict {name: code} for each shell (uploaded, or the sample shells).
+
+    domain: "all" (default), or one specific shell's table_id (e.g. "14.1.1")
+    to generate only that table.
+    """
+    domain = (domain or "all").lower()
     out = {}
     for shell in (shells or SHELLS):
         if not os.path.exists(shell):
             continue
         meta, _ = tlf._read_shell(shell)
-        tid = str(meta.get("table_id", "table")).replace(".", "_")
-        out[f"t_{tid}"] = tlf.generate_table(shell, language=lang)
+        tid = str(meta.get("table_id", "table"))
+        if domain != "all" and domain != tid.lower():
+            continue
+        out[f"t_{tid.replace('.', '_')}"] = tlf.generate_table(shell, language=lang)
     return out
 
 
-def generate_sdtm(lang, mode, spec_path=None):
+def generate_sdtm(lang, mode, spec_path=None, domain="all"):
     """Run sdtm_assembler.py as a subprocess, then read the .sas/.R files back.
 
     sdtm_assembler.py skips domains whose output file already exists unless
@@ -249,12 +303,18 @@ def generate_sdtm(lang, mode, spec_path=None):
     consumed here) — not every subsequent click for that same upload, which
     would otherwise redo already-finished domains from scratch every retry
     (e.g. after a timeout) instead of skipping them and continuing.
+    Explicitly picking ONE domain from the dropdown is also treated as a
+    deliberate "(re)generate this now" request, so it forces just that domain
+    regardless of whether it already exists — "all" still respects the
+    default skip-if-exists behavior.
 
     SDTM's pipeline only has a binary use_api flag today (no true Hybrid, this
     is a known asymmetry with ADSL) — Offline stays local-only; Hybrid and API
     both map to use_api=True since that's the only "reviewed" option SDTM has.
     """
-    force = spec_path is not None and RUN_STATE["sdtm_force_pending"]
+    domain = (domain or "all").upper() if domain != "all" else "all"
+    single_domain_forced = domain != "all"
+    force = single_domain_forced or (spec_path is not None and RUN_STATE["sdtm_force_pending"])
     RUN_STATE["sdtm_force_pending"] = False
     spec_path = spec_path or SDTM_SPEC
     out = {}
@@ -266,8 +326,13 @@ def generate_sdtm(lang, mode, spec_path=None):
     # (sample or an uploaded one), so glob("*.sas") would mix in unrelated
     # leftover files from a different spec's earlier run. SUPP-- domains
     # don't have their own file (append_supp_domain merges them into their
-    # parent's), so only list the non-SUPP domains here.
-    domains = [d for d in sdtm_assembler.list_domains(spec_path) if not d.startswith("SUPP")]
+    # parent's) — reading one back means reading its PARENT's file instead.
+    all_domains = sdtm_assembler.list_domains(spec_path)
+    if single_domain_forced:
+        requested = domain.replace("SUPP", "") if domain.startswith("SUPP") else domain
+        domains = [d for d in all_domains if not d.startswith("SUPP") and d == requested]
+    else:
+        domains = [d for d in all_domains if not d.startswith("SUPP")]
     ext = "R" if lang == "r" else "sas"
 
     def read_back():
@@ -276,11 +341,11 @@ def generate_sdtm(lang, mode, spec_path=None):
         real, valid files for whatever finished — read those back instead of
         discarding everything."""
         found = {}
-        for domain in domains:
-            path = os.path.join("sdtm_programs", f"{domain.lower()}.{ext}")
+        for d in domains:
+            path = os.path.join("sdtm_programs", f"{d.lower()}.{ext}")
             if os.path.exists(path):
                 with open(path, encoding="utf-8") as f:
-                    found[domain.lower()] = f.read()
+                    found[d.lower()] = f.read()
         return found
 
     cmd = [sys.executable, "sdtm_assembler.py", spec_path, "--lang", lang]
@@ -288,10 +353,12 @@ def generate_sdtm(lang, mode, spec_path=None):
         cmd.append("--offline")
     if force:
         cmd.append("--force")
+    if single_domain_forced:
+        cmd.extend(["--domain", domain])
     # A full spec (18+ domains) in API mode has run at ~70-100s/domain in
     # testing — 10 minutes was nowhere near enough and threw away every
     # domain that DID finish. Scale with domain count instead of a flat cap.
-    timeout_s = max(600, 150 * (len(domains) + 6))
+    timeout_s = max(600, 150 * (len(domains if single_domain_forced else all_domains) + 6))
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
@@ -441,6 +508,7 @@ def _render(active_screen="spec", note=None):
         writer_model=config.LOCAL_MODEL if RUN_STATE["mode"] == "offline" else
                     (config.LOCAL_MODEL if RUN_STATE["mode"] == "hybrid" else config.API_MODEL),
         reviewer_model=config.API_MODEL if RUN_STATE["mode"] in ("hybrid", "api") else config.LOCAL_MODEL,
+        available_domains=RUN_STATE["available_domains"], selected_domain=RUN_STATE["selected_domain"],
         active_screen=active_screen, note=note,
     )
 
@@ -476,6 +544,7 @@ def parse_spec():
 
     uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
     routing = {}
+    available_domains = []
     if otype == "adam":
         acrf_path, adsl_spec_path = _classify_adam_uploads(uploaded)
         acrf_path = acrf_path or ACRF
@@ -490,11 +559,13 @@ def parse_spec():
                 "copies": len(copies), "derived": len(derived),
                 "EX pre-step": len(ex_summary), "main step": len(main_step),
             }
+        available_domains = _adam_available_datasets(acrf_path, adsl_spec_path)
     elif otype == "sdtm":
         spec_path = uploaded[0] if uploaded else SDTM_SPEC
         if os.path.exists(spec_path):
             domains = sdtm_assembler.list_domains(spec_path)
             routing["SDTM domains"] = {d: sdtm_assembler.get_domain_class(d) for d in domains}
+            available_domains = domains
     else:  # tlf
         shell_table_ids = {}
         for shell in (uploaded or SHELLS):
@@ -502,7 +573,10 @@ def parse_spec():
                 meta, _ = tlf._read_shell(shell)
                 shell_table_ids[os.path.basename(shell)] = meta.get("table_id", "?")
         routing["Shells"] = shell_table_ids
+        available_domains = list(shell_table_ids.values())
     RUN_STATE["routing"] = routing
+    RUN_STATE["available_domains"] = available_domains
+    RUN_STATE["selected_domain"] = "all"  # reset on every fresh parse
 
     return _render("generate")
 
@@ -518,19 +592,20 @@ def generate():
         otype = request.form.get("otype", RUN_STATE["otype"] or "adam")
         lang = request.form.get("lang", RUN_STATE["lang"])
         mode = request.form.get("mode", RUN_STATE["mode"])
+        domain = request.form.get("domain", "all") or "all"
         note = None
-        RUN_STATE.update(otype=otype, lang=lang, mode=mode)
+        RUN_STATE.update(otype=otype, lang=lang, mode=mode, selected_domain=domain)
 
         uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
         adsl_context = None
         try:
             if otype == "adam":
                 acrf_path, adsl_spec_path = _classify_adam_uploads(uploaded)
-                programs, adsl_context = generate_adam(lang, mode, acrf_path, adsl_spec_path)
+                programs, adsl_context = generate_adam(lang, mode, acrf_path, adsl_spec_path, domain=domain)
             elif otype == "tlf":
-                programs = generate_tlf(lang, shells=uploaded or None)
+                programs = generate_tlf(lang, shells=uploaded or None, domain=domain)
             else:
-                programs = generate_sdtm(lang, mode, spec_path=uploaded[0] if uploaded else None)
+                programs = generate_sdtm(lang, mode, spec_path=uploaded[0] if uploaded else None, domain=domain)
         except Exception as e:
             # An uploaded file can be almost anything (wrong sheet names, wrong
             # shape, corrupted) — surface that as a normal in-app error instead
