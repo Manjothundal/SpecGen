@@ -27,6 +27,27 @@ the outputs.
 - [x] Phase 4.5: Agentic RAG on the macro library
       - [x] Phase 4.5a: Macro catalog + plain retrieval (variable-level, 15 variables covered)
       - [x] Phase 4.5b: Agentic retrieval — Claude queries the catalog as a tool
+      - [x] Phase 4.5c: "Use company macro catalog" as a UI option (web app, ADaM tab).
+            Until now the catalog was always on for ADSL SAS generation with no way to
+            turn it off. assemble_adsl (and both _assemble_adsl_sas/_assemble_adsl_r)
+            take a `use_macros` flag; when False, every ADSL variable goes through
+            Writer/Improver/Reviewer even where an exact catalog match exists — for a
+            study whose macros haven't been validated yet, or where fully custom logic
+            is wanted. Real edge case found and fixed while wiring this up:
+            MACRO_SIDE_EFFECTS (AGEGR1N, TRT01PN — variables produced as a side effect
+            of another variable's macro call, e.g. %adsl_agegr derives both AGEGR1 and
+            AGEGR1N) were unconditionally skipped in the main-step loop; with macros
+            off nothing produces them as a side effect anymore, so skipping them would
+            have silently dropped them from the output. Fixed by only skipping them
+            when use_macros is actually True. Verified directly against assemble_adsl:
+            AGEGR1 with use_macros=True emits the `%adsl_agegr` call, with False it
+            goes through Writer/Improver instead; AGEGR1N is present in the output
+            either way. Only affects the SAS path — the catalog has no R macros, so R
+            generation already always used Writer/Improver/Reviewer regardless.
+            Scope note: this toggles the EXISTING 15-variable ADSL catalog. Extending
+            macro coverage to SDTM/BDS domains would need an actual company macro
+            library for those domains authored by the team — none exists in this repo
+            to wire up, so that's a separate future undertaking, not part of this piece.
 - [x] Phase 5: SDTM + TLF generation
       - [x] 5a: aCRF parser (PDF/Word annotations → structured domain/variable metadata) — acrf_parser.py
       - [x] 5b: Draft SDTM spec from aCRF metadata (human reviews and completes before pipeline) — sdtm_spec_builder.py
@@ -263,8 +284,29 @@ the outputs.
 - Compare screen (see docs/specgen_ui_mockup (1).html) — the per-block sign-off
   rail and audit trail view from that mockup are now real (Phase 10 piece 4);
   Compare & verify is still just a mockup, waiting on Phase 9
-- True live per-variable generation progress (background job + SSE/polling),
-  instead of today's synchronous "click Generate, wait, see the result"
+- True live per-variable generation progress, not just running/done/aborted —
+  Generate became a background job (polled) in Piece 6 for Abort's sake, but
+  the Generate screen still shows no per-variable/per-domain detail while
+  running, just a spinner
+- Edit an existing program (a previously validated one, or one just
+  generated) from a free-text instruction — "the programmer tells the agent
+  what to change, agent edits the code" — separate from a spec-driven update
+  (below): no spec diff to anchor the edit, so this needs its own scoping
+  (which block/variable is being targeted, how the edit is bounded so the
+  model doesn't rewrite the whole file, how the result re-enters Review &
+  sign off for QC). No existing infra for this; would be new end to end.
+- Update an already-generated program when its SPEC changes, from inside the
+  web app — spec_differ.py (v1 vs v2 comparison) and spec_patcher.py (replays
+  a diff onto an existing .sas program via its BEGIN/END markers) already
+  exist and are marked CORE WORKING (Phase 6), but: SAS-only, ADSL-only (the
+  BEGIN/END markers this relies on only exist for ADSL's per-variable blocks
+  today — BDS/SDTM/TLF are one block per file with no sub-file markers to
+  patch), and it's a standalone CLI script never wired into app.py/the web
+  UI. Phase 6's own open items (log patch runs to runlog.csv, catalog-aware
+  params, em-dash encoding) are still outstanding too. Wiring this into the
+  web app is the bigger lift of the two "edit" asks, since real UI (upload
+  spec v2, show the diff, review just the touched blocks) is needed on top
+  of the (mostly working) engine.
 - SDTM: a real 3-mode (Offline/Hybrid/API) pipeline instead of today's binary
   use_api flag, so its Mode switcher stops collapsing Hybrid into API
 - Log checker: parse SAS .log, flag ERRORs / WARNINGs / NOTEs, suggest fixes

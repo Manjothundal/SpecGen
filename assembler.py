@@ -44,17 +44,27 @@ def gen_block(row, skip_macro=False, language=None, writer_mode=None):
 # ---------------------------------------------------------------------------
 
 def assemble_adsl(spec, derived, ex_summary, main_step, language=None, writer_mode=None,
-                  reviewer_mode=None, cancel_event=None):
+                  reviewer_mode=None, cancel_event=None, use_macros=True):
     """cancel_event: optional threading.Event — checked once per variable in the
     main-step loop so a slow ADSL run (up to 3 model calls per variable) can be
     aborted between variables. The partial program returned on abort keeps
     whatever variables finished; unfinished ones are simply absent from the
     output (the trailing keep/select list still names every spec variable, so
     a partial program won't run as-is in SAS/R — that's expected, matching how
-    a partial SDTM abort leaves some domains unfinished too)."""
+    a partial SDTM abort leaves some domains unfinished too).
+
+    use_macros: when False, skip the validated company macro catalog
+    (macro_lookup.py/macro_catalog.csv) entirely — every variable goes
+    through Writer/Improver/Reviewer even where an exact catalog match
+    exists, instead of using the macro call directly. For a study whose
+    macros haven't been validated yet, or where custom (non-macro) logic is
+    wanted. Only affects the SAS path — the catalog only has SAS macros
+    today, so R generation already always goes through Writer/Improver/
+    Reviewer regardless of this flag."""
     language = (language or config.LANGUAGE).lower()
     if language == "sas":
-        return _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode, reviewer_mode, cancel_event)
+        return _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode, reviewer_mode,
+                                  cancel_event, use_macros)
     elif language == "r":
         return _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode, reviewer_mode, cancel_event)
     else:
@@ -65,7 +75,8 @@ def assemble_adsl(spec, derived, ex_summary, main_step, language=None, writer_mo
 # SAS PATH — unchanged from the original assemble_adsl
 # ===========================================================================
 
-def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None, cancel_event=None):
+def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None,
+                       cancel_event=None, use_macros=True):
     parts = []
 
     # ---- Header
@@ -222,21 +233,25 @@ def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, r
         if cancel_event is not None and cancel_event.is_set():
             parts.append(f"/* -- generation aborted by user before variable {row['Variable']} -- */")
             break
-        # Skip variables already derived as macro side effects
-        if row["Variable"] in MACRO_SIDE_EFFECTS:
+        # Skip variables already derived as macro side effects — but only
+        # when macros are actually in use; with use_macros=False nothing
+        # produces AGEGR1N/TRT01PN as a side effect anymore, so skipping them
+        # here would drop them from the output entirely instead of routing
+        # them through Writer/Improver/Reviewer like any other variable.
+        if use_macros and row["Variable"] in MACRO_SIDE_EFFECTS:
             print("Side effect (skipped):", row["Variable"])
             continue
 
         var = row["Variable"]
 
         # 1. Exact catalog match — use macro call directly
-        match = find_macro(var, catalog)
+        match = find_macro(var, catalog) if use_macros else None
         if match:
             print("Macro match:", var, "->", match["macro"])
             block = f"/*-- BEGIN {var} --*/\n/* {var}: using validated macro */\n{match['call']}\n/*-- END {var} --*/"
         else:
             # 2. Pattern match + generate
-            pmatch = find_by_pattern(var, str(row["Derivation"]), catalog)
+            pmatch = find_by_pattern(var, str(row["Derivation"]), catalog) if use_macros else None
             block = gen_block(row, language="sas", writer_mode=writer_mode)
             print("   Improving:", var)
             block = clean(improve_block(block, row, available, language="sas", mode=reviewer_mode))

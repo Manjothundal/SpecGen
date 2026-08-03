@@ -100,6 +100,10 @@ def _new_otype_state():
         "note": None,               # last message shown on this tab, if any
         "job_status": "idle",       # idle | running | done | aborted | error
         "job_note": None,           # shown on the Generate screen while running/after abort
+        "use_macros": True,        # ADaM only: use the validated company macro catalog for
+                                   # ADSL SAS where an exact match exists, instead of always
+                                   # going through Writer/Improver/Reviewer. No effect on
+                                   # SDTM/TLF, or on ADaM's R path (no R macro catalog exists).
     }
 
 
@@ -237,7 +241,8 @@ def _adam_available_datasets(acrf_path, adsl_spec_path):
 # Generators
 # ---------------------------------------------------------------------------
 
-def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all", cancel_event=None):
+def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all", cancel_event=None,
+                  use_macros=True):
     """Return (programs, adsl_context). programs: {name: code}. adsl_context
     is {"main_step_rows": {...}, "available": [...]} when ADSL was generated,
     else None (used later for "send back to Improver").
@@ -246,6 +251,10 @@ def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all",
     other value (a specific dataset name — advs/adlb/adeg/adtr/adae/adcm/
     adrs/adtte/adsl) generates only that one dataset, skipping the rest
     entirely rather than generating everything and discarding it.
+
+    use_macros: passed straight through to assemble_adsl — whether ADSL SAS
+    generation may use the validated company macro catalog. No effect on
+    BDS (never uses macros) or on the R path (no R macro catalog exists).
 
     cancel_event: optional threading.Event for the Abort button. BDS datasets
     are near-instant string templates, so it's only checked between them for
@@ -304,7 +313,8 @@ def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all",
         _, derived, ex_summary, main_step = route_adsl_spec(spec)
         out["adsl"] = assemble_adsl(spec, derived, ex_summary, main_step,
                                     language=lang, writer_mode=writer_mode,
-                                    reviewer_mode=reviewer_mode, cancel_event=cancel_event)
+                                    reviewer_mode=reviewer_mode, cancel_event=cancel_event,
+                                    use_macros=use_macros)
         adsl_context = {
             "main_step_rows": {row["Variable"]: row.to_dict()
                               for _, row in main_step.iterrows()},
@@ -697,7 +707,7 @@ def parse_spec():
     return _render(active_otype=otype)
 
 
-def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending):
+def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending, use_macros=True):
     """Background thread target for /generate. Doing the (potentially slow)
     generation work off the request thread is what makes /abort possible —
     a request handler that's blocked in subprocess.run()/assemble_adsl() for
@@ -712,7 +722,8 @@ def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending):
         if otype == "adam":
             acrf_path, adsl_spec_path = _classify_adam_uploads(uploaded)
             programs, adsl_context = generate_adam(lang, mode, acrf_path, adsl_spec_path,
-                                                    domain=domain, cancel_event=ctrl["cancel_event"])
+                                                    domain=domain, cancel_event=ctrl["cancel_event"],
+                                                    use_macros=use_macros)
         elif otype == "tlf":
             programs = generate_tlf(lang, shells=uploaded or None, domain=domain,
                                     cancel_event=ctrl["cancel_event"])
@@ -762,6 +773,10 @@ def generate():
     state["mode"] = mode
     state["lang"] = lang
     state["selected_domain"] = domain
+    if otype == "adam":
+        # Checkbox: present in the form only when checked, absent when not —
+        # standard HTML behavior, no hidden-fallback field needed.
+        state["use_macros"] = "use_macros" in request.form
 
     # Uploaded files only exist on request.files for THIS request, so they
     # must be saved to disk here, synchronously, before the background
@@ -777,7 +792,7 @@ def generate():
     state["job_note"] = None
 
     threading.Thread(target=_run_generate_job,
-                     args=(otype, lang, mode, domain, uploaded, force_pending),
+                     args=(otype, lang, mode, domain, uploaded, force_pending, state["use_macros"]),
                      daemon=True).start()
 
     return _render(active_otype=otype)

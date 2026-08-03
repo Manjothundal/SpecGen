@@ -165,7 +165,7 @@
   <h1>SpecGen</h1>
   <p class="sub">Spec-to-program generation in SAS or R: parse a spec, run the three-agent pipeline, review and sign off block by block, then export and commit. ADaM, SDTM, and TLF are independent tabs below — each keeps its own spec, mode/language, and generated programs, so switching tabs never touches another tab's state.</p>
 
-  {% macro otype_tab(otype, label, domain_note, upload_label, upload_hint, allow_multiple) %}
+  {% macro otype_tab(otype, label, domain_note, upload_label, upload_hint, allow_multiple, allow_macros=false) %}
   {% set t = tabs[otype] %}
   <div class="tabpanel {{ 'on' if active_otype == otype else '' }}" data-otype="{{ otype }}">
     <div class="window">
@@ -277,6 +277,12 @@
                 </select>
                 <p class="hint" style="margin:6px 0 12px;">Picking one domain (re)generates just that one, even if it already exists — "All domains" skips ones already done.</p>
                 {% endif %}
+                {% if allow_macros %}
+                <label style="display:flex;align-items:center;gap:7px;font-size:.85rem;margin-bottom:14px;{{ 'opacity:.5;' if t.lang == 'r' }}">
+                  <input type="checkbox" name="use_macros" {% if t.use_macros %}checked{% endif %}>
+                  Use validated company macro catalog for ADSL where an exact match exists (SAS only — no effect in R)
+                </label>
+                {% endif %}
                 <button type="submit" class="btn primary">Generate {{ label | upper }} ({{ t.lang | upper }})</button>
               </form>
             </div>
@@ -381,7 +387,7 @@
       'BDS datasets are deterministic — Mode only affects ADSL.',
       'ACRF metadata and/or an ADaM spec (.xlsx) — either or both',
       "A file with a 'By Domain' sheet drives BDS datasets; a file with a 'Variables' sheet drives ADSL. Leave blank to use both sample defaults.",
-      false) }}
+      false, true) }}
   {{ otype_tab('sdtm', 'sdtm',
       "SDTM's pipeline only has Offline/API today (no true Hybrid) — Hybrid behaves like API here.",
       'SDTM spec draft (.xlsx)',
