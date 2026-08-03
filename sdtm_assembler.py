@@ -143,10 +143,17 @@ def list_domains(xlsx_path):
 # ── Prompt building per domain class ────────────────────────────────
 
 def _var_table(variables):
-    """Format variable list as a readable table for the prompt."""
+    """Format variable list as a readable table for the prompt. Every one
+    of the 6 domain-class prompt builders (x2 languages) calls this, so
+    it's the single point where a per-variable Comment (free-text mapping
+    notes/overrides, same spirit as the ADaM spec's Comment column added in
+    prompt_builder.py) reaches the Writer — appended as its own list below
+    the table rather than crammed into a fixed-width column, since comments
+    can run much longer than Label/Origin/Codelist."""
     lines = []
     lines.append(f"{'Variable':<16} {'Label':<45} {'Type':<6} {'Len':<5} {'Origin':<10} {'Codelist'}")
     lines.append(f"{'-'*16} {'-'*45} {'-'*6} {'-'*5} {'-'*10} {'-'*20}")
+    comment_lines = []
     for v in variables:
         var = str(v.get("Variable", ""))
         label = str(v.get("Label", ""))[:45]
@@ -155,6 +162,12 @@ def _var_table(variables):
         origin = str(v.get("Origin", ""))
         codelist = str(v.get("Codelist", "") or "")
         lines.append(f"{var:<16} {label:<45} {vtype:<6} {length:<5} {origin:<10} {codelist}")
+        comment = str(v.get("Comment", "") or "").strip()
+        if comment and comment.lower() != "nan":
+            comment_lines.append(f"- {var}: {comment}")
+    if comment_lines:
+        lines.append("\nAdditional instructions (per variable):")
+        lines.extend(comment_lines)
     return "\n".join(lines)
 
 

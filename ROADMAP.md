@@ -479,6 +479,77 @@ the outputs.
                 matched block while leaving the original SAFFL line
                 untouched; apply/cancel correctly replace-vs-discard the
                 preview and clean up stale per-variable blocks.
+      - [x] Piece 9: extended Piece 8 to SDTM and TLF — deliberately
+            asymmetric, not a straight copy, because neither can reuse ADaM's
+            Insert path safely:
+              - SDTM generates a whole DOMAIN per model call, never per-
+                variable — there's no `_build_block`-equivalent primitive to
+                call for "just this one variable."
+              - TLF has ZERO model calls (confirmed again by re-reading
+                tlf_assembler.py) AND each row's generated code references
+                `_tab`/`_bign`/`_ARM` helper datasets that only exist because
+                of SpecGen's own TABLE_SETUP block, plus a running `ord_n`
+                position counter — splicing one row into an arbitrary
+                uploaded program would silently reference undefined datasets
+                unless that program happened to share SpecGen's exact
+                internal scaffold. Unsafe to offer.
+            So SDTM and TLF only get the Full-update (locate + rewrite) path
+            — one unified preview/apply flow, no separate Insert button;
+            the same model call is free to add missing variables/rows too,
+            so nothing is actually lost.
+              - `spec_patcher.locate_and_update()` generalized from
+                `(program, spec, target_vars)` (ADaM-schema-specific) to
+                `(program, instruction_blocks)` — the caller now pre-builds
+                each variable/row's instruction text, so the same engine
+                works for all three without hardcoding one spec's shape
+                inside spec_patcher.py. Three small formatters in app.py:
+                `_adam_instruction_block` (Derivation + Comment, moved out of
+                spec_patcher.py), `_sdtm_instruction_block` (Derivation/
+                Origin/Codelist + Comment), `_tlf_instruction_block`
+                (handles both Shell_Rows shapes — demographics-style
+                adam_var/stat_type/decimals vs. AE-style row_label/
+                condition/indent — + Comment).
+              - Comment column extended to SDTM: `_var_table()` in
+                sdtm_assembler.py is the single shared variable-list
+                formatter all 6 domain-class prompt builders (x2 languages)
+                already go through, so one change made it available
+                everywhere, same pattern as ADaM's. Real effect on real
+                generation, since SDTM already calls the model. TLF's
+                Comment only matters to the new locate_and_update path —
+                normal TLF generation has no model call to give an
+                instruction to, so tlf_assembler.py's codegen itself is
+                untouched.
+              - `_classify_legacy_program()`'s heuristic loosened from an
+                assignment-target regex (`VAR\s*=`) to a plain case-
+                insensitive substring check, since ADaM's `VAR = ...` style,
+                SDTM's, and TLF's `var {v};`/`tables _ARM*{v}` style don't
+                share one syntactic shape — one heuristic needed to work
+                across all three. Still just a checkbox-default hint, still
+                fully overridable.
+              - New per-otype upload requirements, since one upload isn't
+                "the whole spec" the way ADaM's is: SDTM also takes a domain
+                code (one file is one domain) and an optional spec re-upload
+                (defaults to SDTM_SPEC); TLF also requires the shell (.xlsx)
+                the table was built from (TLF has no "current shell" tracked
+                in state the way ADaM tracks `adsl_spec_path`) — new
+                `legacy_domain`/`legacy_spec_path`/`legacy_shell_path` state
+                fields.
+              - On Apply, SDTM/TLF are simpler than ADaM's case was: their
+                programs are ALREADY single opaque `kind:"file"` blocks in
+                `_rebuild_blocks` (no per-variable block system to reconcile
+                against), so applying just replaces `state["programs"]
+                [<domain-or-table-key>]` and that one block directly — no
+                "stale per-variable blocks" cleanup needed.
+              - Verified end to end with real API calls (not mocked) for
+                both: a hand-written legacy AE domain program with a wrong
+                AESER value ("1"/"0" instead of "Y"/"N" per its NY codelist)
+                — correctly found and fixed via a Comment instruction, clean
+                1-line diff; a hand-written legacy demographics table with a
+                wrong decimal count on the AGE mean display — correctly
+                found and fixed via a Comment instruction, clean 1-line
+                diff. Re-ran the original ADaM SAFFL regression case after
+                the `locate_and_update` generalization to confirm identical
+                behavior post-refactor.
 
 ## Open items (near-term)
 - Test against a fuller, realistic ADSL spec (60-100+ variables)

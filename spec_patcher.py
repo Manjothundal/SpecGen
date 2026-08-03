@@ -132,26 +132,21 @@ def patch_program(program, spec_v1, spec_v2, writer_mode=None, reviewer_mode=Non
     return program, diff
 
 
-def _var_instruction(row):
-    """One variable's rule + optional Comment, as plain instruction text
-    (not prompt_builder's per-line format — this is embedded inside a list
-    of several variables in one combined prompt, not a standalone Writer
-    call)."""
-    text = f"Derivation rule: {row['Derivation']}"
-    comment = str(row.get("Comment", "")).strip()
-    if comment and comment.lower() != "nan":
-        text += f"\nAdditional instructions: {comment}"
-    return text
-
-
-def locate_and_update(program, spec, target_vars):
+def locate_and_update(program, instruction_blocks):
     """For an EXISTING program this app didn't generate (no BEGIN/END
-    markers to rely on), ask the model to locate each of target_vars'
-    current derivation — wherever and however it's actually written — and
-    rewrite just that logic to match its spec row, in one combined call
-    rather than one round-trip per variable: far cheaper, and more
-    reliable for the model to stay consistent across than N independent
-    edits to code it doesn't already know.
+    markers to rely on), ask the model to locate each targeted variable's
+    (or row's) current derivation — wherever and however it's actually
+    written — and rewrite just that logic to match the instruction given
+    for it, in one combined call rather than one round-trip per variable:
+    far cheaper, and more reliable for the model to stay consistent across
+    than N independent edits to code it doesn't already know.
+
+    instruction_blocks: list of pre-formatted text blocks, one per targeted
+    variable/row — built by the CALLER, not this function, since ADaM,
+    SDTM, and TLF each describe a variable/row with a different shape
+    (Derivation rule vs. Origin/Codelist vs. stat_type/decimals). Keeping
+    this function otype-agnostic means the same locate-and-rewrite engine
+    works for all three without hardcoding any one spec schema here.
 
     This is a PREVIEW step only — it never writes anywhere. The caller is
     expected to diff the result against `program` and let a human review
@@ -160,15 +155,7 @@ def locate_and_update(program, spec, target_vars):
     Returns (new_program, diff_lines) — diff_lines is a
     difflib.unified_diff list, empty if the model reported no changes.
     """
-    var_blocks = []
-    for var in target_vars:
-        row = spec[spec["Variable"] == var]
-        if row.empty:
-            continue
-        row = row.iloc[0]
-        var_blocks.append(f"- {var} (Label: {row['Label']}, Type: {row['Type']}, "
-                          f"Length: {row['Length']})\n  " + _var_instruction(row).replace("\n", "\n  "))
-    vars_text = "\n".join(var_blocks)
+    vars_text = "\n".join(instruction_blocks)
 
     prompt = f"""You are a senior clinical SAS programmer maintaining an existing SDTM/ADaM program.
 

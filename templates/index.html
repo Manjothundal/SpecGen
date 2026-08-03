@@ -277,16 +277,30 @@
             </div>
             {% endif %}
 
-            {% if otype == 'adam' and t.lang == 'sas' %}
+            {% if t.lang == 'sas' %}
             <div style="margin-top:26px;padding-top:18px;border-top:1px solid var(--line);">
               <h3 style="font-size:.95rem;margin-bottom:4px;">Bring in an existing program</h3>
+              {% if otype == 'adam' %}
               <p class="hint">Upload an ADSL program from outside SpecGen (no BEGIN/END markers
                 needed) and use the current spec — including any per-variable Comment column —
                 to add missing variables or update ones that already exist. SAS only.</p>
+              {% elif otype == 'sdtm' %}
+              <p class="hint">Upload an existing domain program (e.g. ae.sas) plus its domain code,
+                and use the spec — including any per-variable Comment column — to locate and update
+                its derivations. SDTM generates a whole domain per call, not per variable, so there's
+                no separate "insert one variable" action here — one combined preview covers both
+                missing and existing variables. SAS only.</p>
+              {% else %}
+              <p class="hint">Upload an existing table program plus the shell (.xlsx) it was built
+                from, and use the shell's rows to locate and update its display logic. TLF has no
+                model calls in normal generation and each row's code depends on this table's own
+                internal setup, so there's no safe "insert one row" action here — one combined
+                preview covers both missing and existing rows. SAS only.</p>
+              {% endif %}
 
               {% if t.job_status == 'running' and t.job_kind in ('legacy_insert', 'legacy_update') %}
               <div class="note" style="background:#E2F1F2;border-color:#B7DDE0;display:flex;align-items:center;gap:10px;">
-                <span class="spin">⏳</span> {{ 'Inserting new variables…' if t.job_kind == 'legacy_insert' else 'Locating and updating selected variables…' }}
+                <span class="spin">⏳</span> {{ 'Inserting new variables…' if t.job_kind == 'legacy_insert' else 'Locating and updating selected variable(s)/row(s)…' }}
               </div>
 
               {% elif t.legacy_update_preview %}
@@ -301,39 +315,56 @@
                 <p class="hint">The model reported no changes were needed.</p>
                 {% endif %}
                 <form method="post" action="/legacy_apply_update">
+                  <input type="hidden" name="otype" value="{{ otype }}">
                   <textarea name="program_text" class="mono" style="width:100%;min-height:260px;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:.8rem;margin-bottom:10px;">{{ p.program }}</textarea>
                   <button type="submit" class="btn primary">Apply update</button>
                 </form>
                 <form method="post" action="/legacy_cancel_update" style="margin-top:8px;">
+                  <input type="hidden" name="otype" value="{{ otype }}">
                   <button type="submit" class="btn ghost">Cancel</button>
                 </form>
 
               {% elif t.legacy_classification %}
-                <div class="signoff">Choose which variables to insert as new logic, and/or which
-                  to locate and update in place. Checkboxes are pre-set from a best-effort guess
-                  (does the variable name already appear as an assignment target?) — override
-                  either as needed.</div>
+                <div class="signoff">{% if otype == 'adam' %}Choose which variables to insert as new logic, and/or which
+                  to locate and update in place.{% else %}Choose which variables/rows to locate and update.{% endif %}
+                  Checkboxes are pre-set from a best-effort guess (does the name already appear
+                  somewhere in the program?) — override as needed.</div>
                 <table style="margin-bottom:10px;">
-                  <tr><th>Variable</th><th>Likely already present?</th><th>Insert as new</th><th>Locate &amp; update</th></tr>
+                  <tr><th>Variable</th><th>Likely already present?</th>{% if otype == 'adam' %}<th>Insert as new</th>{% endif %}<th>Locate &amp; update</th></tr>
                   {% for c in t.legacy_classification %}
                   <tr>
                     <td class="mono">{{ c.variable }}</td>
                     <td>{{ 'Yes' if c.present_guess else 'No' }}</td>
+                    {% if otype == 'adam' %}
                     <td><input type="checkbox" name="insert_var" value="{{ c.variable }}" form="legacyInsertForm" {% if not c.present_guess %}checked{% endif %}></td>
+                    {% endif %}
                     <td><input type="checkbox" name="update_var" value="{{ c.variable }}" form="legacyUpdateForm" {% if c.present_guess %}checked{% endif %}></td>
                   </tr>
                   {% endfor %}
                 </table>
+                {% if otype == 'adam' %}
                 <form id="legacyInsertForm" class="inline" method="post" action="/legacy_insert">
                   <button type="submit" class="btn primary">Insert selected as new blocks</button>
                 </form>
+                {% endif %}
                 <form id="legacyUpdateForm" class="inline" method="post" action="/legacy_preview_update">
+                  <input type="hidden" name="otype" value="{{ otype }}">
                   <button type="submit" class="btn ghost">Preview full update for selected</button>
                 </form>
 
               {% else %}
                 <form method="post" action="/legacy_upload" enctype="multipart/form-data">
+                  <input type="hidden" name="otype" value="{{ otype }}">
                   <input type="file" name="legacy_program" accept=".sas" style="margin-right:10px;">
+                  {% if otype == 'sdtm' %}
+                  <label class="field" for="legacy_domain_{{ otype }}">Domain:</label>
+                  <input type="text" name="domain" id="legacy_domain_{{ otype }}" placeholder="e.g. AE" style="width:80px;margin-right:10px;">
+                  <label class="field" for="legacy_spec_{{ otype }}">Spec (optional, defaults to the sample):</label>
+                  <input type="file" name="legacy_spec" id="legacy_spec_{{ otype }}" accept=".xlsx" style="margin-right:10px;">
+                  {% elif otype == 'tlf' %}
+                  <label class="field" for="legacy_shell_{{ otype }}">Shell it was built from:</label>
+                  <input type="file" name="legacy_shell" id="legacy_shell_{{ otype }}" accept=".xlsx" style="margin-right:10px;">
+                  {% endif %}
                   <button type="submit" class="btn ghost">Analyze</button>
                 </form>
               {% endif %}

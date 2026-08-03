@@ -114,13 +114,21 @@ def _new_otype_state():
                                     # against. None until ADSL has been generated at least once.
         "spec_diff": None,           # ADaM only: pending diff preview, set by /spec_diff
         "pending_spec_v2": None,     # ADaM only: uploaded v2 spec path awaiting /apply_patch
-        "legacy_upload_path": None,     # ADaM only: an uploaded existing (non-SpecGen) SAS
+        "legacy_upload_path": None,     # all 3 otypes: an uploaded existing (non-SpecGen) SAS
                                         # program, awaiting classification/action
-        "legacy_classification": None,  # ADaM only: [{"variable","label","present_guess"}, ...]
-                                        # per current spec row, set by /legacy_upload
-        "legacy_update_preview": None,  # ADaM only: {"program", "diff", "targeted_vars"} once
+        "legacy_classification": None,  # all 3 otypes: [{"variable","label","present_guess"}, ...]
+                                        # per current spec row/shell row, set by /legacy_upload
+        "legacy_update_preview": None,  # all 3 otypes: {"program", "diff", "targeted_vars"} once
                                         # /legacy_preview_update has run — nothing is applied to
                                         # state["programs"] until /legacy_apply_update
+        "legacy_domain": None,          # SDTM only: which domain the legacy upload is for
+        "legacy_spec_path": None,       # SDTM only: which SDTM spec to classify/instruct against
+                                        # (SDTM has no equivalent of ADaM's adsl_spec_path tracking
+                                        # a "current" spec, since one domain file isn't the whole spec)
+        "legacy_shell_path": None,      # TLF only: the shell file paired with the legacy upload —
+                                        # needed since a shell defines the row structure a table's
+                                        # code is built from, and TLF has no "current shell" tracked
+                                        # in state the way ADaM tracks adsl_spec_path
     }
 
 
@@ -886,56 +894,153 @@ def cancel_patch():
 
 
 def _classify_legacy_program(program, spec):
-    """Best-effort heuristic ONLY — flags a variable as "likely present" if
-    its name appears as an assignment target (`VAR =`) anywhere in the
-    program. Real legacy code can define a variable through a macro call,
-    different casing, a totally different pattern, or not at all — this is
-    just a starting point for the checkboxes' default state; the UI lets
-    the user override every one of them regardless of the guess."""
+    """Best-effort heuristic ONLY — flags a variable/row as "likely
+    present" if its name appears anywhere in the program (case-insensitive
+    substring — not a precise assignment-target check, since ADaM's
+    `VAR = ...` style, SDTM's, and TLF's `var {v};`/`tables _ARM*{v}` style
+    don't share one syntactic shape, and this same heuristic has to work
+    across all three). Real legacy code can also define something through
+    a macro call, different casing, or not at all — this is just a
+    starting point for the checkboxes' default state; the UI lets the user
+    override every one of them regardless of the guess."""
     classification = []
+    program_lower = program.lower()
     for _, row in spec.iterrows():
-        var = row["Variable"]
-        present = bool(re.search(rf'\b{re.escape(var)}\s*=', program, re.IGNORECASE))
+        var = str(row["Variable"])
+        present = var.lower() in program_lower
         classification.append({"variable": var, "label": row["Label"], "present_guess": present})
     return classification
 
 
+def _normalize_tlf_rows(rows):
+    """TLF's Shell_Rows sheet has two different shapes depending on table
+    type — demographics-style (adam_var/label/stat_type/decimals) or AE-
+    style (row_label/condition/indent) — normalize both into Variable/Label
+    columns so _classify_legacy_program and the instruction formatters can
+    treat a TLF row the same way an ADaM/SDTM variable is treated."""
+    out = rows.copy()
+    if "adam_var" in out.columns:
+        out["Variable"] = out["adam_var"]
+        out["Label"] = out["label"]
+    else:
+        out["Variable"] = out["row_label"]
+        out["Label"] = out["row_label"]
+    return out
+
+
+def _adam_instruction_block(var, row):
+    text = f"- {var} (Label: {row['Label']}, Type: {row['Type']}, Length: {row['Length']})\n  Derivation rule: {row['Derivation']}"
+    comment = str(row.get("Comment", "") or "").strip()
+    if comment and comment.lower() != "nan":
+        text += f"\n  Additional instructions: {comment}"
+    return text
+
+
+def _sdtm_instruction_block(var, row):
+    text = f"- {var} (Label: {row.get('Label', '')}, Type: {row.get('Type', '')}, Origin: {row.get('Origin', '')})"
+    derivation = str(row.get("Derivation", "") or "").strip()
+    if derivation and derivation.lower() not in ("nan", "none"):
+        text += f"\n  Derivation: {derivation}"
+    codelist = str(row.get("Codelist", "") or "").strip()
+    if codelist and codelist.lower() != "nan":
+        text += f"\n  Codelist: {codelist}"
+    comment = str(row.get("Comment", "") or "").strip()
+    if comment and comment.lower() != "nan":
+        text += f"\n  Additional instructions: {comment}"
+    return text
+
+
+def _tlf_instruction_block(var, row):
+    if "stat_type" in row.index:
+        text = f"- {var} (Label: {row['label']}, stat_type: {row['stat_type']}, decimals: {row['decimals']})"
+    else:
+        text = (f"- {var} (row_label: {row['row_label']}, "
+                f"condition: {row.get('condition', '')}, indent: {row.get('indent', '')})")
+    comment = str(row.get("Comment", "") or "").strip()
+    if comment and comment.lower() != "nan":
+        text += f"\n  Additional instructions: {comment}"
+    return text
+
+
 @app.route("/legacy_upload", methods=["POST"])
 def legacy_upload():
-    """Bring in an existing (non-SpecGen) ADSL program. Just saves the file
-    and classifies each current spec variable as likely-present/likely-
-    missing — /legacy_insert and /legacy_preview_update are the separate
-    action steps."""
-    state = RUN_STATE["otypes"]["adam"]
+    """Bring in an existing (non-SpecGen) program for any of the 3 tabs.
+    Just saves the file(s) and classifies each current spec variable/shell
+    row as likely-present/likely-missing — /legacy_insert (ADaM only) and
+    /legacy_preview_update (all 3) are the separate action steps.
+
+    otype-specific extra input, since one otype's "spec" isn't a single
+    tracked file the way ADaM's is: SDTM also needs a domain code (one
+    upload is one domain's file, not the whole spec) and optionally a spec
+    file (defaults to SDTM_SPEC); TLF also needs the shell file the table
+    was built from (TLF has no "current shell" tracked in state)."""
+    otype = _otype_from_request()
+    state = RUN_STATE["otypes"][otype]
     if state["lang"] != "sas":
-        return _render(active_otype="adam", note_otype="adam",
+        return _render(active_otype=otype, note_otype=otype,
                       note="Bringing in an existing program is SAS-only today.")
 
     files = request.files.getlist("legacy_program")
     if not files or not files[0].filename:
-        return _render(active_otype="adam", note_otype="adam",
+        return _render(active_otype=otype, note_otype=otype,
                       note="Choose an existing .sas program to bring in.")
 
-    legacy_dir = os.path.join(UPLOAD_DIR, "adam_legacy")
+    legacy_dir = os.path.join(UPLOAD_DIR, f"{otype}_legacy")
     os.makedirs(legacy_dir, exist_ok=True)
     legacy_path = os.path.join(legacy_dir, secure_filename(files[0].filename))
     files[0].save(legacy_path)
 
-    adsl_spec_path = state.get("adsl_spec_path") or ADAM_SPEC
-    if not os.path.exists(adsl_spec_path):
-        return _render(active_otype="adam", note_otype="adam",
-                      note=f"No ADaM spec available to classify against ({adsl_spec_path} not found).")
-
     try:
         with open(legacy_path, encoding="utf-8", errors="replace") as f:
             program = f.read()
-        spec = pd.read_excel(adsl_spec_path, sheet_name="Variables")
+
+        if otype == "adam":
+            spec_path = state.get("adsl_spec_path") or ADAM_SPEC
+            if not os.path.exists(spec_path):
+                return _render(active_otype=otype, note_otype=otype,
+                              note=f"No ADaM spec available to classify against ({spec_path} not found).")
+            spec = pd.read_excel(spec_path, sheet_name="Variables")
+
+        elif otype == "sdtm":
+            domain = request.form.get("domain", "").strip().upper()
+            if not domain:
+                return _render(active_otype=otype, note_otype=otype,
+                              note="Enter the domain code this program is for (e.g. AE, DM).")
+            spec_files = request.files.getlist("legacy_spec")
+            if spec_files and spec_files[0].filename:
+                spec_dir = os.path.join(UPLOAD_DIR, "sdtm_legacy_spec")
+                os.makedirs(spec_dir, exist_ok=True)
+                spec_path = os.path.join(spec_dir, secure_filename(spec_files[0].filename))
+                spec_files[0].save(spec_path)
+            else:
+                spec_path = SDTM_SPEC
+            variables = sdtm_assembler.read_domain_spec(spec_path, domain)
+            if not variables:
+                return _render(active_otype=otype, note_otype=otype,
+                              note=f"No variables found for domain {domain} in {spec_path}.")
+            spec = pd.DataFrame(variables)
+            state["legacy_domain"] = domain
+            state["legacy_spec_path"] = spec_path
+
+        else:  # tlf
+            shell_files = request.files.getlist("legacy_shell")
+            if not shell_files or not shell_files[0].filename:
+                return _render(active_otype=otype, note_otype=otype,
+                              note="Also upload the shell (.xlsx) this table was built from.")
+            shell_dir = os.path.join(UPLOAD_DIR, "tlf_legacy_shell")
+            os.makedirs(shell_dir, exist_ok=True)
+            shell_path = os.path.join(shell_dir, secure_filename(shell_files[0].filename))
+            shell_files[0].save(shell_path)
+            rows = pd.read_excel(shell_path, sheet_name="Shell_Rows")
+            spec = _normalize_tlf_rows(rows)
+            state["legacy_shell_path"] = shell_path
+
     except Exception as e:
-        return _render(active_otype="adam", note_otype="adam", note=f"Could not read upload or spec: {e}")
+        return _render(active_otype=otype, note_otype=otype, note=f"Could not read upload or spec: {e}")
 
     state["legacy_upload_path"] = legacy_path
     state["legacy_classification"] = _classify_legacy_program(program, spec)
-    return _render(active_otype="adam")
+    return _render(active_otype=otype)
 
 
 def _run_legacy_insert_job(selected_vars, writer_mode, reviewer_mode, use_macros):
@@ -1043,20 +1148,43 @@ def legacy_insert():
     return _render(active_otype="adam")
 
 
-def _run_legacy_update_job(target_vars):
+def _run_legacy_update_job(otype, target_vars):
     """Background thread target for /legacy_preview_update. Calls
-    spec_patcher.locate_and_update() once for every selected variable
+    spec_patcher.locate_and_update() once for every selected variable/row
     together (see that function's docstring for why batched) — a PREVIEW
-    only, nothing is written to state["programs"] here."""
-    state = RUN_STATE["otypes"]["adam"]
+    only, nothing is written to state["programs"] here.
+
+    Which spec to read and how to format each variable/row's instruction
+    differs per otype (see _adam_instruction_block/_sdtm_instruction_block/
+    _tlf_instruction_block) since locate_and_update() itself is otype-
+    agnostic — it just wants pre-built instruction text."""
+    state = RUN_STATE["otypes"][otype]
     try:
         legacy_path = state["legacy_upload_path"]
-        adsl_spec_path = state.get("adsl_spec_path") or ADAM_SPEC
         with open(legacy_path, encoding="utf-8", errors="replace") as f:
             program = f.read()
-        spec = pd.read_excel(adsl_spec_path, sheet_name="Variables")
 
-        new_program, diff = locate_and_update(program, spec, target_vars)
+        if otype == "adam":
+            spec_path = state.get("adsl_spec_path") or ADAM_SPEC
+            spec = pd.read_excel(spec_path, sheet_name="Variables")
+            fmt = _adam_instruction_block
+        elif otype == "sdtm":
+            variables = sdtm_assembler.read_domain_spec(state["legacy_spec_path"], state["legacy_domain"])
+            spec = pd.DataFrame(variables)
+            fmt = _sdtm_instruction_block
+        else:  # tlf
+            rows = pd.read_excel(state["legacy_shell_path"], sheet_name="Shell_Rows")
+            spec = _normalize_tlf_rows(rows)
+            fmt = _tlf_instruction_block
+
+        instruction_blocks = []
+        for var in target_vars:
+            row = spec[spec["Variable"] == var]
+            if row.empty:
+                continue
+            instruction_blocks.append(fmt(var, row.iloc[0]))
+
+        new_program, diff = locate_and_update(program, instruction_blocks)
 
         state["legacy_update_preview"] = {
             "program": new_program,
@@ -1064,37 +1192,38 @@ def _run_legacy_update_job(target_vars):
             "targeted_vars": target_vars,
         }
         state["job_status"] = "done"
-        state["job_note"] = (f"Preview ready for {len(target_vars)} variable(s) — review the "
-                             f"diff and edit the text below before applying.")
+        state["job_note"] = (f"Preview ready for {len(target_vars)} variable(s)/row(s) — review "
+                             f"the diff and edit the text below before applying.")
     except Exception as e:
         state["job_status"] = "error"
         state["job_note"] = f"Preview failed: {e}"
     finally:
-        _GENERATE_LOCKS["adam"].release()
+        _GENERATE_LOCKS[otype].release()
 
 
 @app.route("/legacy_preview_update", methods=["POST"])
 def legacy_preview_update():
-    state = RUN_STATE["otypes"]["adam"]
+    otype = _otype_from_request()
+    state = RUN_STATE["otypes"][otype]
     if not state.get("legacy_classification"):
-        return _render(active_otype="adam", note_otype="adam", note="Upload and analyze a program first.")
+        return _render(active_otype=otype, note_otype=otype, note="Upload and analyze a program first.")
 
     target_vars = request.form.getlist("update_var")
     if not target_vars:
-        return _render(active_otype="adam", note_otype="adam", note="Select at least one variable to update.")
+        return _render(active_otype=otype, note_otype=otype, note="Select at least one variable/row to update.")
 
-    lock = _GENERATE_LOCKS["adam"]
+    lock = _GENERATE_LOCKS[otype]
     if not lock.acquire(blocking=False):
-        return _render(active_otype="adam", note_otype="adam",
+        return _render(active_otype=otype, note_otype=otype,
                       note="A generation is already running on this tab — wait for it to finish.")
 
     state["job_status"] = "running"
     state["job_kind"] = "legacy_update"
     state["job_note"] = None
 
-    threading.Thread(target=_run_legacy_update_job, args=(target_vars,), daemon=True).start()
+    threading.Thread(target=_run_legacy_update_job, args=(otype, target_vars), daemon=True).start()
 
-    return _render(active_otype="adam")
+    return _render(active_otype=otype)
 
 
 @app.route("/legacy_apply_update", methods=["POST"])
@@ -1102,27 +1231,39 @@ def legacy_apply_update():
     """Commit a previewed full-update — uses whatever text is in the
     submitted textarea, NOT necessarily state["legacy_update_preview"]'s
     original proposal, since the user may have hand-edited it (the "live
-    editing" step). The whole program becomes one opaque "file" block (same
-    kind BDS/SDTM/TLF programs already use) rather than forcing per-variable
-    tracking onto content that was never structured that way."""
-    state = RUN_STATE["otypes"]["adam"]
+    editing" step). The result becomes one opaque "file" block (the same
+    kind every non-ADSL program already uses) rather than forcing per-
+    variable tracking onto content that was never structured that way."""
+    otype = _otype_from_request()
+    state = RUN_STATE["otypes"][otype]
     preview = state.get("legacy_update_preview")
     if not preview:
-        return _render(active_otype="adam", note_otype="adam", note="No pending update to apply.")
+        return _render(active_otype=otype, note_otype=otype, note="No pending update to apply.")
 
     edited_program = request.form.get("program_text", preview["program"])
 
-    # A prior normal generate/insert may have left per-variable adsl blocks —
-    # now stale, since this program replaces that content wholesale via a
-    # different (whole-file) mechanism.
-    stale_keys = [k for k in state["block_order"] if k.startswith("adam:adsl:")]
-    for k in stale_keys:
-        state["blocks"].pop(k, None)
-        state["block_order"].remove(k)
+    if otype == "adam":
+        # A prior normal generate/insert may have left per-variable adsl
+        # blocks — now stale, since this program replaces that content
+        # wholesale via a different (whole-file) mechanism.
+        stale_keys = [k for k in state["block_order"] if k.startswith("adam:adsl:")]
+        for k in stale_keys:
+            state["blocks"].pop(k, None)
+            state["block_order"].remove(k)
+        program_name = "adsl"
+        key = "adam:adsl_legacy"
+        label = "adsl.sas (uploaded program, updated)"
+    elif otype == "sdtm":
+        program_name = state["legacy_domain"].lower()
+        key = f"sdtm:{program_name}"
+        label = f"{program_name}.sas (uploaded program, updated)"
+    else:  # tlf
+        program_name = os.path.splitext(os.path.basename(state["legacy_upload_path"]))[0]
+        key = f"tlf:{program_name}"
+        label = f"{program_name}.sas (uploaded program, updated)"
 
-    key = "adam:adsl_legacy"
-    state["programs"]["adsl"] = edited_program
-    state["blocks"][key] = {"label": "adsl.sas (uploaded program, updated)", "code": edited_program,
+    state["programs"][program_name] = edited_program
+    state["blocks"][key] = {"label": label, "code": edited_program,
                             "qc": "NONE", "approved": False, "kind": "file", "var": None}
     if key not in state["block_order"]:
         state["block_order"].append(key)
@@ -1130,18 +1271,22 @@ def legacy_apply_update():
     state["legacy_upload_path"] = None
     state["legacy_classification"] = None
     state["legacy_update_preview"] = None
+    state["legacy_domain"] = None
+    state["legacy_spec_path"] = None
+    state["legacy_shell_path"] = None
     state["exported_files"] = []
     state["last_commit"] = None
     state["active_screen"] = "review"
-    return _render(active_otype="adam")
+    return _render(active_otype=otype)
 
 
 @app.route("/legacy_cancel_update", methods=["POST"])
 def legacy_cancel_update():
     """Discard a previewed full-update without applying it."""
-    state = RUN_STATE["otypes"]["adam"]
+    otype = _otype_from_request()
+    state = RUN_STATE["otypes"][otype]
     state["legacy_update_preview"] = None
-    return _render(active_otype="adam")
+    return _render(active_otype=otype)
 
 
 def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending, use_macros=True):
