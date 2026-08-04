@@ -760,7 +760,15 @@ def improve_domain_program(domain, draft, variables, use_api=True, language="sas
     an existing draft (from write_domain_program, or a prior improve/review
     pass) and returns an improved version. use_api picks local vs. API for
     THIS call specifically, independent of whichever step wrote the
-    original draft."""
+    original draft.
+
+    Strips markdown fences from the result — write_domain_program's output
+    normally goes through assemble_program() before ever reaching disk,
+    which does this same cleanup, but /sdtm_improve writes this function's
+    return value straight to disk (the whole point is to update an already-
+    assembled file with a header/footer of its own, not re-wrap it), so the
+    cleanup has to happen here instead.
+    """
     prompt = _build_domain_improve_prompt(domain, draft, variables, language)
     lang_name = "R" if language == "r" else "SAS"
     print(f"  [{domain}] Improving {lang_name} program")
@@ -768,7 +776,12 @@ def improve_domain_program(domain, draft, variables, use_api=True, language="sas
         model_fn = generate_api if use_api else generate_local
         improved = model_fn(prompt)
         if improved and len(improved.strip()) > 50:
-            return improved
+            improved = improved.strip()
+            if improved.startswith("```"):
+                improved = improved.split("\n", 1)[1] if "\n" in improved else ""
+            if improved.endswith("```"):
+                improved = improved.rsplit("```", 1)[0]
+            return improved.strip()
         print(f"    Improver returned empty, keeping original")
         return draft
     except Exception as e:
