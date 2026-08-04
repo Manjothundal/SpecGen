@@ -18,8 +18,14 @@ Domain class determines the code structure:
                the parent domain's own .sas file (e.g. SUPPAE lives inside
                ae.sas), not written as a separate program
 
-Uses the existing three-agent pipeline:
-  Writer (Ollama or API) --> Improver (API) --> Reviewer (API)
+Generate/generate_single_domain/generate_all_domains call the Writer only
+(write_domain_program) — one model round-trip per domain, not three.
+Improve and Review (improve_domain_program/review_domain_program) are
+separate, ON-DEMAND steps triggered per domain from the web app
+(app.py's /sdtm_improve, /sdtm_review), not run automatically: a single
+domain used to always cost 3 sequential model calls whether or not the
+extra 2 were wanted, and generating several domains at once could
+parallelize across domains but never within one.
 
 Usage:
   # Generate all domains
@@ -686,39 +692,38 @@ def build_domain_prompt(domain, variables, language="sas", use_macros=True):
 
 # ── Three-agent pipeline ────────────────────────────────────────────
 
-def generate_domain_program(domain, variables, use_api=True, language="sas", use_macros=True):
-    """
-    Generate a complete SAS or R program for one SDTM domain
-    using the three-agent pipeline: Writer -> Improver -> Reviewer.
+def write_domain_program(domain, variables, use_api=True, language="sas", use_macros=True):
+    """Step 1 (Writer) ONLY. This is what Generate calls by default now, in
+    ALL modes — Improve and Review (see improve_domain_program/
+    review_domain_program below) are separate, on-demand actions the user
+    triggers per domain from the Review & sign off screen, not
+    automatically chained after this. One domain used to always cost 3
+    SEQUENTIAL model round-trips regardless of whether the extra 2 were
+    wanted; this makes Generate itself just 1.
     """
     dclass = get_domain_class(domain)
     prompt = build_domain_prompt(domain, variables, language, use_macros)
     lang_name = "R" if language == "r" else "SAS"
 
-    print(f"\n  [{domain}] Generating {lang_name} program ({dclass}, {len(variables)} variables)")
+    print(f"\n  [{domain}] Writing {lang_name} program ({dclass}, {len(variables)} variables)")
 
-    # Step 1: Writer
-    print(f"    Writer: ", end="", flush=True)
     if use_api:
         draft = generate_api(prompt)
         writer_model = API_MODEL
-        print(f"API ({API_MODEL})")
     else:
         draft = generate_local(prompt)
         writer_model = LOCAL_MODEL
-        print(f"Local ({LOCAL_MODEL})")
 
     if not draft or len(draft.strip()) < 50:
         print(f"    WARNING: Writer produced empty/short output for {domain}")
         return None, writer_model
+    return draft, writer_model
 
-    # Step 2: Improver
-    # Step 2: Improver (direct API call, not the ADaM variable-level improver)
-    if use_api:
-        print(f"    Improver: API ({API_MODEL})")
-        var_names = [v["Variable"] for v in variables if v.get("Variable")]
-        if language == "r":
-            improve_prompt = f"""You are a principal R programmer (tidyverse) with 15+ years of CDISC SDTM experience.
+
+def _build_domain_improve_prompt(domain, draft, variables, language="sas"):
+    var_names = [v["Variable"] for v in variables if v.get("Variable")]
+    if language == "r":
+        return f"""You are a principal R programmer (tidyverse) with 15+ years of CDISC SDTM experience.
 Review and improve this R script for the {domain} domain.
 
 The script must create all these variables: {', '.join(var_names)}
@@ -733,8 +738,8 @@ Fix any issues:
 - Do NOT flag valid R for not looking like SAS (no run;, no length/label/format, no semicolons)
 
 Return ONLY the improved R code, no explanations, no markdown fences.""" + "\n\n" + draft
-        else:
-            improve_prompt = f"""You are a principal SAS programmer with 15+ years of CDISC SDTM experience.
+    else:
+        return f"""You are a principal SAS programmer with 15+ years of CDISC SDTM experience.
 Review and improve this SAS program for the {domain} domain.
 
 The program must create all these variables: {', '.join(var_names)}
@@ -749,25 +754,90 @@ Fix any issues:
 
 Return ONLY the improved SAS code, no explanations.""" + "\n\n" + draft
 
-        try:
-            improved = generate_api(improve_prompt)
-            if improved and len(improved.strip()) > 50:
-                draft = improved
-            else:
-                print(f"    Improver returned empty, keeping Writer draft")
-        except Exception as e:
-            print(f"    Improver failed: {e}, keeping Writer draft")
 
-    # Step 3: Reviewer
-    if use_api:
-        print(f"    Reviewer: API ({API_MODEL})")
-        review = review_sas(draft)
-        if review:
-            print(f"    Review: {review[:100]}...")
+def improve_domain_program(domain, draft, variables, use_api=True, language="sas"):
+    """Step 2 (Improver), run ON DEMAND (see app.py's /sdtm_improve) — takes
+    an existing draft (from write_domain_program, or a prior improve/review
+    pass) and returns an improved version. use_api picks local vs. API for
+    THIS call specifically, independent of whichever step wrote the
+    original draft."""
+    prompt = _build_domain_improve_prompt(domain, draft, variables, language)
+    lang_name = "R" if language == "r" else "SAS"
+    print(f"  [{domain}] Improving {lang_name} program")
+    try:
+        model_fn = generate_api if use_api else generate_local
+        improved = model_fn(prompt)
+        if improved and len(improved.strip()) > 50:
+            return improved
+        print(f"    Improver returned empty, keeping original")
+        return draft
+    except Exception as e:
+        print(f"    Improver failed: {e}, keeping original")
+        return draft
+
+
+def _build_domain_review_prompt(domain, code, variables, language="sas"):
+    """A REAL review prompt with an actual PASS/FAIL checklist. The
+    previous single-shot pipeline called review_sas(draft) with the raw
+    generated CODE passed in as if it were the prompt — there was no
+    "please QC this" instruction at all, so it never produced a meaningful
+    verdict (and the result was discarded after printing, never surfaced
+    anywhere). Mirrors reviewer.py's build_review_prompt structure (used
+    for ADaM variables) adapted for a whole domain program instead of one
+    variable's block."""
+    var_names = [v["Variable"] for v in variables if v.get("Variable")]
+    if language == "r":
+        return f"""You are a senior clinical R programmer (tidyverse) performing QC on an SDTM {domain} domain script.
+
+Review this script:
+
+{code}
+
+The script must create all these variables: {', '.join(var_names)}
+
+Check ONLY for these issues:
+1. Missing variables from the required list above
+2. Code that would fail to run (undefined objects, syntax errors)
+3. Non-standard date handling for --DTC variables (must be as.Date(substr(x,1,10)), not a different approach)
+
+Reply with exactly one line:
+PASS
+or
+FAIL: <short reason>
+
+No other text."""
     else:
-        review = None
+        return f"""You are a senior clinical SAS programmer performing QC on an SDTM {domain} domain program.
 
-    return draft, writer_model
+Review this program:
+
+{code}
+
+The program must create all these variables: {', '.join(var_names)}
+
+Check ONLY for these issues:
+1. Missing variables from the required list above
+2. Statements that would fail in a data step (syntax errors, undefined datasets/variables)
+3. Non-standard date handling for --DTC variables (must be ISO 8601 character, not a SAS date value)
+
+Reply with exactly one line:
+PASS
+or
+FAIL: <short reason>
+
+No other text."""
+
+
+def review_domain_program(domain, code, variables, use_api=True, language="sas"):
+    """Step 3 (Reviewer), run ON DEMAND (see app.py's /sdtm_review) — returns
+    a real PASS/FAIL verdict against the CURRENT code (see
+    _build_domain_review_prompt for what changed vs. the old broken call)."""
+    prompt = _build_domain_review_prompt(domain, code, variables, language)
+    lang_name = "R" if language == "r" else "SAS"
+    print(f"  [{domain}] Reviewing {lang_name} program")
+    model_fn = generate_api if use_api else generate_local
+    verdict = model_fn(prompt).strip()
+    return verdict
 
 
 # ── Program assembly ────────────────────────────────────────────────
@@ -861,10 +931,11 @@ def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=Fa
     """Generate the SAS or R program for one domain.
 
     By default, skips generation if output_dir/<domain>.<ext> already exists —
-    each Writer/Improver run is a fresh, non-deterministic draft, so
-    regenerating on every call would silently overwrite any hand-QC fix
-    applied to a prior draft (see ROADMAP.md Phase 10 piece 3). Pass
-    force=True to regenerate anyway (e.g. after a spec change).
+    each Writer run is a fresh, non-deterministic draft, so regenerating on
+    every call would silently overwrite any hand-QC fix (or a prior
+    Improve/Review pass) applied to a prior draft (see ROADMAP.md Phase 10
+    piece 3). Pass force=True to regenerate anyway (e.g. after a spec
+    change).
     """
     domain_lower = domain.lower()
     ext = "R" if language == "r" else "sas"
@@ -878,8 +949,8 @@ def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=Fa
         print(f"  No variables found for domain {domain}")
         return None
 
-    code, writer_model = generate_domain_program(domain, variables, use_api=use_api, language=language,
-                                                 use_macros=use_macros)
+    code, writer_model = write_domain_program(domain, variables, use_api=use_api, language=language,
+                                              use_macros=use_macros)
     if not code:
         print(f"  Failed to generate code for {domain}")
         return None
@@ -955,8 +1026,8 @@ def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=F
         print(f"  No variables found for domain {supp_domain}")
         return None
 
-    code, writer_model = generate_domain_program(supp_domain, variables, use_api=use_api, language=language,
-                                                 use_macros=use_macros)
+    code, writer_model = write_domain_program(supp_domain, variables, use_api=use_api, language=language,
+                                              use_macros=use_macros)
     if not code:
         print(f"  Failed to generate code for {supp_domain}")
         return None

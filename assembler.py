@@ -250,15 +250,13 @@ def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, r
             print("Macro match:", var, "->", match["macro"])
             block = f"/*-- BEGIN {var} --*/\n/* {var}: using validated macro */\n{match['call']}\n/*-- END {var} --*/"
         else:
-            # 2. Pattern match + generate
+            # 2. Pattern match + generate (Writer only — Improve/Review are
+            # separate on-demand actions per variable now, see
+            # app.py's improve_adsl_block/review_adsl_block, so a fresh
+            # Generate isn't paying for 2 extra sequential model calls per
+            # variable it may not want)
             pmatch = find_by_pattern(var, str(row["Derivation"]), catalog) if use_macros else None
-            block = gen_block(row, language="sas", writer_mode=writer_mode)
-            print("   Improving:", var)
-            block = clean(improve_block(block, row, available, language="sas", mode=reviewer_mode))
-            verdict = review_block(block, available, language="sas", mode=reviewer_mode)
-            if verdict.startswith("FAIL"):
-                print("   QC:", verdict)
-                block = "/* QC FLAG: " + verdict + " */\n" + block
+            block = clean(gen_block(row, language="sas", writer_mode=writer_mode))
             if pmatch:
                 print("   Pattern hint:", var, "->", pmatch["pattern"])
                 block = pmatch["suggested_call"] + "\n" + block
@@ -447,11 +445,10 @@ def _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode=None, rev
             continue
 
         var = row["Variable"]
-        # No macro branch in R (SAS-only catalog); every var goes Writer->Improver->Reviewer
+        # No macro branch in R (SAS-only catalog). Writer only — Improve/Review
+        # are separate on-demand actions per variable now (see app.py's
+        # improve_adsl_block/review_adsl_block), not run automatically here.
         block = gen_block(row, language="r", writer_mode=writer_mode)
-        print("   Improving:", var)
-        block = clean(improve_block(block, row, available, language="r", mode=reviewer_mode))
-        verdict = review_block(block, available, language="r", mode=reviewer_mode)
 
         # indent the derivation into the mutate() and wrap in R markers.
         # The mutate() argument separator MUST be a real comma on the code
@@ -479,9 +476,6 @@ def _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode=None, rev
             indented.append(f"    {var} = {na_value},  # WRITER PRODUCED NO CODE for this derivation")
         body = "\n".join(indented)
         wrapped = f"    # -- BEGIN {var} -- #\n{body}\n    # -- END {var} -- #"
-        if verdict.startswith("FAIL"):
-            print("   QC:", verdict)
-            wrapped = f"    # QC FLAG: {verdict}\n" + wrapped
         parts.append(wrapped)
 
     # ---- TRT01A fallback (== SAS: if missing then planned)

@@ -550,6 +550,67 @@ the outputs.
                 diff. Re-ran the original ADaM SAFFL regression case after
                 the `locate_and_update` generalization to confirm identical
                 behavior post-refactor.
+      - [x] Piece 10: split Writer/Improver/Reviewer into separate on-demand
+            actions (ADaM + SDTM), traced from a real complaint: SDTM domain
+            generation was slow because one domain wasn't one model call, it
+            was 3 SEQUENTIAL ones (Writer -> Improver -> Reviewer), and this
+            app's concurrency only parallelizes ACROSS domains — a single
+            domain got zero benefit (confirmed with real runlog.csv timing,
+            ~40-90s/domain in Hybrid/API mode). Generate now runs the Writer
+            ONLY, in every mode; Improve and Review are separate buttons the
+            user clicks per block, only when wanted.
+              - ADaM: `_assemble_adsl_sas`/`_assemble_adsl_r`'s main loop no
+                longer auto-calls improve_block()/review_block() — every
+                variable is Writer-only by default (macro-exact-match and
+                pattern-hint paths unaffected, they never called Improve/
+                Review anyway). Replaced `regenerate_adsl_block()` (which
+                regenerated from scratch AND ran Improve+Review together)
+                with two independent functions operating on the CURRENT
+                block code — `improve_adsl_block`/`review_adsl_block` — new
+                routes `/adsl_improve`/`/adsl_review` replacing `/send_back`.
+                Real gap found and fixed: `parse_adsl_blocks()` only had two
+                QC states derived from the code text (a "QC FLAG" comment ->
+                FAIL, else -> PASS) — once Review became opt-in, "never
+                reviewed" would have silently rendered as PASS. Added a real
+                `/* QC PASS */` marker (mirroring the existing FAIL one) so
+                the code text can distinguish all 3 states; a fresh Generate
+                (and even a macro-exact-match block, which also never went
+                through Reviewer) now correctly shows NOT REVIEWED until the
+                user clicks Review.
+              - SDTM: found a second, independent bug while splitting
+                `generate_domain_program()` apart — the Reviewer step called
+                `review_sas(draft)` with the raw generated CODE passed in as
+                if it WERE the review prompt. No "please QC this" instruction
+                existed at all, so it never produced a meaningful verdict,
+                and the result was discarded after printing to console —
+                SDTM domains had no working QC signal, full stop. New
+                `write_domain_program()` (Writer only — what Generate calls
+                now), `improve_domain_program()` (the existing improve-prompt
+                text, extracted into its own function), and a NEW
+                `review_domain_program()` with a REAL PASS/FAIL checklist
+                (mirroring reviewer.py's build_review_prompt, adapted for a
+                whole domain program). New `sdtm_domain` block kind (vs. the
+                generic `file` kind BDS/TLF/legacy-uploaded blocks keep) so
+                Improve/Review buttons only appear where they apply. New
+                routes `/sdtm_improve`/`/sdtm_review` call the sdtm_assembler
+                functions directly in-process (not another subprocess) and
+                write the result back to BOTH `state["programs"]` AND the
+                actual `sdtm_programs/<domain>.<ext>` file on disk — Export's
+                SDTM branch just lists already-on-disk paths rather than
+                rewriting them, so skipping the disk write would have made
+                Export silently ship the pre-improve/pre-review draft.
+              - Verified directly: a fresh Generate produces NONE-qc blocks
+                for both ADaM (confirmed no "Improving:"/Reviewer console
+                output during generation) and SDTM (confirmed the written
+                file has no reviewer-step trace either); Improve and Review
+                each independently update one block without touching others,
+                including the trickier ADaM R path (indent + mutate()-comma
+                formatting correctly stripped before Improve/Review and
+                correctly reapplied after, verified with a real round-trip);
+                repeated Improve/Review cycles don't accumulate stale QC
+                marker comments (checked directly); SDTM's Improve/Review
+                confirmed writing to the real domain file on disk, not just
+                in-memory state.
 
 ## Open items (near-term)
 - Test against a fuller, realistic ADSL spec (60-100+ variables)

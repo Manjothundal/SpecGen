@@ -57,7 +57,7 @@ import bds_assembler as bds
 import tlf_assembler as tlf
 import sdtm_assembler
 import config
-from assembler import assemble_adsl, gen_block, clean, known_variables, _r_add_comma
+from assembler import assemble_adsl, clean, known_variables, _r_add_comma
 from improver import improve_block
 from reviewer import review_block
 from spec_differ import diff_specs
@@ -530,14 +530,30 @@ def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False,
 
 def parse_adsl_blocks(code):
     """Split generated ADSL code into per-variable blocks using its BEGIN/END
-    markers. Returns [{"var":..., "code":..., "qc": "PASS"|"FAIL"}, ...]."""
+    markers. Returns [{"var":..., "code":..., "qc": "PASS"|"FAIL"|"NONE"}, ...].
+
+    QC is now opt-in (Review is a separate action, not automatic during
+    Generate — see improve_adsl_block/review_adsl_block below), so a block's
+    code carries an explicit marker either way once reviewed: "QC FLAG: ..."
+    on FAIL (unchanged), a plain "QC PASS" comment on PASS (new — previously
+    PASS had no marker at all, which is what let it get silently confused
+    with "never reviewed" once Review stopped running automatically). No
+    marker at all means NONE, genuinely not-yet-reviewed — including a
+    macro-exact-match block, which never went through Reviewer either
+    unless the user explicitly clicks Review on it.
+    """
     sas_pattern = re.compile(r'/\*-- BEGIN (\w+) --\*/\n(.*?)\n/\*-- END \1 --\*/', re.DOTALL)
     r_pattern = re.compile(r'# -- BEGIN (\w+) -- #\n(.*?)\n(?: {4})?# -- END \1 -- #', re.DOTALL)
     matches = list(sas_pattern.finditer(code)) or list(r_pattern.finditer(code))
     blocks = []
     for m in matches:
         var, body = m.group(1), m.group(2).strip("\n")
-        qc = "FAIL" if "QC FLAG" in body else "PASS"
+        if "QC FLAG" in body:
+            qc = "FAIL"
+        elif "QC PASS" in body:
+            qc = "PASS"
+        else:
+            qc = "NONE"
         blocks.append({"var": var, "code": body, "qc": qc})
     return blocks
 
@@ -550,31 +566,65 @@ def _r_block_pattern(var):
     return re.compile(rf'# -- BEGIN {re.escape(var)} -- #\n(.*?)\n(?: {{4}})?# -- END {re.escape(var)} -- #', re.DOTALL)
 
 
-def regenerate_adsl_block(var):
-    """Re-run Writer -> Improver -> Reviewer for ONE ADSL variable and splice
-    the result back into the stored adsl program text (fresh offsets each
-    time, so repeated re-generation of different blocks stays correct even
-    though earlier edits changed the surrounding text's length). ADSL only
-    ever lives under the ADaM tab, so this always operates on that tab's
-    own state."""
-    state = RUN_STATE["otypes"]["adam"]
+def _current_adsl_var_code(state, var):
+    """The current code for one ADSL variable, suitable as input to
+    improve_block/review_block — with any previous QC marker comment
+    stripped (so re-running Improve/Review doesn't compound stale marker
+    text on top of itself) and, for R, de-formatted back to the plain
+    derivation-code shape gen_block/improve_block/review_block all deal in
+    (undoing the indent + mutate()-separator-comma formatting that gets
+    applied only when a block is spliced into the stored program)."""
+    key = "adam:adsl:" + var
+    body = state["blocks"][key]["code"]
     lang = state["lang"]
-    writer_mode, reviewer_mode = MODE_MAP.get(state["mode"], (None, None))
-    row = state["main_step_rows"][var]
-    available = state["adsl_available"]
-
-    block = gen_block(row, language=lang, writer_mode=writer_mode)
-    block = clean(improve_block(block, row, available, language=lang, mode=reviewer_mode))
-    verdict = review_block(block, available, language=lang, mode=reviewer_mode)
-    qc = "FAIL" if verdict.startswith("FAIL") else "PASS"
 
     if lang == "sas":
-        if qc == "FAIL":
-            block = f"/* QC FLAG: {verdict} */\n" + block
+        return re.sub(r'^/\* QC (?:FLAG: .*?|PASS) \*/\n', '', body)
+
+    body = re.sub(r'^ {0,4}# QC (?:FLAG: .*|PASS)\n', '', body)
+    lines = body.splitlines()
+    dedented = [ln[4:] if ln.startswith("    ") else ln for ln in lines]
+    if dedented and "WRITER PRODUCED NO CODE" in dedented[-1]:
+        dedented = dedented[:-1]
+    for i in range(len(dedented) - 1, -1, -1):
+        if not dedented[i].lstrip().startswith("#"):
+            line = dedented[i]
+            hash_pos = line.find("#")
+            if hash_pos == -1:
+                dedented[i] = line.rstrip().rstrip(",")
+            else:
+                code_part, comment_part = line[:hash_pos], line[hash_pos:]
+                dedented[i] = code_part.rstrip().rstrip(",") + "  " + comment_part
+            break
+    return "\n".join(dedented)
+
+
+def _splice_adsl_var(state, var, new_code, qc_state=None, verdict=None):
+    """Format new_code for this tab's language and splice it into the
+    stored adsl program text at variable var's BEGIN/END markers (fresh
+    offsets looked up each call, so repeated edits to different variables
+    stay correct even though earlier edits changed the surrounding text's
+    length), then update state["blocks"]. qc_state: None (Improve just
+    ran — no marker, matches "never reviewed" until Review runs again),
+    "FAIL" (needs verdict), or "PASS"."""
+    lang = state["lang"]
+    row = state["main_step_rows"][var]
+
+    if qc_state == "FAIL":
+        comment = f"QC FLAG: {verdict}"
+    elif qc_state == "PASS":
+        comment = "QC PASS"
+    else:
+        comment = None
+
+    if lang == "sas":
+        block = new_code
+        if comment:
+            block = f"/* {comment} */\n" + block
         new_body = block
         pattern = _sas_block_pattern(var)
     else:
-        raw_lines = block.splitlines()
+        raw_lines = new_code.splitlines()
         indented = ["    " + ln for ln in raw_lines]
         comma_idx = None
         for i in range(len(indented) - 1, -1, -1):
@@ -587,8 +637,8 @@ def regenerate_adsl_block(var):
             na_value = "NA_character_" if str(row["Type"]).lower() == "text" else "NA_real_"
             indented.append(f"    {var} = {na_value},  # WRITER PRODUCED NO CODE for this derivation")
         new_body = "\n".join(indented)
-        if qc == "FAIL":
-            new_body = f"    # QC FLAG: {verdict}\n" + new_body
+        if comment:
+            new_body = f"    # {comment}\n" + new_body
         pattern = _r_block_pattern(var)
 
     program = state["programs"]["adsl"]
@@ -599,8 +649,40 @@ def regenerate_adsl_block(var):
 
     key = "adam:adsl:" + var
     state["blocks"][key]["code"] = new_body
-    state["blocks"][key]["qc"] = qc
+    state["blocks"][key]["qc"] = qc_state or "NONE"
     state["blocks"][key]["approved"] = False
+
+
+def improve_adsl_block(var):
+    """Run Improve on the CURRENT code for one ADSL variable (not a fresh
+    Writer regenerate) and splice the result back in. Resets qc to NONE —
+    a prior Review verdict no longer applies to code Improve just changed;
+    Review is a separate action the user can re-run if they want a badge
+    for the improved version."""
+    state = RUN_STATE["otypes"]["adam"]
+    lang = state["lang"]
+    _, reviewer_mode = MODE_MAP.get(state["mode"], (None, None))
+    row = state["main_step_rows"][var]
+    available = state["adsl_available"]
+
+    current_code = _current_adsl_var_code(state, var)
+    improved = clean(improve_block(current_code, row, available, language=lang, mode=reviewer_mode))
+    _splice_adsl_var(state, var, improved, qc_state=None)
+
+
+def review_adsl_block(var):
+    """Run Review on the CURRENT code for one ADSL variable and set its QC
+    badge — Review only reports a verdict, it never changes the code
+    itself (Improve is the separate action that does)."""
+    state = RUN_STATE["otypes"]["adam"]
+    lang = state["lang"]
+    _, reviewer_mode = MODE_MAP.get(state["mode"], (None, None))
+    available = state["adsl_available"]
+
+    current_code = _current_adsl_var_code(state, var)
+    verdict = review_block(current_code, available, language=lang, mode=reviewer_mode)
+    qc_state = "FAIL" if verdict.startswith("FAIL") else "PASS"
+    _splice_adsl_var(state, var, current_code, qc_state=qc_state, verdict=verdict)
 
 
 # ---------------------------------------------------------------------------
@@ -622,8 +704,14 @@ def _rebuild_blocks(state, otype, programs, adsl_context):
         if name == "adsl":
             continue
         key = f"{otype}:{name}"
+        # SDTM's normal per-domain output gets its own "sdtm_domain" kind
+        # (vs. the generic "file" kind BDS/TLF/legacy-uploaded programs
+        # keep) so the template can offer Improve/Review only where they
+        # actually apply — a domain this app wrote via write_domain_program,
+        # not an opaque brought-in file from the legacy-update flow.
+        kind = "sdtm_domain" if otype == "sdtm" else "file"
         blocks[key] = {"label": name, "code": code, "qc": "NONE",
-                      "approved": False, "kind": "file", "var": None}
+                      "approved": False, "kind": kind, "var": None}
         order.append(key)
 
     state["blocks"] = blocks
@@ -1427,16 +1515,160 @@ def approve():
     return _render(active_otype=otype)
 
 
-@app.route("/send_back", methods=["POST"])
-def send_back():
+@app.route("/adsl_improve", methods=["POST"])
+def adsl_improve():
     key = request.form.get("block_key", "")
     otype = key.split(":", 1)[0] if ":" in key else "adam"
     otype = otype if otype in OTYPES else "adam"
     state = RUN_STATE["otypes"][otype]
     block = state["blocks"].get(key)
     if block and block["kind"] == "adsl_var":
-        regenerate_adsl_block(block["var"])
+        improve_adsl_block(block["var"])
     return _render(active_otype=otype)
+
+
+@app.route("/adsl_review", methods=["POST"])
+def adsl_review():
+    key = request.form.get("block_key", "")
+    otype = key.split(":", 1)[0] if ":" in key else "adam"
+    otype = otype if otype in OTYPES else "adam"
+    state = RUN_STATE["otypes"][otype]
+    block = state["blocks"].get(key)
+    if block and block["kind"] == "adsl_var":
+        review_adsl_block(block["var"])
+    return _render(active_otype=otype)
+
+
+def _strip_sdtm_qc_marker(code):
+    """Remove a leading QC marker comment line (added by a previous Review),
+    if present, so re-running Improve/Review doesn't compound stale marker
+    text, and so Improve doesn't see a stale verdict as part of "the code"."""
+    return re.sub(r'^(?:/\* QC (?:FLAG: .*?|PASS) \*/|# QC (?:FLAG: .*|PASS))\n', '', code)
+
+
+def _run_sdtm_improve_job(domain, use_api, language):
+    """Background thread target for /sdtm_improve — same non-blocking
+    rationale as every other model-calling job in this app. Writes the
+    improved program back to BOTH state["programs"] AND the actual
+    sdtm_programs/<domain>.<ext> file on disk: Export's SDTM branch just
+    lists already-on-disk paths rather than rewriting them (unlike ADaM/
+    TLF), so skipping the disk write would make Export silently ship the
+    pre-improve draft."""
+    state = RUN_STATE["otypes"]["sdtm"]
+    try:
+        spec_path = state["uploaded_paths"][0] if state["uploaded_paths"] else SDTM_SPEC
+        variables = sdtm_assembler.read_domain_spec(spec_path, domain)
+        domain_lower = domain.lower()
+        current_code = _strip_sdtm_qc_marker(state["programs"][domain_lower])
+
+        improved = sdtm_assembler.improve_domain_program(domain, current_code, variables,
+                                                          use_api=use_api, language=language)
+
+        ext = "R" if language == "r" else "sas"
+        file_path = os.path.join("sdtm_programs", f"{domain_lower}.{ext}")
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(improved)
+
+        key = f"sdtm:{domain_lower}"
+        state["programs"][domain_lower] = improved
+        state["blocks"][key]["code"] = improved
+        # A prior Review verdict no longer applies to code Improve just
+        # changed — reset until Review runs again, same convention as ADaM.
+        state["blocks"][key]["qc"] = "NONE"
+        state["blocks"][key]["approved"] = False
+        state["job_status"] = "done"
+        state["job_note"] = f"Improved {domain}."
+    except Exception as e:
+        state["job_status"] = "error"
+        state["job_note"] = f"Improve failed: {e}"
+    finally:
+        _GENERATE_LOCKS["sdtm"].release()
+
+
+def _run_sdtm_review_job(domain, use_api, language):
+    """Background thread target for /sdtm_review. Unlike the old single-shot
+    pipeline's review_sas(draft) call — which passed the raw generated CODE
+    in as if it were the prompt, so it never produced a real verdict and the
+    result was discarded after printing — this uses a genuine PASS/FAIL
+    review prompt (sdtm_assembler.review_domain_program) and actually
+    surfaces the verdict as the block's QC badge, plus prepends it as a
+    comment in the code (same audit-trail-in-code convention ADaM's QC FLAG/
+    QC PASS markers already use)."""
+    state = RUN_STATE["otypes"]["sdtm"]
+    try:
+        spec_path = state["uploaded_paths"][0] if state["uploaded_paths"] else SDTM_SPEC
+        variables = sdtm_assembler.read_domain_spec(spec_path, domain)
+        domain_lower = domain.lower()
+        current_code = _strip_sdtm_qc_marker(state["programs"][domain_lower])
+
+        verdict = sdtm_assembler.review_domain_program(domain, current_code, variables,
+                                                        use_api=use_api, language=language)
+        qc = "FAIL" if verdict.startswith("FAIL") else "PASS"
+        comment = f"QC FLAG: {verdict}" if qc == "FAIL" else "QC PASS"
+        marker = f"# {comment}\n" if language == "r" else f"/* {comment} */\n"
+        new_code = marker + current_code
+
+        ext = "R" if language == "r" else "sas"
+        file_path = os.path.join("sdtm_programs", f"{domain_lower}.{ext}")
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(new_code)
+
+        key = f"sdtm:{domain_lower}"
+        state["programs"][domain_lower] = new_code
+        state["blocks"][key]["code"] = new_code
+        state["blocks"][key]["qc"] = qc
+        state["blocks"][key]["approved"] = False
+        state["job_status"] = "done"
+        state["job_note"] = f"Reviewed {domain}: {verdict}"
+    except Exception as e:
+        state["job_status"] = "error"
+        state["job_note"] = f"Review failed: {e}"
+    finally:
+        _GENERATE_LOCKS["sdtm"].release()
+
+
+@app.route("/sdtm_improve", methods=["POST"])
+def sdtm_improve():
+    key = request.form.get("block_key", "")
+    state = RUN_STATE["otypes"]["sdtm"]
+    block = state["blocks"].get(key)
+    if not block or block["kind"] != "sdtm_domain":
+        return _render(active_otype="sdtm")
+
+    lock = _GENERATE_LOCKS["sdtm"]
+    if not lock.acquire(blocking=False):
+        return _render(active_otype="sdtm", note_otype="sdtm",
+                      note="A generation is already running on this tab — wait for it to finish.")
+
+    domain = block["label"].upper()
+    use_api = state["mode"] != "offline"
+    state["job_status"] = "running"
+    state["job_kind"] = "sdtm_improve"
+    state["job_note"] = None
+    threading.Thread(target=_run_sdtm_improve_job, args=(domain, use_api, state["lang"]), daemon=True).start()
+    return _render(active_otype="sdtm")
+
+
+@app.route("/sdtm_review", methods=["POST"])
+def sdtm_review():
+    key = request.form.get("block_key", "")
+    state = RUN_STATE["otypes"]["sdtm"]
+    block = state["blocks"].get(key)
+    if not block or block["kind"] != "sdtm_domain":
+        return _render(active_otype="sdtm")
+
+    lock = _GENERATE_LOCKS["sdtm"]
+    if not lock.acquire(blocking=False):
+        return _render(active_otype="sdtm", note_otype="sdtm",
+                      note="A generation is already running on this tab — wait for it to finish.")
+
+    domain = block["label"].upper()
+    use_api = state["mode"] != "offline"
+    state["job_status"] = "running"
+    state["job_kind"] = "sdtm_review"
+    state["job_note"] = None
+    threading.Thread(target=_run_sdtm_review_job, args=(domain, use_api, state["lang"]), daemon=True).start()
+    return _render(active_otype="sdtm")
 
 
 @app.route("/export", methods=["POST"])

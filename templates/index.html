@@ -438,6 +438,7 @@
                     <span class="mono">{{ b.label }}</span>
                     {% if b.qc == 'FAIL' %}<span class="b qf">QC FLAG</span>
                     {% elif b.qc == 'PASS' %}<span class="b q">QC PASS</span>
+                    {% elif b.kind in ('adsl_var', 'sdtm_domain') %}<span class="b none">NOT REVIEWED</span>
                     {% else %}<span class="b none">NO QC GATE</span>{% endif %}
                     {% if b.approved %}<span class="b approved">APPROVED</span>{% endif %}
                   </div>
@@ -450,10 +451,23 @@
                       <input type="hidden" name="block_key" value="{{ key }}">
                       <button type="submit" class="mini ok">{{ 'Approved' if b.approved else 'Approve' }}</button>
                     </form>
-                    {% if b.kind == 'adsl_var' and b.qc == 'FAIL' %}
-                    <form class="inline" method="post" action="/send_back">
+                    {% if b.kind == 'adsl_var' %}
+                    <form class="inline" method="post" action="/adsl_improve">
                       <input type="hidden" name="block_key" value="{{ key }}">
-                      <button type="submit" class="mini">Send back to Improver</button>
+                      <button type="submit" class="mini">Improve</button>
+                    </form>
+                    <form class="inline" method="post" action="/adsl_review">
+                      <input type="hidden" name="block_key" value="{{ key }}">
+                      <button type="submit" class="mini">Review</button>
+                    </form>
+                    {% elif b.kind == 'sdtm_domain' %}
+                    <form class="inline" method="post" action="/sdtm_improve">
+                      <input type="hidden" name="block_key" value="{{ key }}">
+                      <button type="submit" class="mini">Improve</button>
+                    </form>
+                    <form class="inline" method="post" action="/sdtm_review">
+                      <input type="hidden" name="block_key" value="{{ key }}">
+                      <button type="submit" class="mini">Review</button>
                     </form>
                     {% endif %}
                   </div>
@@ -532,7 +546,7 @@
       false,
       'Use validated company macro catalog for ADSL where an exact match exists (SAS only — no effect in R)') }}
   {{ otype_tab('sdtm', 'sdtm',
-      "SDTM's pipeline only has Offline/API today (no true Hybrid) — Hybrid behaves like API here.",
+      "Generate writes each domain with the Writer only (1 model call, not 3) — use Improve/Review per domain in step 3 if you want the extra passes. Mode picks local vs. API for whichever of Writer/Improve/Review actually runs; SDTM has no true Hybrid split (Improve/Review both use API whenever Mode isn't Offline).",
       'SDTM spec draft (.xlsx)',
       "Leave blank to use the project's sample SDTM spec.",
       false,
