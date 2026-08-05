@@ -229,7 +229,8 @@
             </form>
 
             {% if t.routing %}
-            <div style="margin-top:20px;">
+            <details style="margin-top:20px;">
+              <summary>view/download</summary>
               {% for section, data in t.routing.items() %}
                 <h3 style="font-size:.9rem;margin:14px 0 6px;">{{ section }}</h3>
                 <table>
@@ -239,7 +240,7 @@
                   {% endfor %}
                 </table>
               {% endfor %}
-            </div>
+            </details>
             {% endif %}
 
             {% if otype == 'adam' and t.adsl_spec_path and t.lang == 'sas' %}
