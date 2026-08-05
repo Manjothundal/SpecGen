@@ -665,9 +665,11 @@ def _macro_hint_block(domain, variables, language):
     return "\n".join(lines)
 
 
-def build_domain_prompt(domain, variables, language="sas", use_macros=True):
+def build_domain_prompt(domain, variables, language="sas", use_macros=True, ig_version=None):
     """Route to the correct prompt builder based on domain class, then
-    append any relevant company macro hints (see _macro_hint_block)."""
+    append any relevant company macro hints (see _macro_hint_block) and,
+    if given, an IG-version instruction — a single insertion point covering
+    all 12 per-domain-class builders below instead of editing each one."""
     dclass = get_domain_class(domain)
 
     if dclass == "DM":
@@ -685,6 +687,11 @@ def build_domain_prompt(domain, variables, language="sas", use_macros=True):
     else:
         prompt = build_events_prompt(domain, variables, language)
 
+    if ig_version:
+        prompt += (f"\n\nFollow CDISC SDTMIG v{ig_version} conventions for variable "
+                  f"naming, controlled terminology usage, and Core (Req/Exp/Perm) "
+                  f"designations.")
+
     if use_macros:
         prompt += _macro_hint_block(domain, variables, language)
     return prompt
@@ -692,7 +699,7 @@ def build_domain_prompt(domain, variables, language="sas", use_macros=True):
 
 # ── Three-agent pipeline ────────────────────────────────────────────
 
-def write_domain_program(domain, variables, use_api=True, language="sas", use_macros=True):
+def write_domain_program(domain, variables, use_api=True, language="sas", use_macros=True, ig_version=None):
     """Step 1 (Writer) ONLY. This is what Generate calls by default now, in
     ALL modes — Improve and Review (see improve_domain_program/
     review_domain_program below) are separate, on-demand actions the user
@@ -702,7 +709,7 @@ def write_domain_program(domain, variables, use_api=True, language="sas", use_ma
     wanted; this makes Generate itself just 1.
     """
     dclass = get_domain_class(domain)
-    prompt = build_domain_prompt(domain, variables, language, use_macros)
+    prompt = build_domain_prompt(domain, variables, language, use_macros, ig_version)
     lang_name = "R" if language == "r" else "SAS"
 
     print(f"\n  [{domain}] Writing {lang_name} program ({dclass}, {len(variables)} variables)")
@@ -720,8 +727,9 @@ def write_domain_program(domain, variables, use_api=True, language="sas", use_ma
     return draft, writer_model
 
 
-def _build_domain_improve_prompt(domain, draft, variables, language="sas"):
+def _build_domain_improve_prompt(domain, draft, variables, language="sas", ig_version=None):
     var_names = [v["Variable"] for v in variables if v.get("Variable")]
+    ig_line = f"- Non-compliance with CDISC SDTMIG v{ig_version} conventions (deprecated/renamed variables, incorrect Core designation, wrong controlled terminology for this version)\n" if ig_version else ""
     if language == "r":
         return f"""You are a principal R programmer (tidyverse) with 15+ years of CDISC SDTM experience.
 Review and improve this R script for the {domain} domain.
@@ -735,7 +743,7 @@ Fix any issues:
 - Missing or incorrect sort order (arrange())
 - Hardcoded values that should be derived
 - Non-standard date handling (must parse ISO 8601 --DTC strings via as.Date(substr(x,1,10)))
-- Do NOT flag valid R for not looking like SAS (no run;, no length/label/format, no semicolons)
+{ig_line}- Do NOT flag valid R for not looking like SAS (no run;, no length/label/format, no semicolons)
 
 Return ONLY the improved R code, no explanations, no markdown fences.""" + "\n\n" + draft
     else:
@@ -751,11 +759,11 @@ Fix any issues:
 - Missing or incorrect sort order
 - Hardcoded values that should be derived
 - Non-standard date handling (must be ISO 8601 character)
-
+{ig_line}
 Return ONLY the improved SAS code, no explanations.""" + "\n\n" + draft
 
 
-def improve_domain_program(domain, draft, variables, use_api=True, language="sas"):
+def improve_domain_program(domain, draft, variables, use_api=True, language="sas", ig_version=None):
     """Step 2 (Improver), run ON DEMAND (see app.py's /sdtm_improve) — takes
     an existing draft (from write_domain_program, or a prior improve/review
     pass) and returns an improved version. use_api picks local vs. API for
@@ -769,7 +777,7 @@ def improve_domain_program(domain, draft, variables, use_api=True, language="sas
     assembled file with a header/footer of its own, not re-wrap it), so the
     cleanup has to happen here instead.
     """
-    prompt = _build_domain_improve_prompt(domain, draft, variables, language)
+    prompt = _build_domain_improve_prompt(domain, draft, variables, language, ig_version)
     lang_name = "R" if language == "r" else "SAS"
     print(f"  [{domain}] Improving {lang_name} program")
     try:
@@ -789,7 +797,7 @@ def improve_domain_program(domain, draft, variables, use_api=True, language="sas
         return draft
 
 
-def _build_domain_review_prompt(domain, code, variables, language="sas"):
+def _build_domain_review_prompt(domain, code, variables, language="sas", ig_version=None):
     """A REAL review prompt with an actual PASS/FAIL checklist. The
     previous single-shot pipeline called review_sas(draft) with the raw
     generated CODE passed in as if it were the prompt — there was no
@@ -797,8 +805,13 @@ def _build_domain_review_prompt(domain, code, variables, language="sas"):
     verdict (and the result was discarded after printing, never surfaced
     anywhere). Mirrors reviewer.py's build_review_prompt structure (used
     for ADaM variables) adapted for a whole domain program instead of one
-    variable's block."""
+    variable's block.
+
+    ig_version: when given, this doubles as the "Verify against SDTMIG
+    v{version}" action — the on-demand Review button is the same PASS/FAIL
+    QC step, just with an added IG-compliance checklist item."""
     var_names = [v["Variable"] for v in variables if v.get("Variable")]
+    ig_check = f"\n4. Non-compliance with CDISC SDTMIG v{ig_version} conventions (deprecated/renamed variables, incorrect Core designation, wrong controlled terminology for this version)" if ig_version else ""
     if language == "r":
         return f"""You are a senior clinical R programmer (tidyverse) performing QC on an SDTM {domain} domain script.
 
@@ -811,7 +824,7 @@ The script must create all these variables: {', '.join(var_names)}
 Check ONLY for these issues:
 1. Missing variables from the required list above
 2. Code that would fail to run (undefined objects, syntax errors)
-3. Non-standard date handling for --DTC variables (must be as.Date(substr(x,1,10)), not a different approach)
+3. Non-standard date handling for --DTC variables (must be as.Date(substr(x,1,10)), not a different approach){ig_check}
 
 Reply with exactly one line:
 PASS
@@ -831,7 +844,7 @@ The program must create all these variables: {', '.join(var_names)}
 Check ONLY for these issues:
 1. Missing variables from the required list above
 2. Statements that would fail in a data step (syntax errors, undefined datasets/variables)
-3. Non-standard date handling for --DTC variables (must be ISO 8601 character, not a SAS date value)
+3. Non-standard date handling for --DTC variables (must be ISO 8601 character, not a SAS date value){ig_check}
 
 Reply with exactly one line:
 PASS
@@ -841,11 +854,11 @@ FAIL: <short reason>
 No other text."""
 
 
-def review_domain_program(domain, code, variables, use_api=True, language="sas"):
+def review_domain_program(domain, code, variables, use_api=True, language="sas", ig_version=None):
     """Step 3 (Reviewer), run ON DEMAND (see app.py's /sdtm_review) — returns
     a real PASS/FAIL verdict against the CURRENT code (see
     _build_domain_review_prompt for what changed vs. the old broken call)."""
-    prompt = _build_domain_review_prompt(domain, code, variables, language)
+    prompt = _build_domain_review_prompt(domain, code, variables, language, ig_version)
     lang_name = "R" if language == "r" else "SAS"
     print(f"  [{domain}] Reviewing {lang_name} program")
     model_fn = generate_api if use_api else generate_local
@@ -940,7 +953,7 @@ run;
 # ── Main entry points ───────────────────────────────────────────────
 
 def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=False, language="sas",
-                           use_macros=True):
+                           use_macros=True, ig_version=None):
     """Generate the SAS or R program for one domain.
 
     By default, skips generation if output_dir/<domain>.<ext> already exists —
@@ -963,7 +976,7 @@ def generate_single_domain(xlsx_path, domain, output_dir, use_api=True, force=Fa
         return None
 
     code, writer_model = write_domain_program(domain, variables, use_api=use_api, language=language,
-                                              use_macros=use_macros)
+                                              use_macros=use_macros, ig_version=ig_version)
     if not code:
         print(f"  Failed to generate code for {domain}")
         return None
@@ -1000,7 +1013,7 @@ R_FOOTER_MARKER = "# -- Verification -- #"
 
 
 def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=False, language="sas",
-                       use_macros=True):
+                       use_macros=True, ig_version=None):
     """Generate a SUPP-- domain and append its code into its PARENT domain's
     output file (e.g. SUPPAE lives inside ae.sas/ae.R) instead of writing a
     separate program. SUPP-- is a supplemental-qualifier view of the same
@@ -1040,7 +1053,7 @@ def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=F
         return None
 
     code, writer_model = write_domain_program(supp_domain, variables, use_api=use_api, language=language,
-                                              use_macros=use_macros)
+                                              use_macros=use_macros, ig_version=ig_version)
     if not code:
         print(f"  Failed to generate code for {supp_domain}")
         return None
@@ -1092,7 +1105,7 @@ def append_supp_domain(xlsx_path, supp_domain, output_dir, use_api=True, force=F
 
 
 def _run_concurrently(fn, domain_list, max_workers, xlsx_path, output_dir, use_api, force, language,
-                      use_macros=True):
+                      use_macros=True, ig_version=None):
     """Run fn(xlsx_path, domain, output_dir, use_api, force=force, language=language,
     use_macros=use_macros) for every domain in domain_list at once (up to
     max_workers in flight),
@@ -1113,7 +1126,7 @@ def _run_concurrently(fn, domain_list, max_workers, xlsx_path, output_dir, use_a
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_domain = {
             executor.submit(fn, xlsx_path, domain, output_dir, use_api, force=force, language=language,
-                            use_macros=use_macros): domain
+                            use_macros=use_macros, ig_version=ig_version): domain
             for domain in domain_list
         }
         for future in as_completed(future_to_domain):
@@ -1132,7 +1145,7 @@ def _run_concurrently(fn, domain_list, max_workers, xlsx_path, output_dir, use_a
 
 
 def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, force=False,
-                         language="sas", max_workers=5, use_macros=True):
+                         language="sas", max_workers=5, use_macros=True, ig_version=None):
     """
     Generate SAS or R programs for all domains in the spec.
     Processes standard domains first, then SUPP domains
@@ -1167,6 +1180,7 @@ def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, forc
     results, failed = _run_concurrently(
         generate_single_domain, std_domains, max_workers,
         xlsx_path, output_dir, use_api, force=force, language=language, use_macros=use_macros,
+        ig_version=ig_version,
     )
 
     # SUPP domains after (they reference parent domain) — appended into the
@@ -1176,6 +1190,7 @@ def generate_all_domains(xlsx_path, output_dir, use_api=True, domains=None, forc
     supp_results, supp_failed = _run_concurrently(
         append_supp_domain, supp_domains, max_workers,
         xlsx_path, output_dir, use_api, force=force, language=language, use_macros=use_macros,
+        ig_version=ig_version,
     )
     results.update(supp_results)
     failed.extend(supp_failed)
@@ -1222,6 +1237,10 @@ if __name__ == "__main__":
                         help="Don't offer the validated company macro catalog as a "
                              "hint to the Writer (default: offered where a domain's "
                              "variables match one, e.g. --DTC/--SEQ/SUPP qualifiers)")
+    parser.add_argument("--sdtmig-version", default=None,
+                        help="CDISC SDTMIG version (e.g. 3.4) to target — appended to "
+                             "the Writer prompt so generated code follows that version's "
+                             "conventions (default: no version instruction)")
 
     args = parser.parse_args()
 
@@ -1230,8 +1249,9 @@ if __name__ == "__main__":
         generate_all_domains(args.spec, args.output,
                              use_api=not args.offline, domains=domains, force=args.force,
                              language=args.lang, max_workers=args.workers,
-                             use_macros=not args.no_macros)
+                             use_macros=not args.no_macros, ig_version=args.sdtmig_version)
     else:
         generate_all_domains(args.spec, args.output,
                              use_api=not args.offline, force=args.force, language=args.lang,
-                             max_workers=args.workers, use_macros=not args.no_macros)
+                             max_workers=args.workers, use_macros=not args.no_macros,
+                             ig_version=args.sdtmig_version)

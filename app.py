@@ -112,6 +112,12 @@ def _new_otype_state():
         "adsl_spec_path": None,      # ADaM only: the spec file ADSL was last generated from —
                                     # the "v1" baseline an "Update from new spec" diff compares
                                     # against. None until ADSL has been generated at least once.
+        "sdtmig_version": "3.4",    # SDTM only: SDTMIG version threaded into Writer/Improve/
+                                    # Review prompts so generated code and QC verdicts target
+                                    # this specific CDISC IG version.
+        "adamig_version": "1.3",    # ADaM only: ADaMIG version threaded into ADSL's Writer/
+                                    # Improve/Review prompts (the BDS domains are templated,
+                                    # not LLM-authored, so this has no effect on them).
         "spec_diff": None,           # ADaM only: pending diff preview, set by /spec_diff
         "pending_spec_v2": None,     # ADaM only: uploaded v2 spec path awaiting /apply_patch
         "legacy_upload_path": None,     # all 3 otypes: an uploaded existing (non-SpecGen) SAS
@@ -267,7 +273,7 @@ def _adam_available_datasets(acrf_path, adsl_spec_path):
 # ---------------------------------------------------------------------------
 
 def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all", cancel_event=None,
-                  use_macros=True):
+                  use_macros=True, ig_version=None):
     """Return (programs, adsl_context). programs: {name: code}. adsl_context
     is {"main_step_rows": {...}, "available": [...]} when ADSL was generated,
     else None (used later for "send back to Improver").
@@ -280,6 +286,10 @@ def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all",
     use_macros: passed straight through to assemble_adsl — whether ADSL SAS
     generation may use the validated company macro catalog. No effect on
     BDS (never uses macros) or on the R path (no R macro catalog exists).
+
+    ig_version: ADaMIG version (e.g. "1.3"), passed straight through to
+    assemble_adsl's Writer prompt. No effect on BDS — those are templated
+    string generators with no LLM prompt to version.
 
     cancel_event: optional threading.Event for the Abort button. BDS datasets
     are near-instant string templates, so it's only checked between them for
@@ -339,7 +349,7 @@ def generate_adam(lang, mode, acrf_path=None, adsl_spec_path=None, domain="all",
         out["adsl"] = assemble_adsl(spec, derived, ex_summary, main_step,
                                     language=lang, writer_mode=writer_mode,
                                     reviewer_mode=reviewer_mode, cancel_event=cancel_event,
-                                    use_macros=use_macros)
+                                    use_macros=use_macros, ig_version=ig_version)
         adsl_context = {
             "main_step_rows": {row["Variable"]: row.to_dict()
                               for _, row in main_step.iterrows()},
@@ -375,7 +385,8 @@ def generate_tlf(lang, shells=None, domain="all", cancel_event=None, use_macros=
     return out
 
 
-def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False, ctrl=None, use_macros=True):
+def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False, ctrl=None, use_macros=True,
+                  ig_version=None):
     """Run sdtm_assembler.py as a subprocess, then read the .sas/.R files back.
 
     sdtm_assembler.py skips domains whose output file already exists unless
@@ -406,6 +417,10 @@ def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False,
     Offered to the Writer as a hint where a domain's variables match a
     catalog entry (e.g. --DTC/--SEQ/SUPP qualifiers) — not a forced
     substitution, since SDTM generation goes through the model.
+
+    ig_version: SDTMIG version (e.g. "3.4"), passed to sdtm_assembler.py as
+    --sdtmig-version — appended to the Writer prompt so generated code
+    targets that specific CDISC IG version. None skips the flag entirely.
     """
     domain = (domain or "all").upper() if domain != "all" else "all"
     single_domain_forced = domain != "all"
@@ -450,6 +465,8 @@ def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False,
         cmd.extend(["--domain", domain])
     if not use_macros:
         cmd.append("--no-macros")
+    if ig_version:
+        cmd.extend(["--sdtmig-version", ig_version])
     # A full spec (18+ domains) in API mode has run at ~70-100s/domain in
     # testing — 10 minutes was nowhere near enough and threw away every
     # domain that DID finish. Scale with domain count instead of a flat cap.
@@ -666,7 +683,8 @@ def improve_adsl_block(var):
     available = state["adsl_available"]
 
     current_code = _current_adsl_var_code(state, var)
-    improved = clean(improve_block(current_code, row, available, language=lang, mode=reviewer_mode))
+    improved = clean(improve_block(current_code, row, available, language=lang, mode=reviewer_mode,
+                                   ig_version=state["adamig_version"]))
     _splice_adsl_var(state, var, improved, qc_state=None)
 
 
@@ -680,7 +698,8 @@ def review_adsl_block(var):
     available = state["adsl_available"]
 
     current_code = _current_adsl_var_code(state, var)
-    verdict = review_block(current_code, available, language=lang, mode=reviewer_mode)
+    verdict = review_block(current_code, available, language=lang, mode=reviewer_mode,
+                           ig_version=state["adamig_version"])
     qc_state = "FAIL" if verdict.startswith("FAIL") else "PASS"
     _splice_adsl_var(state, var, current_code, qc_state=qc_state, verdict=verdict)
 
@@ -836,6 +855,10 @@ def parse_spec():
     # there's no shared field for another tab's action to clobber.
     state["mode"] = request.form.get("mode", state["mode"])
     state["lang"] = request.form.get("lang", state["lang"])
+    if otype == "sdtm":
+        state["sdtmig_version"] = request.form.get("sdtmig_version", state["sdtmig_version"])
+    elif otype == "adam":
+        state["adamig_version"] = request.form.get("adamig_version", state["adamig_version"])
 
     uploaded = _resolve_uploads(request.files.getlist("spec_file"), otype)
     routing = {}
@@ -1377,7 +1400,7 @@ def legacy_cancel_update():
     return _render(active_otype=otype)
 
 
-def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending, use_macros=True):
+def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending, use_macros=True, ig_version=None):
     """Background thread target for /generate. Doing the (potentially slow)
     generation work off the request thread is what makes /abort possible —
     a request handler that's blocked in subprocess.run()/assemble_adsl() for
@@ -1393,7 +1416,7 @@ def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending, use_ma
             acrf_path, adsl_spec_path = _classify_adam_uploads(uploaded)
             programs, adsl_context = generate_adam(lang, mode, acrf_path, adsl_spec_path,
                                                     domain=domain, cancel_event=ctrl["cancel_event"],
-                                                    use_macros=use_macros)
+                                                    use_macros=use_macros, ig_version=ig_version)
             if "adsl" in programs:
                 # "Update from new spec" diffs against whatever spec ADSL was
                 # actually generated from, so it has to be tracked here where
@@ -1406,7 +1429,7 @@ def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending, use_ma
         else:
             programs = generate_sdtm(lang, mode, spec_path=uploaded[0] if uploaded else None,
                                      domain=domain, force_pending=force_pending, ctrl=ctrl,
-                                     use_macros=use_macros)
+                                     use_macros=use_macros, ig_version=ig_version)
 
         result_note = programs.pop("(note)", None) if isinstance(programs, dict) else None
 
@@ -1456,6 +1479,7 @@ def generate():
     # SDTM: hint offered to the Writer per domain; TLF: direct codegen
     # substitution, since TLF has no model calls at all).
     state["use_macros"] = "use_macros" in request.form
+    ig_version = state["sdtmig_version"] if otype == "sdtm" else state["adamig_version"] if otype == "adam" else None
 
     # Uploaded files only exist on request.files for THIS request, so they
     # must be saved to disk here, synchronously, before the background
@@ -1472,7 +1496,7 @@ def generate():
     state["job_note"] = None
 
     threading.Thread(target=_run_generate_job,
-                     args=(otype, lang, mode, domain, uploaded, force_pending, state["use_macros"]),
+                     args=(otype, lang, mode, domain, uploaded, force_pending, state["use_macros"], ig_version),
                      daemon=True).start()
 
     return _render(active_otype=otype)
@@ -1546,7 +1570,7 @@ def _strip_sdtm_qc_marker(code):
     return re.sub(r'^(?:/\* QC (?:FLAG: .*?|PASS) \*/|# QC (?:FLAG: .*|PASS))\n', '', code)
 
 
-def _run_sdtm_improve_job(domain, use_api, language):
+def _run_sdtm_improve_job(domain, use_api, language, ig_version=None):
     """Background thread target for /sdtm_improve — same non-blocking
     rationale as every other model-calling job in this app. Writes the
     improved program back to BOTH state["programs"] AND the actual
@@ -1562,7 +1586,8 @@ def _run_sdtm_improve_job(domain, use_api, language):
         current_code = _strip_sdtm_qc_marker(state["programs"][domain_lower])
 
         improved = sdtm_assembler.improve_domain_program(domain, current_code, variables,
-                                                          use_api=use_api, language=language)
+                                                          use_api=use_api, language=language,
+                                                          ig_version=ig_version)
 
         ext = "R" if language == "r" else "sas"
         file_path = os.path.join("sdtm_programs", f"{domain_lower}.{ext}")
@@ -1585,7 +1610,7 @@ def _run_sdtm_improve_job(domain, use_api, language):
         _GENERATE_LOCKS["sdtm"].release()
 
 
-def _run_sdtm_review_job(domain, use_api, language):
+def _run_sdtm_review_job(domain, use_api, language, ig_version=None):
     """Background thread target for /sdtm_review. Unlike the old single-shot
     pipeline's review_sas(draft) call — which passed the raw generated CODE
     in as if it were the prompt, so it never produced a real verdict and the
@@ -1602,7 +1627,8 @@ def _run_sdtm_review_job(domain, use_api, language):
         current_code = _strip_sdtm_qc_marker(state["programs"][domain_lower])
 
         verdict = sdtm_assembler.review_domain_program(domain, current_code, variables,
-                                                        use_api=use_api, language=language)
+                                                        use_api=use_api, language=language,
+                                                        ig_version=ig_version)
         qc = "FAIL" if verdict.startswith("FAIL") else "PASS"
         comment = f"QC FLAG: {verdict}" if qc == "FAIL" else "QC PASS"
         marker = f"# {comment}\n" if language == "r" else f"/* {comment} */\n"
@@ -1645,7 +1671,8 @@ def sdtm_improve():
     state["job_status"] = "running"
     state["job_kind"] = "sdtm_improve"
     state["job_note"] = None
-    threading.Thread(target=_run_sdtm_improve_job, args=(domain, use_api, state["lang"]), daemon=True).start()
+    threading.Thread(target=_run_sdtm_improve_job,
+                     args=(domain, use_api, state["lang"], state["sdtmig_version"]), daemon=True).start()
     return _render(active_otype="sdtm")
 
 
@@ -1667,7 +1694,8 @@ def sdtm_review():
     state["job_status"] = "running"
     state["job_kind"] = "sdtm_review"
     state["job_note"] = None
-    threading.Thread(target=_run_sdtm_review_job, args=(domain, use_api, state["lang"]), daemon=True).start()
+    threading.Thread(target=_run_sdtm_review_job,
+                     args=(domain, use_api, state["lang"], state["sdtmig_version"]), daemon=True).start()
     return _render(active_otype="sdtm")
 
 

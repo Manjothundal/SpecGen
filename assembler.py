@@ -29,10 +29,11 @@ def known_variables(spec):
     return sorted(set(spec_vars + dm_vars + prestep_vars))
 
 
-def gen_block(row, skip_macro=False, language=None, writer_mode=None):
+def gen_block(row, skip_macro=False, language=None, writer_mode=None, ig_version=None):
     """Generate one variable's derivation logic via the model."""
     print("Generating:", row["Variable"])
-    return clean(generate_code(build_prompt(row, skip_macro=skip_macro, language=language), mode=writer_mode))
+    return clean(generate_code(build_prompt(row, skip_macro=skip_macro, language=language,
+                                            ig_version=ig_version), mode=writer_mode))
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +45,7 @@ def gen_block(row, skip_macro=False, language=None, writer_mode=None):
 # ---------------------------------------------------------------------------
 
 def assemble_adsl(spec, derived, ex_summary, main_step, language=None, writer_mode=None,
-                  reviewer_mode=None, cancel_event=None, use_macros=True):
+                  reviewer_mode=None, cancel_event=None, use_macros=True, ig_version=None):
     """cancel_event: optional threading.Event — checked once per variable in the
     main-step loop so a slow ADSL run (up to 3 model calls per variable) can be
     aborted between variables. The partial program returned on abort keeps
@@ -64,9 +65,10 @@ def assemble_adsl(spec, derived, ex_summary, main_step, language=None, writer_mo
     language = (language or config.LANGUAGE).lower()
     if language == "sas":
         return _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode, reviewer_mode,
-                                  cancel_event, use_macros)
+                                  cancel_event, use_macros, ig_version)
     elif language == "r":
-        return _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode, reviewer_mode, cancel_event)
+        return _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode, reviewer_mode, cancel_event,
+                                ig_version)
     else:
         raise ValueError(f"Unknown language: {language!r} (expected 'sas' or 'r')")
 
@@ -76,7 +78,7 @@ def assemble_adsl(spec, derived, ex_summary, main_step, language=None, writer_mo
 # ===========================================================================
 
 def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None,
-                       cancel_event=None, use_macros=True):
+                       cancel_event=None, use_macros=True, ig_version=None):
     parts = []
 
     # ---- Header
@@ -256,7 +258,7 @@ def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, r
             # Generate isn't paying for 2 extra sequential model calls per
             # variable it may not want)
             pmatch = find_by_pattern(var, str(row["Derivation"]), catalog) if use_macros else None
-            block = clean(gen_block(row, language="sas", writer_mode=writer_mode))
+            block = clean(gen_block(row, language="sas", writer_mode=writer_mode, ig_version=ig_version))
             if pmatch:
                 print("   Pattern hint:", var, "->", pmatch["pattern"])
                 block = pmatch["suggested_call"] + "\n" + block
@@ -403,7 +405,8 @@ mh_summary <- mh |>
   )'''
 
 
-def _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None, cancel_event=None):
+def _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None, cancel_event=None,
+                     ig_version=None):
     parts = []
 
     # ---- Header + libraries
@@ -448,7 +451,7 @@ def _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode=None, rev
         # No macro branch in R (SAS-only catalog). Writer only — Improve/Review
         # are separate on-demand actions per variable now (see app.py's
         # improve_adsl_block/review_adsl_block), not run automatically here.
-        block = gen_block(row, language="r", writer_mode=writer_mode)
+        block = gen_block(row, language="r", writer_mode=writer_mode, ig_version=ig_version)
 
         # indent the derivation into the mutate() and wrap in R markers.
         # The mutate() argument separator MUST be a real comma on the code

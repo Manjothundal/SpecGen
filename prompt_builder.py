@@ -17,7 +17,7 @@ def _comment_line(row):
     return f"Additional instructions: {comment}\n"
 
 
-def build_prompt(row, skip_macro=False, context_vars=None, language=None):
+def build_prompt(row, skip_macro=False, context_vars=None, language=None, ig_version=None):
     """Turn one spec row into an instruction for the AI.
 
     context_vars: override the "already available" variable description.
@@ -28,6 +28,11 @@ def build_prompt(row, skip_macro=False, context_vars=None, language=None):
     language: "sas" or "r". Defaults to config.LANGUAGE. Selects which
         language-specific prompt body is built. The variable metadata header
         is identical for both; only the code-style body differs.
+
+    ig_version: CDISC ADaMIG version (e.g. "1.3") — appended as a rule line
+        so the derivation follows that version's naming/CT conventions.
+        Only meaningful for ADSL (the only ADaM Writer path this feeds);
+        BDS domains are templated separately and never call build_prompt.
 
     NOTE: in R mode the SAS macro catalog is always skipped — those macros
     (adsl_agegr, etc.) are SAS-only and have no R equivalent, so offering
@@ -59,9 +64,9 @@ NOTE: This macro is validated and handles missing values. Adapt the call for thi
     comment_line = _comment_line(row)
 
     if language == "sas":
-        return _build_sas_prompt(row, format_line, macro_section, context_vars, comment_line)
+        return _build_sas_prompt(row, format_line, macro_section, context_vars, comment_line, ig_version)
     elif language == "r":
-        return _build_r_prompt(row, format_line, context_vars, comment_line)
+        return _build_r_prompt(row, format_line, context_vars, comment_line, ig_version)
     else:
         raise ValueError(f"Unknown language: {language!r} (expected 'sas' or 'r')")
 
@@ -70,8 +75,9 @@ NOTE: This macro is validated and handles missing values. Adapt the call for thi
 # SAS prompt body — unchanged from the original build_prompt
 # ---------------------------------------------------------------------------
 
-def _build_sas_prompt(row, format_line, macro_section, context_vars, comment_line=""):
+def _build_sas_prompt(row, format_line, macro_section, context_vars, comment_line="", ig_version=None):
     available_vars = context_vars or "all needed SDTM variables (from DM, EX, etc.)"
+    ig_line = f"- Follow CDISC ADaMIG v{ig_version} conventions for variable naming, controlled terminology, and core-variable expectations.\n" if ig_version else ""
 
     prompt = f"""You are a senior clinical SAS programmer.
 Write SAS 9.4 code to derive one ADaM variable.
@@ -88,7 +94,7 @@ Rules:
 - Do NOT repeat the variable metadata (name, label, type, format, derivation rule) as comments. Output ONE brief comment line, then the code.
 - Do NOT add any explanation before or after the code.
 - Output plain SAS code only, no markdown fences.
-
+{ig_line}
 Style rules:
 - Use select/when instead of if/else chains with 3 or more branches.
 - For conditions, use a bare `select;` with full conditions in each when, e.g. `select; when (AGE < 65) X = 1; ... end;`
@@ -109,8 +115,9 @@ Style rules:
 # R prompt body — plain tidyverse (dplyr), mirrors the SAS derivation logic
 # ---------------------------------------------------------------------------
 
-def _build_r_prompt(row, format_line, context_vars, comment_line=""):
+def _build_r_prompt(row, format_line, context_vars, comment_line="", ig_version=None):
     available_vars = context_vars or "all needed SDTM variables (from DM, EX, etc.)"
+    ig_line = f"- Follow CDISC ADaMIG v{ig_version} conventions for variable naming, controlled terminology, and core-variable expectations.\n" if ig_version else ""
 
     prompt = f"""You are a senior clinical R programmer working in the tidyverse.
 Write plain R (dplyr) code to derive one ADaM variable.
@@ -132,7 +139,7 @@ Rules:
   rule) as comments. Output ONE brief comment line, then the code.
 - Do NOT add any explanation before or after the code.
 - Output plain R code only, no markdown fences.
-
+{ig_line}
 Style rules:
 - Use dplyr::case_when() instead of nested if/else for 3 or more branches.
   Each arm is `condition ~ value`; end with `TRUE ~ <default>`.

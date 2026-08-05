@@ -2,17 +2,20 @@ from generator import review_code
 import config
 
 
-def build_improve_prompt(code, row, known_vars, language=None):
+def build_improve_prompt(code, row, known_vars, language=None, ig_version=None):
     """Ask a principal programmer to rewrite a draft block correctly.
 
     language: "sas" or "r" (defaults to config.LANGUAGE). Selects the persona
         and the rewrite checklist — both are language-specific.
+
+    ig_version: CDISC ADaMIG version (e.g. "1.3") — when given, adds a
+        rewrite bullet targeting that version's conventions.
     """
     language = (language or config.LANGUAGE).lower()
     if language == "sas":
-        return _build_sas_improve_prompt(code, row, known_vars)
+        return _build_sas_improve_prompt(code, row, known_vars, ig_version)
     elif language == "r":
-        return _build_r_improve_prompt(code, row, known_vars)
+        return _build_r_improve_prompt(code, row, known_vars, ig_version)
     else:
         raise ValueError(f"Unknown language: {language!r} (expected 'sas' or 'r')")
 
@@ -21,7 +24,8 @@ def build_improve_prompt(code, row, known_vars, language=None):
 # SAS improve prompt — unchanged from the original
 # ---------------------------------------------------------------------------
 
-def _build_sas_improve_prompt(code, row, known_vars):
+def _build_sas_improve_prompt(code, row, known_vars, ig_version=None):
+    ig_line = f"- Follows CDISC ADaMIG v{ig_version} conventions for this variable (naming, controlled terminology)\n" if ig_version else ""
     return f"""You are a principal clinical SAS programmer with 15+ years of experience.
 A junior programmer produced the draft below. Rewrite it correctly.
 
@@ -45,7 +49,7 @@ Rewrite the code so that it:
 - Uses `select;` with full conditions, or `select (VAR);` only for exact value matching
 - Compares character variables to character values, never to numeric missing
 - Is code a senior programmer would sign off on
-
+{ig_line}
 Output ONLY the corrected SAS code with one brief comment line.
 No explanation, no markdown fences.
 """
@@ -55,7 +59,8 @@ No explanation, no markdown fences.
 # R improve prompt — plain tidyverse (dplyr) parallel
 # ---------------------------------------------------------------------------
 
-def _build_r_improve_prompt(code, row, known_vars):
+def _build_r_improve_prompt(code, row, known_vars, ig_version=None):
+    ig_line = f"- Follows CDISC ADaMIG v{ig_version} conventions for this variable (naming, controlled terminology)\n" if ig_version else ""
     return f"""You are a principal clinical R programmer (tidyverse) with 15+ years of experience.
 A junior programmer produced the draft below. Rewrite it correctly.
 
@@ -89,13 +94,13 @@ Rewrite the code so that it:
 - Never invents values, codes, treatment names, or column names
 - Does NOT emit length/label/format statements — R has none
 - Is code a senior programmer would sign off on
-
+{ig_line}
 Output ONLY the corrected R code with one brief comment line.
 No explanation, no markdown fences.
 """
 
 
-def improve_block(code, row, known_vars, language=None, mode=None):
+def improve_block(code, row, known_vars, language=None, mode=None, ig_version=None):
     """Return an improved version of a generated code block.
 
     Improve and Review share the REVIEWER-role model (config.REVIEWER, or the
@@ -104,4 +109,5 @@ def improve_block(code, row, known_vars, language=None, mode=None):
     Hybrid, Improve and Review both go to the API even though the Draft was
     local.
     """
-    return review_code(build_improve_prompt(code, row, known_vars, language=language), mode=mode).strip()
+    return review_code(build_improve_prompt(code, row, known_vars, language=language,
+                                            ig_version=ig_version), mode=mode).strip()
