@@ -6,9 +6,30 @@
 library(dplyr)
 
 # -- BEGIN ADTTE_SETUP -- #
+# earliest RS-assessed progression (OVRLRESP = PD) per subject
+adtte_prog <- rs |>
+  filter(RSTESTCD == "OVRLRESP", toupper(RSORRES) == "PD") |>
+  group_by(USUBJID) |>
+  summarise(PROGDT = min(as.Date(substr(RSDTC, 1, 10)), na.rm = TRUE), .groups = "drop")
+
+# last tumor assessment per subject (censoring date proxy)
+adtte_lastrs <- rs |>
+  filter(RSTESTCD == "OVRLRESP", !is.na(RSORRES), RSORRES != "") |>
+  group_by(USUBJID) |>
+  summarise(LASTRSDT = max(as.Date(substr(RSDTC, 1, 10)), na.rm = TRUE), .groups = "drop")
+
+# death date per subject, gated on DTHFL
+adtte_dth <- dm |>
+  transmute(USUBJID,
+             DTHDT = if_else(DTHFL == "Y" & !is.na(DTHDTC),
+                              as.Date(substr(DTHDTC, 1, 10)), as.Date(NA)))
+
 adtte_base <- adsl |>
   select(USUBJID, TRTSDT) |>
-  mutate(STARTDT = TRTSDT)
+  mutate(STARTDT = TRTSDT) |>
+  left_join(adtte_dth, by = "USUBJID") |>
+  left_join(adtte_prog, by = "USUBJID") |>
+  left_join(adtte_lastrs, by = "USUBJID")
 # -- END ADTTE_SETUP -- #
 
 # -- BEGIN PFS -- #
@@ -16,14 +37,15 @@ adtte_pfs <- adtte_base |>
   mutate(
     PARAMCD = "PFS",
     PARAM   = "Progression-Free Survival (days)",
-    # TODO: set ADT = earliest of (progression date from ADRS PD),
-    #       (death date from DS/DM); CNSR=0 if event, else ADT =
-    #       last assessment date and CNSR=1
-    ADT  = as.Date(NA),
-    CNSR = NA_real_,
+    # event = earliest of RS-assessed progression or death;
+    # else censor at the last tumor assessment
+    EVENTDT = pmin(PROGDT, DTHDT, na.rm = TRUE),
+    CNSR = if_else(!is.na(EVENTDT), 0, 1),
+    ADT  = if_else(CNSR == 0, EVENTDT, LASTRSDT),
     AVAL = if_else(!is.na(ADT) & !is.na(STARTDT),
                    as.numeric(ADT - STARTDT) + 1, NA_real_)
-  )
+  ) |>
+  select(-EVENTDT)
 # -- END PFS -- #
 
 # -- BEGIN OS -- #
@@ -31,9 +53,10 @@ adtte_os <- adtte_base |>
   mutate(
     PARAMCD = "OS",
     PARAM   = "Overall Survival (days)",
-    # TODO: set ADT = death date (CNSR=0) or last-known-alive (CNSR=1)
-    ADT  = as.Date(NA),
-    CNSR = NA_real_,
+    # event = death; else censor at the last tumor assessment
+    # (proxy for last-known-alive)
+    CNSR = if_else(!is.na(DTHDT), 0, 1),
+    ADT  = if_else(CNSR == 0, DTHDT, LASTRSDT),
     AVAL = if_else(!is.na(ADT) & !is.na(STARTDT),
                    as.numeric(ADT - STARTDT) + 1, NA_real_)
   )

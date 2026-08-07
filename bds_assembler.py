@@ -12,11 +12,12 @@ Two code paths by dataset class:
     Merge ADSL treatment dates, convert dates to numeric, derive emergent /
     on-treatment and first-occurrence flags. (SAS only so far.)
 
-  Oncology (ADRS, ADTTE) — RECIST response and time-to-event. (SAS only.)
+  Oncology (ADRS, ADTTE) — RECIST response and time-to-event, from SDTM rs
+    (and dm for ADTTE death dates). SAS and R both supported.
 
-Language: config.LANGUAGE ("sas" or "r") selects output for the Findings
-generator, matching the ADSL assembler's toggle. Events/Oncology are SAS-only
-for now (next to be ported). __main__ writes .sas or .R accordingly.
+Language: config.LANGUAGE ("sas" or "r") selects output for the Findings and
+Oncology generators, matching the ADSL assembler's toggle. Events are
+SAS-only for now (next to be ported). __main__ writes .sas or .R accordingly.
 
 Every derived variable is wrapped in BEGIN/END markers so spec_differ.py /
 spec_patcher.py work unchanged. Output: one file per dataset into adam_programs/.
@@ -468,7 +469,9 @@ run;"""
 
 def generate_tte_domain_r(domain_code="ADTTE"):
     """R/tidyverse ADTTE. One row per subject per endpoint via bind_rows of
-    two per-endpoint frames. Event/censor dates STUBBED (same TODO as SAS)."""
+    two per-endpoint frames. Event dates derived from rs (RS PD assessments,
+    also used as the last-known-alive/last-assessment censoring proxy) and
+    dm (DTHFL/DTHDTC); same sources as the SAS path."""
     ds = domain_code.lower()
     lines = []
     lines.append("# ********************************")
@@ -479,9 +482,30 @@ def generate_tte_domain_r(domain_code="ADTTE"):
     lines.append("library(dplyr)")
     lines.append("")
     lines.append(f"# -- BEGIN {domain_code}_SETUP -- #")
+    lines.append("# earliest RS-assessed progression (OVRLRESP = PD) per subject")
+    lines.append(f"{ds}_prog <- rs |>")
+    lines.append('  filter(RSTESTCD == "OVRLRESP", toupper(RSORRES) == "PD") |>')
+    lines.append("  group_by(USUBJID) |>")
+    lines.append("  summarise(PROGDT = min(as.Date(substr(RSDTC, 1, 10)), na.rm = TRUE), .groups = \"drop\")")
+    lines.append("")
+    lines.append("# last tumor assessment per subject (censoring date proxy)")
+    lines.append(f"{ds}_lastrs <- rs |>")
+    lines.append('  filter(RSTESTCD == "OVRLRESP", !is.na(RSORRES), RSORRES != "") |>')
+    lines.append("  group_by(USUBJID) |>")
+    lines.append("  summarise(LASTRSDT = max(as.Date(substr(RSDTC, 1, 10)), na.rm = TRUE), .groups = \"drop\")")
+    lines.append("")
+    lines.append("# death date per subject, gated on DTHFL")
+    lines.append(f"{ds}_dth <- dm |>")
+    lines.append("  transmute(USUBJID,")
+    lines.append('             DTHDT = if_else(DTHFL == "Y" & !is.na(DTHDTC),')
+    lines.append("                              as.Date(substr(DTHDTC, 1, 10)), as.Date(NA)))")
+    lines.append("")
     lines.append(f"{ds}_base <- adsl |>")
     lines.append("  select(USUBJID, TRTSDT) |>")
-    lines.append("  mutate(STARTDT = TRTSDT)")
+    lines.append("  mutate(STARTDT = TRTSDT) |>")
+    lines.append(f"  left_join({ds}_dth, by = \"USUBJID\") |>")
+    lines.append(f"  left_join({ds}_prog, by = \"USUBJID\") |>")
+    lines.append(f"  left_join({ds}_lastrs, by = \"USUBJID\")")
     lines.append(f"# -- END {domain_code}_SETUP -- #")
     lines.append("")
     lines.append("# -- BEGIN PFS -- #")
@@ -489,14 +513,15 @@ def generate_tte_domain_r(domain_code="ADTTE"):
     lines.append("  mutate(")
     lines.append('    PARAMCD = "PFS",')
     lines.append('    PARAM   = "Progression-Free Survival (days)",')
-    lines.append("    # TODO: set ADT = earliest of (progression date from ADRS PD),")
-    lines.append("    #       (death date from DS/DM); CNSR=0 if event, else ADT =")
-    lines.append("    #       last assessment date and CNSR=1")
-    lines.append("    ADT  = as.Date(NA),")
-    lines.append("    CNSR = NA_real_,")
+    lines.append("    # event = earliest of RS-assessed progression or death;")
+    lines.append("    # else censor at the last tumor assessment")
+    lines.append("    EVENTDT = pmin(PROGDT, DTHDT, na.rm = TRUE),")
+    lines.append("    CNSR = if_else(!is.na(EVENTDT), 0, 1),")
+    lines.append("    ADT  = if_else(CNSR == 0, EVENTDT, LASTRSDT),")
     lines.append("    AVAL = if_else(!is.na(ADT) & !is.na(STARTDT),")
     lines.append("                   as.numeric(ADT - STARTDT) + 1, NA_real_)")
-    lines.append("  )")
+    lines.append("  ) |>")
+    lines.append("  select(-EVENTDT)")
     lines.append("# -- END PFS -- #")
     lines.append("")
     lines.append("# -- BEGIN OS -- #")
@@ -504,9 +529,10 @@ def generate_tte_domain_r(domain_code="ADTTE"):
     lines.append("  mutate(")
     lines.append('    PARAMCD = "OS",')
     lines.append('    PARAM   = "Overall Survival (days)",')
-    lines.append("    # TODO: set ADT = death date (CNSR=0) or last-known-alive (CNSR=1)")
-    lines.append("    ADT  = as.Date(NA),")
-    lines.append("    CNSR = NA_real_,")
+    lines.append("    # event = death; else censor at the last tumor assessment")
+    lines.append("    # (proxy for last-known-alive)")
+    lines.append("    CNSR = if_else(!is.na(DTHDT), 0, 1),")
+    lines.append("    ADT  = if_else(CNSR == 0, DTHDT, LASTRSDT),")
     lines.append("    AVAL = if_else(!is.na(ADT) & !is.na(STARTDT),")
     lines.append("                   as.numeric(ADT - STARTDT) + 1, NA_real_)")
     lines.append("  )")
@@ -521,28 +547,55 @@ def generate_tte_domain(domain_code="ADTTE"):
     """
     ADTTE — time-to-event (PFS, OS). One row per subject per endpoint, with
     AVAL (days), CNSR (0=event,1=censored), STARTDT (TRTSDT), ADT (event/censor).
-    BACKLOG: event/censor dates STUBBED — wire death (DS/DM), progression
-    (ADRS first PD), last-assessment date for censoring.
+    Event dates: progression = earliest RS record with RSTESTCD=OVRLRESP and
+    RSORRES=PD; death = DM.DTHDTC gated on DTHFL='Y'. PFS event = earliest of
+    progression/death; OS event = death. Censoring (no event) falls back to
+    the last RS tumor assessment date (last-known-alive proxy).
     """
     ds = domain_code.lower()
     program = ""
 
-    setup_code = f"""proc sort data=adsl(keep=USUBJID TRTSDT) out={ds}_adsl; by USUBJID; run;
+    setup_code = f"""proc sql noprint;
+    create table {ds}_prog as
+        select USUBJID, min(input(substr(RSDTC,1,10), ?? yymmdd10.)) as PROGDT format=date9.
+        from rs
+        where RSTESTCD = "OVRLRESP" and upcase(RSORRES) = "PD"
+        group by USUBJID;
+
+    create table {ds}_lastrs as
+        select USUBJID, max(input(substr(RSDTC,1,10), ?? yymmdd10.)) as LASTRSDT format=date9.
+        from rs
+        where RSTESTCD = "OVRLRESP" and RSORRES is not missing
+        group by USUBJID;
+quit;
+
+proc sort data=adsl(keep=USUBJID TRTSDT) out={ds}_adsl; by USUBJID; run;
+proc sort data=dm(keep=USUBJID DTHFL DTHDTC) out={ds}_dm; by USUBJID; run;
 
 data {ds};
-    set {ds}_adsl;
-    length PARAMCD $8 PARAM $40 CNSR 8 AVAL 8 STARTDT ADT 8;
-    format STARTDT ADT date9.;
+    merge {ds}_adsl(in=in_adsl) {ds}_dm {ds}_prog {ds}_lastrs;
+    by USUBJID;
+    if in_adsl;
+    length PARAMCD $8 PARAM $40 CNSR 8 AVAL 8 STARTDT ADT DTHDT 8;
+    format STARTDT ADT DTHDT date9.;
     STARTDT = TRTSDT;
+    if DTHFL = "Y" and not missing(DTHDTC) then DTHDT = input(substr(DTHDTC,1,10), ?? yymmdd10.);
 """
     program += wrap(f"{domain_code}_SETUP", setup_code)
 
     pfs_code = """    /* --- PFS: progression-free survival --- */
     PARAMCD = "PFS";
     PARAM = "Progression-Free Survival (days)";
-    /* TODO: set ADT = earliest of (progression date from ADRS PD),
-       (death date from DS/DM); CNSR=0 if event, else ADT = last
-       assessment date and CNSR=1 */
+    /* event = earliest of RS-assessed progression or death; else censor at
+       the last tumor assessment */
+    if not missing(PROGDT) or not missing(DTHDT) then do;
+        ADT = min(PROGDT, DTHDT);
+        CNSR = 0;
+    end;
+    else do;
+        ADT = LASTRSDT;
+        CNSR = 1;
+    end;
     if not missing(ADT) and not missing(STARTDT) then AVAL = ADT - STARTDT + 1;
     output;"""
     program += wrap("PFS", pfs_code)
@@ -550,7 +603,16 @@ data {ds};
     os_code = """    /* --- OS: overall survival --- */
     PARAMCD = "OS";
     PARAM = "Overall Survival (days)";
-    /* TODO: set ADT = death date (CNSR=0) or last-known-alive date (CNSR=1) */
+    /* event = death; else censor at the last tumor assessment (proxy for
+       last-known-alive) */
+    if not missing(DTHDT) then do;
+        ADT = DTHDT;
+        CNSR = 0;
+    end;
+    else do;
+        ADT = LASTRSDT;
+        CNSR = 1;
+    end;
     if not missing(ADT) and not missing(STARTDT) then AVAL = ADT - STARTDT + 1;
     output;
 run;"""
