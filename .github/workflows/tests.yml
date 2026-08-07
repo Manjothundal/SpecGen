@@ -1,0 +1,44 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Chroma's local embedding function (used by macro_lookup.py) downloads
+      # a small ONNX model on first use — cache it so repeat runs don't
+      # re-download ~80MB every time.
+      - name: Cache Chroma embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/chroma
+          key: chroma-onnx-minilm-l6-v2
+
+      - name: Run spec differ smoke test
+        run: python test_differ.py
+
+      # SPECGEN_WRITER_MODE / SPECGEN_REVIEWER_MODE=mock (see test_patcher.py)
+      # runs the real diff -> patch -> marker-replace -> keep-list-rebuild
+      # pipeline, including a full pass through the LangGraph Writer/
+      # Improver/Reviewer graph (agent_graph.py), without needing a local
+      # Ollama server or a paid Anthropic API call/secret on every push.
+      - name: Run spec patcher smoke test
+        env:
+          SPECGEN_WRITER_MODE: mock
+          SPECGEN_REVIEWER_MODE: mock
+        run: python test_patcher.py

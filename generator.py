@@ -29,8 +29,18 @@ def generate_local(prompt):
     return response.json()["response"]
 
 
+def generate_mock(prompt):
+    """Deterministic, no-network stand-in for local/api — CI's mode
+    (SPECGEN_WRITER_MODE / SPECGEN_REVIEWER_MODE=mock, see test_patcher.py
+    and .github/workflows/tests.yml) so pipeline tests don't need Ollama
+    running or a paid Anthropic API call on every push."""
+    return "/* mock: deterministic CI stub, no model call */\nMOCK = 1;"
+
+
 def run_model(prompt, mode):
-    """Route a prompt to local or api based on mode."""
+    """Route a prompt to local, api, or the mock stub based on mode."""
+    if mode == "mock":
+        return generate_mock(prompt)
     if mode == "local":
         return generate_local(prompt)
     return generate_api(prompt)
@@ -66,4 +76,8 @@ review_sas = review_code
 
 def model_name(mode):
     """Readable name of whichever model a mode uses (for logging)."""
-    return config.LOCAL_MODEL if mode == "local" else config.API_MODEL
+    if mode == "local":
+        return config.LOCAL_MODEL
+    if mode == "mock":
+        return "mock (CI stub, no model call)"
+    return config.API_MODEL

@@ -1,6 +1,6 @@
 from spec_differ import diff_specs
-from assembler import gen_block, clean, improve_block, known_variables
-from reviewer import review_block
+from assembler import known_variables
+from agent_graph import run_pipeline
 from macro_lookup import load_catalog, find_macro, find_by_pattern
 import pandas as pd
 import re
@@ -20,18 +20,17 @@ def _build_block(var, row, available, writer_mode=None, reviewer_mode=None, use_
     treatment — including the "QC FLAG" marker on FAIL — that a freshly
     generated one would. Patcher-only bug this replaced: the old "changed"
     path was a raw one-shot API call with no Improver/Reviewer step at all,
-    so patched variables silently skipped QC review entirely."""
+    so patched variables silently skipped QC review entirely.
+
+    Writer->Improver->Reviewer itself runs as a LangGraph state graph
+    (agent_graph.run_pipeline) — see agent_graph.py."""
     match = find_macro(var, catalog) if use_macros else None
     if match:
         inner = f"/* {var}: using validated macro */\n{match['call']}"
         return f"/*-- BEGIN {var} --*/\n{inner}\n/*-- END {var} --*/"
 
     pmatch = find_by_pattern(var, str(row["Derivation"]), catalog) if use_macros else None
-    block = gen_block(row, language="sas", writer_mode=writer_mode)
-    block = clean(improve_block(block, row, available, language="sas", mode=reviewer_mode))
-    verdict = review_block(block, available, language="sas", mode=reviewer_mode)
-    if verdict.startswith("FAIL"):
-        block = "/* QC FLAG: " + verdict + " */\n" + block
+    block = run_pipeline(row, available, language="sas", writer_mode=writer_mode, reviewer_mode=reviewer_mode)
     if pmatch:
         block = pmatch["suggested_call"] + "\n" + block
     return f"/*-- BEGIN {var} --*/\n{block}\n/*-- END {var} --*/"

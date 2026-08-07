@@ -18,8 +18,8 @@ for clinical statistical programmers.
   (the amendment workflow)
 - **Verify** (planned) — compares TLF outputs (RTF/Word/PDF) against QC
   outputs and mock shells, with a difference summary and drill-down
-- **Reuse** (planned) — agentic RAG over the company macro library, so
-  generated code calls validated macros before writing new logic
+- **Reuse** — embedding-based retrieval (Chroma) over the company macro
+  library, so generated code calls validated macros before writing new logic
 
 ## Three modes, one codebase
 
@@ -53,16 +53,21 @@ reviews it — the QC flags exist to direct that review, not replace it.
 ## Status
 
 Working today: spec parsing with domain routing, EX/SUPPDM/SE pre-steps,
-three-agent generation (local draft, API improve, API review), full ADSL
-output, run logging.
-In progress: run-log model recording, fuller-spec testing, macro catalog (RAG).
-Planned: R output (admiral-style), update mode, TLF comparison module, draft
-spec generation from aCRF/SAP.
+three-agent generation (local draft, API improve, API review) — the
+patch/insert path's Writer->Improver->Reviewer chain runs as a LangGraph
+state graph — full ADSL output, run logging, Chroma-backed macro retrieval,
+CI (GitHub Actions), Docker image (deployable to AWS App Runner or EC2 —
+see `aws/`, not deployed by default).
+In progress: run-log model recording, fuller-spec testing.
+Planned: R output (admiral-style), TLF comparison module, draft spec
+generation from aCRF/SAP.
 See [ROADMAP.md](ROADMAP.md).
 
 ## Tech
 
-Python 3.13 · pandas / openpyxl · Anthropic API · Ollama (qwen2.5-coder) · Git
+Python 3.13 · pandas / openpyxl · Anthropic API · Ollama (qwen2.5-coder) ·
+LangGraph (agent pipeline) · Chroma (macro catalog retrieval) · Docker ·
+GitHub Actions · Git
 
 ## Note
 

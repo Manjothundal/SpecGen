@@ -204,6 +204,102 @@ the outputs.
             no marker-based regex patching for it either) are both out of scope here,
             unchanged from before.
 - [ ] Phase 7: Draft spec generation (aCRF + protocol + SAP -> proposed spec)
+- [x] Phase 11: Engineering infrastructure (CI/CD, containerization, cloud deployment)
+      - [x] 11a: Ported the Writer/Improver/Reviewer chain to a LangGraph
+            StateGraph — new agent_graph.py, 4 nodes (draft/improve/review/
+            flag) with a conditional edge after review (FAIL -> flag -> END,
+            PASS -> END directly), compiled once at import and reused
+            (same "build once, reuse" pattern as `catalog = load_catalog()`
+            elsewhere). Same logic as the inline chain it replaced in
+            spec_patcher._build_block's non-macro-match branch — not a new
+            capability, a restructuring — because that's the one place in
+            the app that still auto-chains all three steps end to end.
+            Piece 10 above made Generate itself Writer-only/on-demand for
+            per-click responsiveness, so the full chain now only runs
+            inside patch_program's changed/new-variable paths and the
+            "Insert" legacy-program path (both go through _build_block,
+            which now calls agent_graph.run_pipeline instead of the three
+            inline calls it used to make). app.py's separate on-demand
+            Improve/Review buttons (also Piece 10) call improve_block/
+            review_block directly and were deliberately left alone — they
+            are independent single-step user actions, not a chain, and
+            routing them through the graph would just add indirection.
+            Verified directly (mocked model calls, no API cost): the exact-
+            catalog-match path (AGEGR1) still bypasses the graph entirely;
+            a no-match variable (AGEGR2) runs draft->improve->review and
+            returns the pattern-hint-prefixed block; a forced Reviewer FAIL
+            correctly routes through the flag node and prepends the QC FLAG
+            comment, byte-identical in shape to the old inline chain's
+            output. Also ran the full test_patcher.py smoke test (real
+            adam_spec.xlsx -> adam_spec_v2.xlsx diff/patch) end to end
+            through the graph with no regressions.
+      - [x] 11b: Swapped the macro catalog's "agentic retrieval" step
+            (find_by_pattern in macro_lookup.py) for real nearest-neighbor
+            search via Chroma — an in-memory collection built once from the
+            catalog's ADaM-scope rows (purpose + pattern text embedded with
+            Chroma's bundled local MiniLM model; downloaded once, fully
+            offline after that, same spirit as pulling an Ollama model),
+            queried with "{variable}: {derivation}" and a cosine-distance
+            cutoff (0.65) standing in for the old "pattern == none"
+            bail-out. Replaces asking the model to classify a derivation
+            into one of 6 fixed pattern names and then exact-matching that
+            name — a real embedding pipeline instead of a classify-then-
+            filter approximation of one, and one fewer model round-trip per
+            lookup. find_macro (exact variable match) and find_sdtm_macros
+            (suffix match) are untouched — deterministic lookups, not the
+            "RAG" claim this replaced. Verified with real derivation text
+            against the live catalog: AGEGR2's age-cutpoint derivation
+            correctly nearest-matches %adsl_agegr, a completion-flag
+            derivation matches %adsl_popflag, an ISO8601-to-date derivation
+            matches %adsl_dtctodt, and an unrelated made-up variable
+            (free-text "favorite color") correctly returns no match.
+      - [x] 11c: GitHub Actions workflow (.github/workflows/tests.yml)
+            running test_differ.py and test_patcher.py on every push and
+            PR. Needed a real fix to run at all: test_patcher.py's default
+            path uses config.WRITER="local" (Ollama, not installed on a
+            GitHub-hosted runner) and config.REVIEWER="api" (a paid
+            Anthropic call on every push, needing a secret). Added a third
+            generator.py mode, "mock" (generate_mock — a fixed deterministic
+            stub, no network call; model_name() and run_model() both
+            special-case it), and had test_patcher.py read
+            SPECGEN_WRITER_MODE/SPECGEN_REVIEWER_MODE env vars (unset
+            outside CI, so local/manual runs are unchanged) to select it.
+            This exercises the real diff -> patch -> marker-replace ->
+            keep-list-rebuild pipeline, including a full pass through the
+            new LangGraph graph, deterministically and for free. New
+            requirements.txt (this repo had none before — dependencies were
+            installed ad hoc) pins every third-party import found across
+            the codebase, including langgraph/chromadb; the workflow caches
+            pip and Chroma's downloaded embedding model. Verified: both
+            scripts run clean (exit 0) from a from-scratch venv built only
+            from requirements.txt, with SPECGEN_WRITER_MODE=SPECGEN_REVIEWER_MODE=mock
+            and no ANTHROPIC_API_KEY set at all.
+      - [x] 11d: Dockerized the Flask app (Dockerfile, .dockerignore) and
+            wrote (but did not run) AWS deployment scripts for App Runner
+            and EC2 (aws/). python:3.13-slim base, build-essential installed
+            then purged in the same layer (only needed transiently for a
+            couple of wheels), gunicorn (Linux-only — kept out of the
+            cross-platform requirements.txt, installed only in the image)
+            serving app:app as a non-root user. --workers 1 --threads 8:
+            RUN_STATE in app.py is a single in-memory dict by design (see
+            Piece 4 above) — multiple worker PROCESSES would each get their
+            own copy and silently desync; threads still let background-job
+            polling routes (/job_status etc.) get served concurrently with
+            an in-flight request, matching the dev server's own threading.
+            aws/deploy_apprunner.sh (build -> push to ECR -> create/update
+            an App Runner service) and aws/ec2_user_data.sh (cloud-init:
+            install Docker, pull from ECR, run) are deliberately NOT
+            executed by anything — provisioning real cloud infrastructure
+            needs the user's own AWS credentials and is a real-money
+            action; aws/README.md documents both paths, cost caveats, and
+            that ANTHROPIC_API_KEY is the only required runtime secret
+            (Offline/Hybrid mode's local Writer would need a reachable
+            Ollama instance, out of scope for "containerize the Flask
+            app"). Verified live, locally: `docker build` succeeded;
+            `docker run` started cleanly under gunicorn; `curl` against the
+            running container's `/` returned HTTP 200 with the real
+            rendered 4-screen app HTML (confirmed via response length and
+            `<title>SpecGen</title>`), then the test container was removed.
 - [x] Phase 8: R output alongside SAS (admiral-style pipelines; language toggle)
       - [x] ADaM BDS (ADVS/ADLB/ADEG/ADTR/ADAE/ADCM/ADRS/ADTTE) — bds_assembler.py, full parity via --lang
       - [x] TLF (demographics, AE summary) — tlf_assembler.py
