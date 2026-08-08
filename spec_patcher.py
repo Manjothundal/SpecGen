@@ -24,7 +24,7 @@ def _build_block(var, row, available, writer_mode=None, reviewer_mode=None, use_
 
     Writer->Improver->Reviewer itself runs as a LangGraph state graph
     (agent_graph.run_pipeline) — see agent_graph.py."""
-    match = find_macro(var, catalog) if use_macros else None
+    match = find_macro(var, catalog, derivation=str(row["Derivation"])) if use_macros else None
     if match:
         inner = f"/* {var}: using validated macro */\n{match['call']}"
         return f"/*-- BEGIN {var} --*/\n{inner}\n/*-- END {var} --*/"

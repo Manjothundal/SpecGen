@@ -1,4 +1,14 @@
 import os
+import sys
+
+# Spec derivation text (often pasted from Word-authored specs) can contain
+# Unicode punctuation (em-dashes, curly quotes) that Windows' default console
+# codepage (cp1252) can't encode — patch_program's own diff printout would
+# otherwise crash with UnicodeEncodeError. Same fix as app.py/sdtm_assembler.py
+# apply for the same reason.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from spec_patcher import patch_program
 

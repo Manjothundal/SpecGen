@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SpecGen — Compare &amp; verify</title>
+<style>
+  :root{
+    --paper:#FAFBFC; --ink:#14232E; --slate:#5B6B78; --line:#E3E9ED;
+    --teal:#0E7C86; --teal-dark:#0A5A62; --amber:#C77D0A; --amber-bg:#FDF3E3;
+    --green:#2E7D4F; --green-bg:#E8F4ED; --red:#B3402E; --red-bg:#FBEAE6;
+    font-size:15px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    font-family:"Segoe UI", system-ui, -apple-system, sans-serif;
+    background:#EDF1F4; color:var(--ink); padding:28px 16px 60px;
+  }
+  .wrap{max-width:900px; margin:0 auto;}
+  h1{font-size:1.45rem; font-weight:650; letter-spacing:-.01em;}
+  h2{font-size:1.05rem; margin-bottom:8px;}
+  .sub{color:var(--slate); margin:6px 0 22px; max-width:72ch;}
+  a{color:var(--teal);}
+  .window{
+    background:var(--paper); border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 18px 50px rgba(20,35,46,.14); overflow:hidden; padding:22px 26px 28px;
+    margin-bottom:20px;
+  }
+  .hint{color:var(--slate); font-size:.85rem; margin-bottom:12px;}
+  .drop{
+    border:1.5px dashed var(--line); border-radius:9px; padding:16px;
+    display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:10px 0 14px;
+  }
+  input[type=file]{font:inherit;}
+  button{
+    background:var(--teal); color:#fff; border:0; border-radius:7px;
+    padding:9px 18px; font:inherit; font-weight:600; cursor:pointer;
+  }
+  button:hover{background:var(--teal-dark);}
+  .summary{display:flex; gap:10px; margin:16px 0;}
+  .stat{border-radius:8px; padding:8px 16px; font-weight:650; font-size:.9rem;}
+  .stat.changed{background:var(--amber-bg); color:var(--amber);}
+  .stat.only{background:var(--line); color:var(--slate);}
+  .finding{border-left:4px solid var(--amber); border-radius:0 8px 8px 0; padding:10px 14px; margin-bottom:10px; background:#fff;}
+  .finding.only{border-color:var(--slate);}
+  .ftitle{font-weight:650; font-size:.92rem;}
+  .fkind{font-size:.72rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--slate);}
+  pre.diff{font-family:Consolas, Menlo, monospace; font-size:.8rem; white-space:pre-wrap; background:#1B2B36; color:#D8E5EC; padding:10px 12px; border-radius:6px; margin-top:6px; overflow-x:auto;}
+  .clean{background:var(--green-bg); color:var(--green); border-radius:8px; padding:14px 16px; font-weight:600;}
+  .missing{background:var(--red-bg); color:var(--red); border-radius:8px; padding:10px 14px; margin-bottom:8px; font-size:.9rem;}
+  .back{display:inline-block; margin-top:6px; font-size:.9rem;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Compare &amp; verify</h1>
+  <p class="sub">Deterministic parsing and diffing over rendered TLF outputs
+    (PDF, Word, RTF) you bring in from your own SAS/R run — SpecGen doesn't
+    execute SAS, so it can't produce these itself, but it can read one back
+    and reconcile it. Sections/tables are matched by their title text, not
+    page position, so re-pagination between two runs doesn't look like
+    everything moved. No model call — nothing leaves this machine.</p>
+
+  {% if error %}<div class="missing">{{ error }}</div>{% endif %}
+
+  <div class="window">
+    <h2>Output vs. output</h2>
+    <p class="hint">Compare two rendered outputs — e.g. a production run
+      against an independent QC run, or this run against the last approved
+      one.</p>
+    <form method="post" action="/tools/compare-outputs" enctype="multipart/form-data">
+      <div class="drop">
+        <label>A: <input type="file" name="file_a" accept=".pdf,.docx,.rtf,.txt,.csv" required></label>
+        <label>B: <input type="file" name="file_b" accept=".pdf,.docx,.rtf,.txt,.csv" required></label>
+        <button type="submit">Compare</button>
+      </div>
+    </form>
+    {% if mode == "outputs" %}
+      {% if findings %}
+        <div class="summary">
+          <span class="stat changed">{{ changed_count }} changed</span>
+          <span class="stat only">{{ only_count }} only in one file</span>
+        </div>
+        {% for f in findings %}
+        <div class="finding {{ 'only' if f.kind != 'changed' else '' }}">
+          <span class="fkind">{{ 'only in ' + ('A' if f.kind == 'only_a' else 'B') if f.kind != 'changed' else 'changed' }}</span>
+          <div class="ftitle">{{ f.title }}</div>
+          {% if f.diff %}<pre class="diff">{{ f.diff | join('\n') }}</pre>{% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="clean">No differences found — the two outputs match, section for section.</div>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  <div class="window">
+    <h2>Output vs. mock shell</h2>
+    <p class="hint">Check that a rendered output actually contains every
+      title and row label its mock shell (the .xlsx built by
+      build_sample_shell.py, or one shaped like it) promised.</p>
+    <form method="post" action="/tools/compare-shell" enctype="multipart/form-data">
+      <div class="drop">
+        <label>Output: <input type="file" name="output_file" accept=".pdf,.docx,.rtf,.txt,.csv" required></label>
+        <label>Shell: <input type="file" name="shell_file" accept=".xlsx" required></label>
+        <button type="submit">Validate</button>
+      </div>
+    </form>
+    {% if mode == "shell" %}
+      {% if missing %}
+        {% for m in missing %}
+        <div class="missing">Missing: <b>{{ m.expected }}</b> ({{ m.field }})</div>
+        {% endfor %}
+      {% else %}
+        <div class="clean">Every title and row label the shell listed was found in the output.</div>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  <a class="back" href="/">&larr; Back to SpecGen</a>
+</div>
+</body>
+</html>

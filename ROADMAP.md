@@ -708,6 +708,186 @@ the outputs.
                 confirmed writing to the real domain file on disk, not just
                 in-memory state.
 
+- [x] Phase 12: Later-ideas backlog — small fixes, SDTM 3-mode, log checker,
+      QC mode, Compare & verify
+      - [x] 12a: Small fixes flagged in ROADMAP notes above but never
+            separately revisited:
+              - P21 awareness: reviewer.py's SAS/R QC checklists gained a
+                4th check (Common Pinnacle 21 findings — label >40 chars,
+                leading/trailing whitespace on a character value, non-ASCII
+                punctuation in a label/value); improver.py's rewrite
+                checklists gained a matching bullet. Verified via
+                build_review_prompt/build_improve_prompt output directly
+                (correct numbering with and without ig_version, which now
+                shifts to check #5).
+              - em-dash encoding fix: app.py and sdtm_assembler.py already
+                reconfigured stdout/stderr to UTF-8 (Windows' cp1252 console
+                can't encode em-dashes/curly quotes that show up in spec
+                text or model output) — test_differ.py and test_patcher.py
+                never got the same guard, so running either directly from a
+                Windows console on a spec containing one would crash with
+                UnicodeEncodeError. Same 3-line guard added to both (and
+                test_log_checker.py, new this phase, from the start).
+              - Catalog macro-call reparametrization: an exact catalog
+                match (find_macro) used to substitute its `call` template
+                verbatim — so AGEGR1's cut points changing from 65|80 to
+                65|75 in a spec update went out with the STALE 65|80 still
+                baked in, since nothing re-examines the template against
+                the current Derivation rule. find_macro gained an optional
+                `derivation` argument; for pattern=="numeric_range_group"
+                (the case that surfaced this), a regex extracts the N
+                quoted band labels and the N-1 numeric cut points between
+                them from the derivation text and substitutes them into the
+                call's cuts=/labels= — no model call, so the exact-match
+                fast path stays fast and deterministic. Falls back to the
+                unmodified template if the derivation doesn't parse into
+                that recognizable shape (never a regression). Both call
+                sites (assembler.py's exact-match branch, spec_patcher's
+                _build_block) now pass the variable's current Derivation
+                through. Verified directly against the repo's own
+                adam_spec.xlsx -> adam_spec_v2.xlsx AGEGR1 change (65|80 ->
+                65|75 cuts): the substituted call now reads
+                cuts=65|75, labels=<65|65-75|>75, and the full
+                test_patcher.py patch run confirmed no regression.
+      - [x] 12b: SDTM's real 3-mode pipeline. Turned out to be a wiring gap,
+            not an sdtm_assembler.py limitation — write_domain_program/
+            improve_domain_program/review_domain_program already each took
+            their own independent use_api. The actual bug was entirely in
+            app.py: generate_sdtm's subprocess only passed --offline for
+            mode=="offline" (so Hybrid's Writer ran on the API, unlike
+            ADSL's local-draft Hybrid), and /sdtm_improve, /sdtm_review
+            computed use_api = state["mode"] != "offline" (collapsing
+            Hybrid into API for Improve/Review too). Both now derive from
+            MODE_MAP the same way ADSL's routes already do: --offline is
+            passed whenever MODE_MAP's writer slot is "local" (Offline AND
+            Hybrid); Improve/Review's use_api is MODE_MAP's reviewer slot
+            == "api" (Hybrid AND API). Verified the resulting 3x3 matrix
+            directly: offline -> (local, local-only), hybrid -> (local
+            Writer, API Improve/Review), api -> (API, API) — exactly ADSL's
+            semantics, closing the documented asymmetry.
+      - [x] 12c: Log checker (log_checker.py) — parses a SAS .log and flags
+            every ERROR/WARNING plus any NOTE matching one of ~12 known
+            actionable patterns (uninitialized variable, implicit char<->
+            numeric conversion, missing-value propagation, a many-to-many
+            merge, an unresolved macro variable, multiple-lengths
+            truncation, a missing dataset, ...), each with a canned
+            suggested fix — deterministic pattern matching, no model call
+            needed for any of the known families. check_log() takes an
+            optional `mode` as an escape hatch (ask the model for a one-
+            line suggestion on an unmatched message) but defaults to pure
+            offline/free checking. Routine NOTEs (observation counts, step
+            timings) are correctly left out — only ERROR/WARNING/actionable
+            NOTE are findings. New standalone route (/tools/log-check,
+            templates/log_checker.html) — deliberately outside the ADaM/
+            SDTM/TLF tab system, since checking a log isn't tied to any
+            otype's spec/generate/review/export state. Verified against a
+            synthetic sample_sas.log (sample_sas.log, built to exercise 8
+            distinct findings across all three severities plus 3 routine
+            NOTEs that must NOT appear): all 8 correctly detected and
+            classified, all 3 routine NOTEs correctly excluded, both via
+            direct check_log() calls and a live upload through the running
+            Flask app (curl multipart POST, confirmed 2 errors/3 warnings/
+            3 notes/8 findings in the rendered page).
+      - [x] 12d: QC mode — independent double-programming QC for ADSL
+            (qc_generator.py). Real double-programming methodology: a
+            second, independent model call re-derives every main-step
+            variable (Origin=Derived, Source in DM/DERIVED — the same rows
+            the production Writer/Improver/Reviewer pipeline covers) from
+            the SAME spec, with a QC-programmer persona and the macro
+            catalog deliberately NEVER offered (reusing production's own
+            validated macro on both sides would make a bug in that macro
+            invisible to a comparison that calls it twice) — into
+            adsl_qc.sas/.R. A separate, fully deterministic function
+            generates the reconciliation harness: PROC COMPARE for SAS
+            (base=production, compare=qc, id USUBJID, out=_compare_diffs),
+            an equivalent dplyr full-join/mismatch-flagging pipeline for R.
+            Scope, stated directly in the module docstring: the ten ADSL
+            pre-steps (EX summarize, SUPPDM transpose, SE select, ...) are
+            shared, unchanged between production and QC — those are built
+            deterministically by the harness, not drafted by a model (see
+            README.md), so re-deriving them independently would be QC'ing
+            this app's own Python against itself with an LLM in between,
+            not catching the natural-language-to-code translation error
+            double programming exists to catch. Both programs join/merge
+            the exact same pre-step dataset names production's own main
+            step does, so adsl_qc is meant to run in the same session/
+            library as adsl, after it. New /qc_generate route (ADaM tab
+            only, gated on ADSL already being generated) runs as a
+            background job (same _GENERATE_LOCKS/job_status machinery as
+            Generate — N independent model calls, same reasoning), adding
+            adsl_qc/adsl_compare as two more "file"-kind blocks in Review &
+            sign off without disturbing ADSL's own per-variable blocks or
+            approval state. Real bug caught and fixed while building this:
+            generator.py's mock mode (generate_mock, added in Phase 11 for
+            CI) hardcoded SAS-flavored output (/* comment */ ... ;) — fine
+            for every existing caller, since ADaM's R path never generates
+            in mock mode, but qc_generator.py's R path does, and the SAS
+            comment syntax isn't valid inside an R mutate() chain. Fixed by
+            threading `language` through generate_code/review_code/
+            run_model (all additive, default-preserving for every existing
+            caller) so the mock stub can emit `# ...` for R instead.
+            Verified: mock-mode generation for both SAS and R produce
+            syntactically-appropriate stubs; a real (local Ollama, free)
+            end-to-end run against the repo's own adam_spec.xlsx produced
+            adsl_qc.sas and adsl_compare.sas (committed as samples) —
+            rough in spots, as expected for an unreviewed local Writer-only
+            pass (e.g. a hallucinated DM.ARM dataset prefix the prompt
+            explicitly disallowed), which is itself exactly the kind of
+            thing double-programming + PROC COMPARE is meant to surface,
+            not something this module needed to prevent on its own; the
+            live /qc_generate route confirmed end to end against the
+            running app (generate ADSL, click Run independent QC, both new
+            blocks appear in Review & sign off).
+      - [x] 12e: Compare & verify (Phase 9), scoped realistically —
+            compare_verify.py. This app never executes SAS/R, so it can't
+            produce a real rendered RTF/Word/PDF report itself; what it CAN
+            do deterministically (no AI in this module, per Phase 9's
+            original scope note above) is read one back a user brings in
+            from their own SAS/R environment and reconcile it. Two entry
+            points: compare_outputs(path_a, path_b) — output-to-output,
+            extracts both (pdfplumber for PDF, python-docx for Word,
+            striprtf for RTF, plain text/CSV fallback), aligns
+            sections/tables by TITLE TEXT similarity (difflib), not page
+            position — the original scope's explicit "not page-number
+            based" requirement, satisfied because a re-paginated re-run of
+            the same content shouldn't register as "everything moved" —
+            then diffs each aligned pair; validate_against_shell(path,
+            shell) — output-to-mock-shell, a presence check that every
+            Shell_Meta title and Shell_Rows label the shell promised
+            actually appears somewhere in the rendered output. Findings
+            logged to runlog.csv via the existing log_run() (the original
+            scope's "written to the audit trail" requirement). New
+            build_sample_tlf_outputs.py (mirrors the existing
+            build_sample_acrf.py/build_sample_protocol.py pattern: generate
+            once, commit the output as a fixture) produces a real PDF
+            A/B pair (one changed cell, via reportlab, already a
+            dependency), a DOCX, and an RTF — used to verify every
+            extractor against REAL parsed files, not mocked objects.
+            Verified directly: compare_outputs on the A/B PDF pair
+            correctly found exactly the one changed cell (Age mean 52.3 ->
+            53.8), nothing else; validate_against_shell against
+            sample_shell_demographics.xlsx correctly flagged the 3 row
+            labels and 1 title the intentionally-partial sample PDF omits,
+            and correctly did NOT flag the 2 it includes; DOCX and RTF
+            extraction confirmed against their own real sample files too.
+            New standalone route (/tools/compare,
+            templates/compare_verify.html) — the per-otype tab's disabled
+            "Compare & verify" nav button (Piece 4 mockup placeholder)
+            pointed here instead of becoming a real per-tab screen 5, once
+            it became clear the two file uploads this needs don't belong
+            in any otype's RUN_STATE at all, same reasoning as the log
+            checker's standalone page. Verified end to end via Flask's
+            in-process test client (didn't touch the live server, which had
+            a real ADSL generation in flight at the time): GET renders the
+            tool, both POST routes return the same findings as the direct
+            module calls.
+      - [x] 12f: New requirements.txt entries: python-docx (Word), striprtf
+            (RTF) — pdfplumber and reportlab were already dependencies.
+            New .github/workflows/tests.yml steps run test_qc_generator.py
+            (mock mode), test_log_checker.py, and test_compare_verify.py
+            (both fully deterministic, no mode needed) on every push,
+            alongside the existing differ/patcher smoke tests.
+
 ## Open items (near-term)
 - Test against a fuller, realistic ADSL spec (60-100+ variables)
 - Fix any items surfaced by that test (informats, TRT01A edge cases)

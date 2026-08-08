@@ -29,18 +29,26 @@ def generate_local(prompt):
     return response.json()["response"]
 
 
-def generate_mock(prompt):
+def generate_mock(prompt, language="sas"):
     """Deterministic, no-network stand-in for local/api — CI's mode
     (SPECGEN_WRITER_MODE / SPECGEN_REVIEWER_MODE=mock, see test_patcher.py
     and .github/workflows/tests.yml) so pipeline tests don't need Ollama
-    running or a paid Anthropic API call on every push."""
+    running or a paid Anthropic API call on every push.
+
+    language matters here (unlike generate_local/generate_api, which just
+    ship the prompt text to a model that reads the language off it) because
+    this function has to fabricate syntactically valid output itself — R
+    has no /* */ block comment, so the SAS-flavored stub would break a
+    mutate() chain it's spliced into."""
+    if (language or "sas").lower() == "r":
+        return "# mock: deterministic CI stub, no model call\nMOCK = 1"
     return "/* mock: deterministic CI stub, no model call */\nMOCK = 1;"
 
 
-def run_model(prompt, mode):
+def run_model(prompt, mode, language="sas"):
     """Route a prompt to local, api, or the mock stub based on mode."""
     if mode == "mock":
-        return generate_mock(prompt)
+        return generate_mock(prompt, language=language)
     if mode == "local":
         return generate_local(prompt)
     return generate_api(prompt)
@@ -59,14 +67,16 @@ def run_model(prompt, mode):
 # a later change to config.WRITER/REVIEWER.
 # ---------------------------------------------------------------------------
 
-def generate_code(prompt, mode=None):
-    """Writer: generates the code (SAS or R — the prompt decides)."""
-    return run_model(prompt, mode or config.WRITER)
+def generate_code(prompt, mode=None, language=None):
+    """Writer: generates the code (SAS or R — the prompt decides; language
+    is only used to pick the mock stub's syntax in mock mode)."""
+    return run_model(prompt, mode or config.WRITER, language=language or config.LANGUAGE)
 
 
-def review_code(prompt, mode=None):
-    """Reviewer: QCs the code (SAS or R — the prompt decides)."""
-    return run_model(prompt, mode or config.REVIEWER)
+def review_code(prompt, mode=None, language=None):
+    """Reviewer: QCs the code (SAS or R — the prompt decides; language is
+    only used to pick the mock stub's syntax in mock mode)."""
+    return run_model(prompt, mode or config.REVIEWER, language=language or config.LANGUAGE)
 
 
 # --- Back-compat aliases (unchanged behaviour) ---

@@ -14,12 +14,14 @@ for clinical statistical programmers.
   quality
 - **Review** — a QC agent checks every block against the known-variable list;
   failures become visible flags, never silent edits
-- **Update** (planned) — diffs spec versions and patches existing programs
-  (the amendment workflow)
-- **Verify** (planned) — compares TLF outputs (RTF/Word/PDF) against QC
-  outputs and mock shells, with a difference summary and drill-down
+- **Update** — diffs spec versions and patches existing programs (the
+  amendment workflow), surgically updating only the touched blocks
+- **Verify** — compares rendered TLF outputs (PDF/Word/RTF) against each
+  other or against a mock shell, section-by-section, not page-number based
 - **Reuse** — embedding-based retrieval (Chroma) over the company macro
   library, so generated code calls validated macros before writing new logic
+- **QC** — an independent double-programming pass re-derives ADSL from the
+  same spec and reconciles it against production via PROC COMPARE
 
 ## Three modes, one codebase
 
@@ -57,16 +59,20 @@ three-agent generation (local draft, API improve, API review) — the
 patch/insert path's Writer->Improver->Reviewer chain runs as a LangGraph
 state graph — full ADSL output, run logging, Chroma-backed macro retrieval,
 CI (GitHub Actions), Docker image (deployable to AWS App Runner or EC2 —
-see `aws/`, not deployed by default).
+see `aws/`, not deployed by default), SDTM's real 3-mode pipeline, a SAS
+log checker, independent double-programming QC for ADSL, and Compare &
+verify (deterministic PDF/Word/RTF diffing and mock-shell validation —
+standalone tools at `/tools/log-check` and `/tools/compare`).
 In progress: run-log model recording, fuller-spec testing.
-Planned: R output (admiral-style), TLF comparison module, draft spec
-generation from aCRF/SAP.
+Planned: draft spec generation from aCRF/SAP, define.xml support, packaging
+as a Windows .exe.
 See [ROADMAP.md](ROADMAP.md).
 
 ## Tech
 
 Python 3.13 · pandas / openpyxl · Anthropic API · Ollama (qwen2.5-coder) ·
-LangGraph (agent pipeline) · Chroma (macro catalog retrieval) · Docker ·
+LangGraph (agent pipeline) · Chroma (macro catalog retrieval) ·
+pdfplumber / python-docx / striprtf (output parsing) · Docker ·
 GitHub Actions · Git
 
 ## Note

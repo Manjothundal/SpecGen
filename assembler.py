@@ -33,7 +33,7 @@ def gen_block(row, skip_macro=False, language=None, writer_mode=None, ig_version
     """Generate one variable's derivation logic via the model."""
     print("Generating:", row["Variable"])
     return clean(generate_code(build_prompt(row, skip_macro=skip_macro, language=language,
-                                            ig_version=ig_version), mode=writer_mode))
+                                            ig_version=ig_version), mode=writer_mode, language=language))
 
 
 # ---------------------------------------------------------------------------
@@ -246,8 +246,10 @@ def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, r
 
         var = row["Variable"]
 
-        # 1. Exact catalog match — use macro call directly
-        match = find_macro(var, catalog) if use_macros else None
+        # 1. Exact catalog match — use macro call directly (reparametrized
+        # against this spec's actual Derivation rule where recognizable —
+        # see macro_lookup._reparametrize)
+        match = find_macro(var, catalog, derivation=str(row["Derivation"])) if use_macros else None
         if match:
             print("Macro match:", var, "->", match["macro"])
             block = f"/*-- BEGIN {var} --*/\n/* {var}: using validated macro */\n{match['call']}\n/*-- END {var} --*/"

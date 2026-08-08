@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SpecGen — Log checker</title>
+<style>
+  :root{
+    --paper:#FAFBFC; --ink:#14232E; --slate:#5B6B78; --line:#E3E9ED;
+    --teal:#0E7C86; --teal-dark:#0A5A62; --amber:#C77D0A; --amber-bg:#FDF3E3;
+    --green:#2E7D4F; --green-bg:#E8F4ED; --red:#B3402E; --red-bg:#FBEAE6;
+    --code-bg:#1B2B36; --code-ink:#D8E5EC;
+    font-size:15px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    font-family:"Segoe UI", system-ui, -apple-system, sans-serif;
+    background:#EDF1F4; color:var(--ink); padding:28px 16px 60px;
+  }
+  .wrap{max-width:860px; margin:0 auto;}
+  h1{font-size:1.45rem; font-weight:650; letter-spacing:-.01em;}
+  .sub{color:var(--slate); margin:6px 0 22px; max-width:72ch;}
+  a{color:var(--teal);}
+  .window{
+    background:var(--paper); border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 18px 50px rgba(20,35,46,.14); overflow:hidden; padding:22px 26px 28px;
+  }
+  .drop{
+    border:1.5px dashed var(--line); border-radius:9px; padding:18px;
+    display:flex; gap:12px; align-items:center; margin:14px 0 18px;
+  }
+  input[type=file]{font:inherit;}
+  button{
+    background:var(--teal); color:#fff; border:0; border-radius:7px;
+    padding:9px 18px; font:inherit; font-weight:600; cursor:pointer;
+  }
+  button:hover{background:var(--teal-dark);}
+  .summary{display:flex; gap:10px; margin:18px 0;}
+  .stat{border-radius:8px; padding:8px 16px; font-weight:650; font-size:.9rem;}
+  .stat.error{background:var(--red-bg); color:var(--red);}
+  .stat.warning{background:var(--amber-bg); color:var(--amber);}
+  .stat.note{background:var(--line); color:var(--slate);}
+  .finding{border-left:4px solid var(--line); border-radius:0 8px 8px 0; padding:10px 14px; margin-bottom:10px; background:#fff;}
+  .finding.error{border-color:var(--red);}
+  .finding.warning{border-color:var(--amber);}
+  .finding.note{border-color:var(--slate);}
+  .sev{font-size:.72rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase;}
+  .finding.error .sev{color:var(--red);}
+  .finding.warning .sev{color:var(--amber);}
+  .finding.note .sev{color:var(--slate);}
+  .loc{color:var(--slate); font-size:.82rem;}
+  .msg{font-family:Consolas, Menlo, monospace; font-size:.86rem; margin:4px 0; white-space:pre-wrap;}
+  .fix{font-size:.88rem; margin-top:4px;}
+  .fix b{color:var(--teal-dark);}
+  .clean{background:var(--green-bg); color:var(--green); border-radius:8px; padding:14px 16px; font-weight:600;}
+  .back{display:inline-block; margin-top:20px; font-size:.9rem;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>SAS log checker</h1>
+  <p class="sub">Upload a SAS .log file — ERROR and WARNING lines are always
+    flagged; NOTEs are only surfaced when they match a known actionable
+    pattern (implicit type conversion, missing-value propagation, a
+    many-to-many merge, an uninitialized variable, ...). Routine NOTEs
+    (observation counts, step timings) are left out. Deterministic parsing —
+    no model call, nothing leaves this machine.</p>
+
+  <div class="window">
+    <form method="post" action="/tools/log-check" enctype="multipart/form-data">
+      <div class="drop">
+        <input type="file" name="logfile" accept=".log,.txt" required>
+        <button type="submit">Check log</button>
+      </div>
+    </form>
+
+    {% if findings is not none %}
+      {% if findings %}
+        <div class="summary">
+          <span class="stat error">{{ counts.error }} error{{ 's' if counts.error != 1 }}</span>
+          <span class="stat warning">{{ counts.warning }} warning{{ 's' if counts.warning != 1 }}</span>
+          <span class="stat note">{{ counts.note }} note{{ 's' if counts.note != 1 }}</span>
+        </div>
+        {% for f in findings %}
+        <div class="finding {{ f.severity }}">
+          <span class="sev">{{ f.severity }}</span>
+          {% if f.location %}<span class="loc"> — {{ f.location }}</span>
+          {% elif f.line_no %}<span class="loc"> — near source line {{ f.line_no }}</span>{% endif %}
+          <div class="msg">{{ f.message }}</div>
+          {% if f.suggestion %}<div class="fix"><b>Suggested fix:</b> {{ f.suggestion }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="clean">No errors, warnings, or known actionable notes found.</div>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  <a class="back" href="/">&larr; Back to SpecGen</a>
+</div>
+</body>
+</html>

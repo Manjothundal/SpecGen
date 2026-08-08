@@ -1,3 +1,5 @@
+import re
+
 import pandas as pd
 import chromadb
 
@@ -11,16 +13,82 @@ MATCH_DISTANCE_THRESHOLD = 0.65
 def load_catalog():
     return pd.read_csv(CATALOG_FILE)
 
-def find_macro(variable, catalog):
+
+def _extract_range_group_params(derivation):
+    """Pull (cuts, labels) out of a standard numeric_range_group derivation
+    — N quoted band labels in order, and the N-1 numeric cut points between
+    them (e.g. 'If AGE < 65 then AGEGR1 = "<65"; else if 65 <= AGE <= 75
+    then AGEGR1 = "65-75"; else if AGE > 75 then AGEGR1 = ">75".' ->
+    ("65|75", "<65|65-75|>75")). Returns None if the derivation doesn't
+    match this recognizable shape (fewer than 2 labels, or the cut-point
+    count doesn't line up) — the caller falls back to the catalog's static
+    template unchanged in that case, so this is a strict improvement, never
+    a regression."""
+    labels = re.findall(r'"([^"]+)"', derivation)
+    if len(labels) < 2:
+        return None
+    # Strip the quoted labels first so their own digits (e.g. "<65") can't
+    # leak into the cut-point scan below.
+    stripped = re.sub(r'"[^"]*"', "", derivation)
+    numbers = re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])", stripped)
+    seen = []
+    for n in numbers:
+        if n not in seen:
+            seen.append(n)
+    cuts = seen[: len(labels) - 1]
+    if len(cuts) != len(labels) - 1:
+        return None
+    return "|".join(cuts), "|".join(labels)
+
+
+def _substitute_call_kwarg(call, kwarg, new_value):
+    return re.sub(rf"({re.escape(kwarg)}=)[^,)]*", rf"\g<1>{new_value}", call)
+
+
+def _reparametrize(match, derivation):
+    """An exact catalog match substitutes its `call` directly, with no
+    Writer/Improver/Reviewer step — so unlike the pattern-hint path (which
+    the model sees and is asked to adapt), a stale template value here
+    would otherwise go out unnoticed: e.g. AGEGR1's cut points changing
+    from 65|80 to 65|75 in a spec update wouldn't be reflected, since
+    `call` is a static string keyed only on the variable name. Currently
+    only handles numeric_range_group (the case that surfaced this) via a
+    plain regex extraction — no model call, so the fast/deterministic
+    exact-match path stays fast and deterministic. Returns `match`
+    unchanged if the pattern isn't numeric_range_group or the derivation
+    doesn't parse into recognizable cuts/labels."""
+    if match.get("pattern") != "numeric_range_group" or not derivation:
+        return match
+    extracted = _extract_range_group_params(derivation)
+    if not extracted:
+        return match
+    cuts, labels = extracted
+    call = match["call"]
+    call = _substitute_call_kwarg(call, "cuts", cuts)
+    call = _substitute_call_kwarg(call, "labels", labels)
+    if call == match["call"]:
+        return match
+    match = dict(match)
+    match["call"] = call
+    return match
+
+
+def find_macro(variable, catalog, derivation=None):
     """Exact variable-name lookup, ADaM scope only. Returns row dict or None.
     (SDTM/TLF catalog rows use non-variable-name values in this column —
     suffix globs like "*SEQ", or "all" — so they'd never accidentally
     exact-match a real ADaM variable name even without this filter, but
-    scoping explicitly keeps the two lookup styles from ever crossing.)"""
+    scoping explicitly keeps the two lookup styles from ever crossing.)
+
+    derivation: the variable's current Derivation rule text, optional — when
+    given, the matched macro call's parameters are reparametrized to match
+    it where that's recognizable (see _reparametrize); omit it (or pass
+    None) to get the catalog's static call verbatim, as before."""
     match = catalog[(catalog["scope"] == "adam") & (catalog["variable"] == variable)]
-    if not match.empty:
-        return match.iloc[0].to_dict()
-    return None
+    if match.empty:
+        return None
+    row = match.iloc[0].to_dict()
+    return _reparametrize(row, derivation)
 
 def find_sdtm_macros(variables, catalog):
     """Suffix-pattern lookup for SDTM: which catalog macros (scope=sdtm)

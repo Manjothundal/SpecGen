@@ -30,7 +30,7 @@ def build_review_prompt(code, known_vars, language=None, ig_version=None):
 # ---------------------------------------------------------------------------
 
 def _build_sas_review_prompt(code, known_vars, ig_version=None):
-    ig_check = f"\n4. Non-compliance with CDISC ADaMIG v{ig_version} conventions for this variable (naming, controlled terminology)" if ig_version else ""
+    ig_check = f"\n5. Non-compliance with CDISC ADaMIG v{ig_version} conventions for this variable (naming, controlled terminology)" if ig_version else ""
     return f"""You are a senior clinical SAS programmer performing QC.
 
 Review this generated SAS code block:
@@ -43,7 +43,10 @@ Variables available in this data step:
 Check ONLY for these issues:
 1. References to variables NOT in the available list (hallucinated variables)
 2. Statements that would fail in a data step (data/set/merge/run statements)
-3. Character values assigned to numeric variables or vice versa{ig_check}
+3. Character values assigned to numeric variables or vice versa
+4. Common Pinnacle 21 findings: a label exceeding 40 characters; leading or
+   trailing whitespace on a character value; non-ASCII/special characters
+   (curly quotes, em-dashes) in a label or character value{ig_check}
 
 Reply with exactly one line:
 PASS
@@ -59,7 +62,7 @@ No other text.
 # ---------------------------------------------------------------------------
 
 def _build_r_review_prompt(code, known_vars, ig_version=None):
-    ig_check = f"\n4. Non-compliance with CDISC ADaMIG v{ig_version} conventions for this variable (naming, controlled terminology)" if ig_version else ""
+    ig_check = f"\n5. Non-compliance with CDISC ADaMIG v{ig_version} conventions for this variable (naming, controlled terminology)" if ig_version else ""
     return f"""You are a senior clinical R programmer (tidyverse) performing QC.
 
 Review this generated R code block. It is meant to be the inner derivation
@@ -78,7 +81,10 @@ Check ONLY for these issues:
    mutate( ... ) itself. Only the bare NAME = <expression> line(s) are valid.
 3. Type errors: a character result (string / NA_character_) assigned where a
    numeric is expected or vice versa; a number written in quotes; base ifelse
-   used where typed if_else()/case_when() is required for NA safety.{ig_check}
+   used where typed if_else()/case_when() is required for NA safety.
+4. Common Pinnacle 21 findings: leading or trailing whitespace on a character
+   value; non-ASCII/special characters (curly quotes, em-dashes) in a
+   character value{ig_check}
 
 Do NOT flag valid R for not looking like SAS (no run;, no length/label/format,
 no semicolons — these are correct in R).
@@ -95,5 +101,5 @@ No other text.
 def review_block(code, known_vars, language=None, mode=None, ig_version=None):
     """Return the model's one-line verdict on a code block."""
     verdict = review_code(build_review_prompt(code, known_vars, language=language,
-                                              ig_version=ig_version), mode=mode).strip()
+                                              ig_version=ig_version), mode=mode, language=language).strip()
     return verdict

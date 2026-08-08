@@ -42,3 +42,15 @@ jobs:
           SPECGEN_WRITER_MODE: mock
           SPECGEN_REVIEWER_MODE: mock
         run: python test_patcher.py
+
+      - name: Run QC generator smoke test
+        env:
+          SPECGEN_WRITER_MODE: mock
+        run: python test_qc_generator.py
+
+      # Deterministic — no model call, so no mode env vars needed.
+      - name: Run log checker smoke test
+        run: python test_log_checker.py
+
+      - name: Run compare & verify smoke test
+        run: python test_compare_verify.py

@@ -62,6 +62,9 @@ from improver import improve_block
 from reviewer import review_block
 from spec_differ import diff_specs
 from spec_patcher import patch_program, locate_and_update, _build_block
+from log_checker import check_log
+import qc_generator
+from compare_verify import compare_outputs, validate_against_shell
 
 app = Flask(__name__)
 
@@ -402,9 +405,12 @@ def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False,
     just that domain regardless of whether it already exists — "all" still
     respects the default skip-if-exists behavior.
 
-    SDTM's pipeline only has a binary use_api flag today (no true Hybrid, this
-    is a known asymmetry with ADSL) — Offline stays local-only; Hybrid and API
-    both map to use_api=True since that's the only "reviewed" option SDTM has.
+    Mode maps through MODE_MAP the same way ADSL's does: the subprocess gets
+    --offline (local Writer) whenever MODE_MAP's writer slot is "local" —
+    true for Offline AND Hybrid, matching ADSL's local-draft/API-review
+    split — and only API mode's Writer runs against the Anthropic API.
+    Improve/Review (the on-demand /sdtm_improve, /sdtm_review routes) use
+    MODE_MAP's reviewer slot the same way ADSL's do.
 
     ctrl: optional {"cancel_event": threading.Event, "proc": None} dict shared
     with the route layer's /abort handler — this function stores the live
@@ -457,7 +463,8 @@ def generate_sdtm(lang, mode, spec_path=None, domain="all", force_pending=False,
         return found
 
     cmd = [sys.executable, "sdtm_assembler.py", spec_path, "--lang", lang]
-    if mode == "offline":
+    writer_mode, _ = MODE_MAP.get(mode, (None, None))
+    if writer_mode == "local":
         cmd.append("--offline")
     if force:
         cmd.append("--force")
@@ -845,6 +852,89 @@ def _otype_from_request(default="adam"):
 @app.route("/", methods=["GET"])
 def index():
     return _render()
+
+
+@app.route("/tools/log-check", methods=["GET", "POST"])
+def log_check_tool():
+    """Standalone one-shot tool, deliberately outside the ADaM/SDTM/TLF tab
+    system — checking a SAS .log isn't tied to a spec/generate/review/export
+    pipeline or any per-otype state, it's a stateless "upload a file, see
+    findings" utility, so it gets its own tiny template instead of being
+    squeezed into otype_tab()."""
+    findings = None
+    if request.method == "POST":
+        f = request.files.get("logfile")
+        if f and f.filename:
+            log_text = f.read().decode("utf-8", errors="replace")
+            findings = check_log(log_text)
+
+    counts = {"error": 0, "warning": 0, "note": 0}
+    for finding in findings or []:
+        counts[finding["severity"]] += 1
+
+    return render_template("log_checker.html", findings=findings, counts=counts)
+
+
+def _save_upload(file_storage, subdir):
+    """Save an uploaded werkzeug FileStorage to a real path on disk —
+    compare_verify's extractors (pdfplumber/python-docx/striprtf) all need
+    an actual file, not an in-memory stream. Reuses the same UPLOAD_DIR
+    temp directory every other upload in this app writes to."""
+    out_dir = os.path.join(UPLOAD_DIR, subdir)
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, secure_filename(file_storage.filename))
+    file_storage.save(path)
+    return path
+
+
+@app.route("/tools/compare", methods=["GET"])
+def compare_verify_tool():
+    """Standalone tool, same reasoning as /tools/log-check — comparing two
+    rendered TLF outputs (or an output against its mock shell) isn't tied
+    to any otype's spec/generate/review/export state; the per-otype tab's
+    disabled "Compare & verify" nav button pointed here originally but
+    Phase 9 landed as this standalone page instead, once it became clear
+    the two file uploads it needs don't belong in RUN_STATE at all."""
+    return render_template("compare_verify.html", mode=None, findings=None, missing=None)
+
+
+@app.route("/tools/compare-outputs", methods=["POST"])
+def compare_verify_outputs_route():
+    file_a = request.files.get("file_a")
+    file_b = request.files.get("file_b")
+    if not file_a or not file_a.filename or not file_b or not file_b.filename:
+        return render_template("compare_verify.html", mode=None, findings=None, missing=None)
+
+    path_a = _save_upload(file_a, "compare_a")
+    path_b = _save_upload(file_b, "compare_b")
+    try:
+        findings = compare_outputs(path_a, path_b)
+    except ValueError as e:
+        return render_template("compare_verify.html", mode=None, findings=None, missing=None,
+                               error=str(e))
+
+    changed_count = sum(1 for f in findings if f["kind"] == "changed")
+    only_count = len(findings) - changed_count
+    return render_template("compare_verify.html", mode="outputs", findings=findings,
+                           changed_count=changed_count, only_count=only_count, missing=None)
+
+
+@app.route("/tools/compare-shell", methods=["POST"])
+def compare_verify_shell_route():
+    output_file = request.files.get("output_file")
+    shell_file = request.files.get("shell_file")
+    if not output_file or not output_file.filename or not shell_file or not shell_file.filename:
+        return render_template("compare_verify.html", mode=None, findings=None, missing=None)
+
+    output_path = _save_upload(output_file, "compare_output")
+    shell_path = _save_upload(shell_file, "compare_shell")
+    try:
+        missing = validate_against_shell(output_path, shell_path)
+    except ValueError as e:
+        return render_template("compare_verify.html", mode=None, findings=None, missing=None,
+                               error=str(e))
+
+    return render_template("compare_verify.html", mode="shell", missing=missing, findings=None)
 
 
 @app.route("/parse", methods=["POST"])
@@ -1457,6 +1547,72 @@ def _run_generate_job(otype, lang, mode, domain, uploaded, force_pending, use_ma
         _GENERATE_LOCKS[otype].release()
 
 
+def _run_qc_generate_job(otype, lang, writer_mode, ig_version):
+    """Background thread target for /qc_generate — independent double-
+    programming QC (see qc_generator.py). Same reasoning as
+    _run_generate_job for running off the request thread: N model calls,
+    one per main-step variable."""
+    state = RUN_STATE["otypes"][otype]
+    try:
+        spec_path = state.get("adsl_spec_path") or ADAM_SPEC
+        spec = pd.read_excel(spec_path, sheet_name="Variables")
+
+        qc_program = qc_generator.generate_qc_adsl(spec, language=lang, mode=writer_mode,
+                                                    ig_version=ig_version)
+        compare_program = qc_generator.generate_compare_harness(spec, language=lang)
+
+        ext = "R" if lang == "r" else "sas"
+        state["programs"]["adsl_qc"] = qc_program
+        state["programs"]["adsl_compare"] = compare_program
+        for name, code in (("adsl_qc", qc_program), ("adsl_compare", compare_program)):
+            key = f"{otype}:{name}"
+            label = f"{name}.{ext}"
+            state["blocks"][key] = {"label": label, "code": code, "qc": "NONE",
+                                    "approved": False, "kind": "file", "var": None}
+            if key not in state["block_order"]:
+                state["block_order"].append(key)
+
+        state["job_status"] = "done"
+        state["job_note"] = ("QC re-derivation and PROC COMPARE harness generated — "
+                             "review adsl_qc and adsl_compare below.")
+    except Exception as e:
+        state["job_status"] = "error"
+        state["job_note"] = f"QC generation failed: {e}"
+    finally:
+        _GENERATE_LOCKS[otype].release()
+
+
+@app.route("/qc_generate", methods=["POST"])
+def qc_generate():
+    """Independent double-programming QC for ADSL (see qc_generator.py):
+    re-derives every main-step variable from the same spec via its own
+    model call (macros never offered — see that module's docstring), then
+    a deterministic PROC COMPARE / data-frame-diff harness reconciling it
+    against production adsl. Requires ADSL to have been generated already
+    — there's nothing to independently re-derive or compare against
+    otherwise."""
+    otype = "adam"
+    state = RUN_STATE["otypes"][otype]
+    if "adsl" not in state.get("programs", {}):
+        return _render(active_otype=otype, note_otype=otype,
+                      note="Generate ADSL first — QC mode independently re-derives "
+                          "it and compares against the result.")
+
+    lock = _GENERATE_LOCKS[otype]
+    if not lock.acquire(blocking=False):
+        return _render(active_otype=otype, note_otype=otype,
+                      note="A generation is already running on this tab — wait for it to finish.")
+
+    writer_mode, _ = MODE_MAP.get(state["mode"], (None, None))
+    state["job_status"] = "running"
+    state["job_kind"] = "qc_generate"
+    state["job_note"] = None
+    threading.Thread(target=_run_qc_generate_job,
+                     args=(otype, state["lang"], writer_mode, state["adamig_version"]),
+                     daemon=True).start()
+    return _render(active_otype=otype)
+
+
 @app.route("/generate", methods=["POST"])
 def generate():
     otype = _otype_from_request()
@@ -1667,7 +1823,8 @@ def sdtm_improve():
                       note="A generation is already running on this tab — wait for it to finish.")
 
     domain = block["label"].upper()
-    use_api = state["mode"] != "offline"
+    _, reviewer_mode = MODE_MAP.get(state["mode"], (None, None))
+    use_api = reviewer_mode == "api"
     state["job_status"] = "running"
     state["job_kind"] = "sdtm_improve"
     state["job_note"] = None
@@ -1690,7 +1847,8 @@ def sdtm_review():
                       note="A generation is already running on this tab — wait for it to finish.")
 
     domain = block["label"].upper()
-    use_api = state["mode"] != "offline"
+    _, reviewer_mode = MODE_MAP.get(state["mode"], (None, None))
+    use_api = reviewer_mode == "api"
     state["job_status"] = "running"
     state["job_kind"] = "sdtm_review"
     state["job_note"] = None

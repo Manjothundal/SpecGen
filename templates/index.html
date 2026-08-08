@@ -162,7 +162,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>SpecGen</h1>
+  <h1>SpecGen <a href="/tools/log-check" style="font-size:.6em; font-weight:600; color:var(--teal);">Log checker &rarr;</a> <a href="/tools/compare" style="font-size:.6em; font-weight:600; color:var(--teal);">Compare &amp; verify &rarr;</a></h1>
   <p class="sub">Spec-to-program generation in SAS or R: parse a spec, run the three-agent pipeline, review and sign off block by block, then export and commit. ADaM, SDTM, and TLF are independent tabs below — each keeps its own spec, mode/language, and generated programs, so switching tabs never touches another tab's state.</p>
 
   {% macro otype_tab(otype, label, domain_note, upload_label, upload_hint, allow_multiple, macro_label='') %}
@@ -221,7 +221,7 @@
           <button class="{{ 'on' if t.active_screen=='generate' else '' }}" onclick="go('{{ otype }}',1,this)"><span class="step">2</span> Generate</button>
           <button class="{{ 'on' if t.active_screen=='review' else '' }}" onclick="go('{{ otype }}',2,this)"><span class="step">3</span> Review &amp; sign off</button>
           <button class="{{ 'on' if t.active_screen=='export' else '' }}" onclick="go('{{ otype }}',3,this)"><span class="step">4</span> Export &amp; audit</button>
-          <button class="disabled" title="Not built yet — Phase 9"><span class="step">5</span> Compare &amp; verify</button>
+          <button type="button" title="Opens the standalone Compare & verify tool in a new tab — its two file uploads aren't tied to this tab's spec/generate/review state" onclick="window.open('/tools/compare', '_blank')"><span class="step">5</span> Compare &amp; verify</button>
         </nav>
 
         <main>
@@ -444,6 +444,12 @@
             <p class="hint">Nothing exports until every block below is approved.</p>
             {% if t.note %}<div class="note">{{ t.note }}</div>{% endif %}
             {% if t.job_kind == 'patch' and t.job_status in ('done', 'error') %}<div class="note">{{ t.job_note }}</div>{% endif %}
+            {% if t.job_kind == 'qc_generate' and t.job_status in ('done', 'error') %}<div class="note">{{ t.job_note }}</div>{% endif %}
+            {% if otype == 'adam' and 'adsl' in t.programs %}
+            <form class="inline" method="post" action="/qc_generate" style="margin-bottom:12px;">
+              <button type="submit" class="mini" title="Independently re-derives ADSL from the same spec and generates a PROC COMPARE harness against it — real double-programming QC, not an AI review of the same code.">Run independent QC (double programming)</button>
+            </form>
+            {% endif %}
             <div class="signoff">Signed off: <b>{{ t.approved }} of {{ t.total_blocks }}</b> blocks {% if t.total_blocks and t.approved == t.total_blocks %}— ready to export{% endif %}</div>
             <div class="review">
               {% for key in t.block_order %}

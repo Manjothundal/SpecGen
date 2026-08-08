@@ -48,6 +48,10 @@ Rewrite the code so that it:
 - Never invents values, codes, treatment names, or format names
 - Uses `select;` with full conditions, or `select (VAR);` only for exact value matching
 - Compares character variables to character values, never to numeric missing
+- Avoids common Pinnacle 21 findings: keep labels to 40 characters or fewer,
+  strip leading/trailing whitespace from character values, and use plain
+  ASCII punctuation (no curly quotes or em-dashes) in labels and character
+  values
 - Is code a senior programmer would sign off on
 {ig_line}
 Output ONLY the corrected SAS code with one brief comment line.
@@ -93,6 +97,9 @@ Rewrite the code so that it:
   comparison with NA yields NA (unlike SAS, NA is not ordered below numbers)
 - Never invents values, codes, treatment names, or column names
 - Does NOT emit length/label/format statements — R has none
+- Avoids common Pinnacle 21 findings: strip leading/trailing whitespace from
+  character values, and use plain ASCII punctuation (no curly quotes or
+  em-dashes) in character values
 - Is code a senior programmer would sign off on
 {ig_line}
 Output ONLY the corrected R code with one brief comment line.
@@ -110,4 +117,4 @@ def improve_block(code, row, known_vars, language=None, mode=None, ig_version=No
     local.
     """
     return review_code(build_improve_prompt(code, row, known_vars, language=language,
-                                            ig_version=ig_version), mode=mode).strip()
+                                            ig_version=ig_version), mode=mode, language=language).strip()

@@ -1,0 +1,49 @@
+1                                                          The SAS System
+
+NOTE: Copyright (c) 2023 by SAS Institute Inc., Cary, NC, USA.
+NOTE: SAS (r) Proprietary Software release 9.4
+
+      1  data adsl;
+      2      set dm;
+      3      AGE2 = AGE * 2;
+      4  run;
+
+NOTE: There were 254 observations read from the data set WORK.DM.
+NOTE: The data set WORK.ADSL has 254 observations and 12 variables.
+NOTE: DATA statement used (Total process time):
+      real time           0.02 seconds
+
+      5  data adsl2;
+      6      set adsl;
+      7      if AGEGR = "Y" then FLAG = 1;
+      8  run;
+
+NOTE: Character values have been converted to numeric values at the places
+      given by: (Line):(Column).
+      7:20
+NOTE: Missing values were generated as a result of performing an operation
+      on missing values.
+      Each place is given by: (Number of times) at (Line):(Column).
+      3(1) at 7:25
+WARNING: Multiple lengths were specified for the variable RACE by input
+         data set(s). This may cause truncation of data.
+NOTE: The data set WORK.ADSL2 has 254 observations and 13 variables.
+
+      9  data merged;
+     10      merge adsl2 supp;
+     11      by usubjid;
+     12  run;
+
+NOTE: MERGE statement has more than one data set with repeats of BY values.
+ERROR: Variable TRTP not found.
+ERROR: File WORK.NONEXISTENT.DATA does not exist.
+NOTE: The SAS System stopped processing this step because of errors.
+WARNING: The data set WORK.MERGED may be incomplete. When this step was
+         stopped there were 0 observations and 0 variables.
+
+     13  proc print data=summary;
+     14  run;
+
+WARNING: Apparent symbolic reference MYVAR not resolved.
+NOTE: PROCEDURE PRINT used (Total process time):
+      real time           0.01 seconds
