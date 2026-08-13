@@ -65,6 +65,7 @@ from spec_patcher import patch_program, locate_and_update, _build_block
 from log_checker import check_log
 import qc_generator
 from compare_verify import compare_outputs, validate_against_shell
+import sdtm_automapper
 
 app = Flask(__name__)
 
@@ -173,6 +174,16 @@ _GENERATE_LOCKS = {ot: threading.Lock() for ot in OTYPES}
 # between iterations). proc holds SDTM's live subprocess.Popen, if any, so
 # /abort can terminate it immediately rather than waiting for a poll.
 _JOB_CTRL = {ot: {"cancel_event": threading.Event(), "proc": None} for ot in OTYPES}
+
+# Same background-job shape as the tab system above, but for the standalone
+# SDTM automapper tool (see /tools/sdtm-automap below) — it isn't tied to
+# any otype tab, so it gets its own single-slot lock/state instead of a
+# per-otype dict (only one automap run at a time, which is the right
+# scope: this is a one-off "upload data, get a mapping proposal" tool, not
+# a multi-tab pipeline).
+_AUTOMAP_LOCK = threading.Lock()
+_AUTOMAP_CTRL = {"cancel_event": threading.Event()}
+_AUTOMAP_STATE = {"status": "idle", "note": None, "rows": None, "output_path": None}
 
 
 # ---------------------------------------------------------------------------
@@ -935,6 +946,105 @@ def compare_verify_shell_route():
                                error=str(e))
 
     return render_template("compare_verify.html", mode="shell", missing=missing, findings=None)
+
+
+def _run_automap_job(raw_dir, output_path, use_api, sdtmig_version):
+    """Background thread target for /tools/sdtm-automap — one model call
+    per uploaded dataset, so this runs off the request thread for the same
+    reason every other model-calling route in this app does (Flask's
+    single-threaded dev server would otherwise stall on any other request,
+    including this page's own status poll, while it ran)."""
+    try:
+        rows = sdtm_automapper.run_automapper(
+            raw_dir, output_path, use_api=use_api, sdtmig_version=sdtmig_version,
+            cancel_event=_AUTOMAP_CTRL["cancel_event"],
+        )
+        _AUTOMAP_STATE["rows"] = rows
+        _AUTOMAP_STATE["output_path"] = output_path
+        if _AUTOMAP_CTRL["cancel_event"].is_set():
+            _AUTOMAP_STATE["status"] = "aborted"
+            _AUTOMAP_STATE["note"] = "Mapping aborted by user — partial results below, if any completed."
+        else:
+            n_high = sum(1 for r in rows if r["confidence"] == "High")
+            n_med = sum(1 for r in rows if r["confidence"] == "Medium")
+            n_low = sum(1 for r in rows if r["confidence"] == "Low")
+            _AUTOMAP_STATE["status"] = "done"
+            _AUTOMAP_STATE["note"] = f"Mapped {len(rows)} variables ({n_high} High, {n_med} Medium, {n_low} Low)."
+    except Exception as e:
+        _AUTOMAP_STATE["status"] = "error"
+        _AUTOMAP_STATE["note"] = f"Mapping failed: {e}"
+    finally:
+        _AUTOMAP_LOCK.release()
+
+
+@app.route("/tools/sdtm-automap", methods=["GET", "POST"])
+def sdtm_automap_tool():
+    """Standalone tool, same reasoning as /tools/log-check and
+    /tools/compare — mapping raw data to SDTM isn't tied to any otype's
+    spec/generate/review/export state, it's its own one-shot "upload data,
+    get a mapping proposal" workflow."""
+    if request.method == "POST":
+        files = request.files.getlist("raw_files")
+        files = [f for f in files if f and f.filename]
+        if not files:
+            return render_template("sdtm_automap.html", status=_AUTOMAP_STATE["status"],
+                                   note="Select at least one .sas7bdat or .csv file.",
+                                   rows=None, counts=None)
+
+        if not _AUTOMAP_LOCK.acquire(blocking=False):
+            return render_template("sdtm_automap.html", status="running",
+                                   note="A mapping run is already in progress.",
+                                   rows=_AUTOMAP_STATE["rows"], counts=_confidence_counts(_AUTOMAP_STATE["rows"]))
+
+        raw_dir = os.path.join(UPLOAD_DIR, "sdtm_automap", datetime.now().strftime("%Y%m%d%H%M%S%f"))
+        os.makedirs(raw_dir, exist_ok=True)
+        for f in files:
+            f.save(os.path.join(raw_dir, secure_filename(f.filename)))
+
+        mode = request.form.get("mode", "api")
+        sdtmig_version = request.form.get("sdtmig_version") or None
+        output_path = os.path.join(raw_dir, "sdtm_automap.xlsx")
+
+        _AUTOMAP_CTRL["cancel_event"].clear()
+        _AUTOMAP_STATE["status"] = "running"
+        _AUTOMAP_STATE["note"] = None
+        _AUTOMAP_STATE["rows"] = None
+        _AUTOMAP_STATE["output_path"] = None
+
+        threading.Thread(target=_run_automap_job,
+                         args=(raw_dir, output_path, mode != "offline", sdtmig_version),
+                         daemon=True).start()
+
+    return render_template("sdtm_automap.html", status=_AUTOMAP_STATE["status"],
+                           note=_AUTOMAP_STATE["note"], rows=_AUTOMAP_STATE["rows"],
+                           counts=_confidence_counts(_AUTOMAP_STATE["rows"]))
+
+
+def _confidence_counts(rows):
+    counts = {"High": 0, "Medium": 0, "Low": 0}
+    for r in rows or []:
+        counts[r["confidence"]] = counts.get(r["confidence"], 0) + 1
+    return counts
+
+
+@app.route("/tools/sdtm-automap/abort", methods=["POST"])
+def sdtm_automap_abort():
+    _AUTOMAP_CTRL["cancel_event"].set()
+    if _AUTOMAP_STATE["status"] == "running":
+        _AUTOMAP_STATE["note"] = "Aborting — finishing up the current dataset…"
+    return render_template("sdtm_automap.html", status=_AUTOMAP_STATE["status"],
+                           note=_AUTOMAP_STATE["note"], rows=_AUTOMAP_STATE["rows"],
+                           counts=_confidence_counts(_AUTOMAP_STATE["rows"]))
+
+
+@app.route("/tools/sdtm-automap/download", methods=["GET"])
+def sdtm_automap_download():
+    """Serves only the file THIS tool's own last run produced — not an
+    arbitrary path from the query string — same pattern as /download."""
+    path = _AUTOMAP_STATE.get("output_path")
+    if not path or not os.path.exists(path):
+        return "No mapping result available to download.", 404
+    return send_file(os.path.abspath(path), as_attachment=True, download_name="sdtm_automap.xlsx")
 
 
 @app.route("/parse", methods=["POST"])

@@ -118,7 +118,7 @@ def extract_variable_metadata(df, labels, formats):
 
 # ── Claude mapping ──────────────────────────────────────────────────
 
-def build_mapping_prompt(dataset_name, var_meta):
+def build_mapping_prompt(dataset_name, var_meta, sdtmig_version=None):
     lines = []
     for v in var_meta:
         parts = [f'{v["variable"]} ({v["type"]})']
@@ -161,16 +161,11 @@ For EACH variable above, return one JSON object with:
 
 Return a JSON array with exactly one object per variable listed above, in
 the same order. Return valid JSON only — no markdown fences, no
-explanation before or after."""
-
-
-def _strip_fences(text):
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else ""
-    if cleaned.endswith("```"):
-        cleaned = cleaned.rsplit("```", 1)[0]
-    return cleaned.strip()
+explanation before or after.""" + (
+        f"\n\nFollow CDISC SDTMIG v{sdtmig_version} conventions for domain "
+        f"assignment, variable naming, and controlled terminology."
+        if sdtmig_version else ""
+    )
 
 
 def _normalize_confidence(value):
@@ -178,16 +173,32 @@ def _normalize_confidence(value):
     return confidence if confidence in CONFIDENCE_LEVELS else "Low"
 
 
-def map_dataset(dataset_name, var_meta, use_api=True):
+def _extract_json_array(text):
+    """Pull just the JSON array out of a model response, regardless of
+    what surrounds it — a leading ```json fence (assembler.clean() only
+    strips ```sas/```r/bare ```, so a real Claude response wrapping JSON
+    in ```json left the literal word "json" sitting before the array and
+    broke json.loads entirely — caught live, not hypothetical), a trailing
+    fence, or stray prose before/after. The prompt always asks for a JSON
+    ARRAY (never a bare object), so slicing from the first "[" to the last
+    "]" is reliable here in a way it wouldn't be for arbitrary code."""
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("no JSON array found in model response")
+    return text[start:end + 1]
+
+
+def map_dataset(dataset_name, var_meta, use_api=True, sdtmig_version=None):
     """One model call for this dataset's whole variable list. Returns one
     row per variable in var_meta, in order — never fewer, even if the
     model's response is missing one or fails outright (a variable the
     model didn't map cleanly becomes a Low-confidence UNKNOWN row for a
     human to look at, not a silently dropped one)."""
-    prompt = build_mapping_prompt(dataset_name, var_meta)
+    prompt = build_mapping_prompt(dataset_name, var_meta, sdtmig_version=sdtmig_version)
     try:
         raw = generate_api(prompt) if use_api else generate_local(prompt)
-        mappings = json.loads(_strip_fences(raw))
+        mappings = json.loads(_extract_json_array(raw))
         by_var = {m.get("source_var"): m for m in mappings if isinstance(m, dict)}
     except Exception as e:
         print(f"    Warning: mapping call failed for {dataset_name}: {e}")
@@ -312,7 +323,12 @@ def write_automap_xlsx(rows, output_path):
 
 # ── Main pipeline ────────────────────────────────────────────────────
 
-def run_automapper(raw_data_dir, output_path, use_api=True):
+def run_automapper(raw_data_dir, output_path, use_api=True, sdtmig_version=None, cancel_event=None):
+    """cancel_event: optional threading.Event, checked once per dataset (a
+    mapping call runs one whole dataset at a time, so between datasets is
+    the natural granularity — same convention as assemble_adsl's
+    cancel_event, which checks once per variable) so a web UI's Abort can
+    stop this cleanly between datasets instead of only after all of them."""
     print(f"Reading raw datasets from: {raw_data_dir}")
     files = sorted(
         f for f in os.listdir(raw_data_dir)
@@ -324,6 +340,10 @@ def run_automapper(raw_data_dir, output_path, use_api=True):
 
     all_rows = []
     for fname in files:
+        if cancel_event is not None and cancel_event.is_set():
+            print(f"\n  Aborted before {fname}")
+            break
+
         dataset_name = os.path.splitext(fname)[0]
         path = os.path.join(raw_data_dir, fname)
         print(f"\n  Dataset: {dataset_name} ({fname})")
@@ -332,7 +352,7 @@ def run_automapper(raw_data_dir, output_path, use_api=True):
         var_meta = extract_variable_metadata(df, labels, formats)
         print(f"    {len(var_meta)} variables, {len(df)} rows")
 
-        mapped = map_dataset(dataset_name, var_meta, use_api=use_api)
+        mapped = map_dataset(dataset_name, var_meta, use_api=use_api, sdtmig_version=sdtmig_version)
         n_high = sum(1 for m in mapped if m["confidence"] == "High")
         n_med = sum(1 for m in mapped if m["confidence"] == "Medium")
         n_low = sum(1 for m in mapped if m["confidence"] == "Low")
@@ -350,5 +370,10 @@ if __name__ == "__main__":
     parser.add_argument("--output", "-o", default="sdtm_automap.xlsx")
     parser.add_argument("--offline", action="store_true",
                         help="Use local Ollama instead of the Claude API")
+    parser.add_argument("--sdtmig-version", default=None,
+                        help="CDISC SDTMIG version (e.g. 3.4) to target — appended to "
+                             "the mapping prompt so domain/variable choices follow that "
+                             "version's conventions (default: no version instruction)")
     args = parser.parse_args()
-    run_automapper(args.raw_data_dir, args.output, use_api=not args.offline)
+    run_automapper(args.raw_data_dir, args.output, use_api=not args.offline,
+                   sdtmig_version=args.sdtmig_version)

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SpecGen — SDTM Automapper</title>
+<style>
+  :root{
+    --paper:#FAFBFC; --ink:#14232E; --slate:#5B6B78; --line:#E3E9ED;
+    --teal:#0E7C86; --teal-dark:#0A5A62; --amber:#C77D0A; --amber-bg:#FDF3E3;
+    --green:#2E7D4F; --green-bg:#E8F4ED; --red:#B3402E; --red-bg:#FBEAE6;
+    font-size:15px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    font-family:"Segoe UI", system-ui, -apple-system, sans-serif;
+    background:#EDF1F4; color:var(--ink); padding:28px 16px 60px;
+  }
+  .wrap{max-width:1000px; margin:0 auto;}
+  h1{font-size:1.45rem; font-weight:650; letter-spacing:-.01em;}
+  h2{font-size:1.05rem; margin-bottom:8px;}
+  .sub{color:var(--slate); margin:6px 0 22px; max-width:74ch;}
+  a{color:var(--teal);}
+  .window{
+    background:var(--paper); border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 18px 50px rgba(20,35,46,.14); overflow:hidden; padding:22px 26px 28px;
+    margin-bottom:20px;
+  }
+  .hint{color:var(--slate); font-size:.85rem; margin-bottom:12px;}
+  .drop{
+    border:1.5px dashed var(--line); border-radius:9px; padding:16px;
+    display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin:10px 0 14px;
+  }
+  input[type=file]{font:inherit;}
+  .seg{display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden;}
+  .seg label{padding:7px 14px; font-size:.85rem; cursor:pointer; color:var(--slate); background:#fff;}
+  .seg input{display:none;}
+  .seg input:checked + label{background:var(--teal); color:#fff;}
+  .field{display:flex; flex-direction:column; gap:4px;}
+  .field .lbl{font-size:.72rem; font-weight:700; letter-spacing:.03em; text-transform:uppercase; color:var(--slate);}
+  button{
+    background:var(--teal); color:#fff; border:0; border-radius:7px;
+    padding:9px 18px; font:inherit; font-weight:600; cursor:pointer;
+  }
+  button:hover{background:var(--teal-dark);}
+  button.mini{padding:6px 12px; font-size:.85rem;}
+  button.abort{background:var(--red);}
+  .note{background:var(--amber-bg); color:var(--amber); border-radius:8px; padding:10px 14px; margin:12px 0; font-size:.9rem;}
+  .running{background:var(--line); color:var(--slate); border-radius:8px; padding:10px 14px; margin:12px 0; font-size:.9rem;}
+  .summary{display:flex; gap:10px; margin:16px 0;}
+  .stat{border-radius:8px; padding:8px 16px; font-weight:650; font-size:.9rem;}
+  .stat.high{background:var(--green-bg); color:var(--green);}
+  .stat.medium{background:var(--amber-bg); color:var(--amber);}
+  .stat.low{background:var(--red-bg); color:var(--red);}
+  table{width:100%; border-collapse:collapse; font-size:.85rem; margin-top:10px;}
+  th{background:#1A3C6E; color:#fff; text-align:left; padding:8px 10px; font-size:.75rem; text-transform:uppercase; letter-spacing:.03em;}
+  td{padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top;}
+  tr.high{background:var(--green-bg);}
+  tr.medium{background:var(--amber-bg);}
+  tr.low{background:var(--red-bg);}
+  .mono{font-family:Consolas, Menlo, monospace; font-size:.82rem;}
+  .clean{background:var(--green-bg); color:var(--green); border-radius:8px; padding:14px 16px; font-weight:600;}
+  .back{display:inline-block; margin-top:6px; font-size:.9rem;}
+  .dl{display:inline-block; margin:10px 0; background:var(--teal-dark); color:#fff; padding:9px 18px; border-radius:7px; text-decoration:none; font-weight:600; font-size:.9rem;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>SDTM Automapper</h1>
+  <p class="sub">Upload raw clinical datasets (.sas7bdat or .csv) — no spec
+    needed. One model call per dataset proposes SDTM domain/variable
+    mappings against CDISC SDTMIG, for you to review. The reviewed "By
+    Domain" sheet in the downloaded workbook feeds straight into
+    sdtm_spec_builder.py with no conversion step.</p>
+
+  <div class="window">
+    <h2>Map raw data to SDTM</h2>
+    <p class="hint">Select one or more files from the same study. Offline
+      mode uses the local Ollama model (free, rougher); API mode uses
+      Claude (higher quality, sends data to the API).</p>
+    <form method="post" action="/tools/sdtm-automap" enctype="multipart/form-data">
+      <div class="drop">
+        <input type="file" name="raw_files" accept=".sas7bdat,.csv" multiple required>
+      </div>
+      <div class="drop">
+        <div class="field">
+          <span class="lbl">Mode</span>
+          <div class="seg">
+            <input type="radio" name="mode" value="api" id="mode-api" checked>
+            <label for="mode-api">API</label>
+            <input type="radio" name="mode" value="offline" id="mode-offline">
+            <label for="mode-offline">Offline</label>
+          </div>
+        </div>
+        <div class="field">
+          <span class="lbl">SDTMIG version</span>
+          <div class="seg">
+            <input type="radio" name="sdtmig_version" value="" id="ig-none" checked>
+            <label for="ig-none">Unspecified</label>
+            <input type="radio" name="sdtmig_version" value="3.3" id="ig-33">
+            <label for="ig-33">3.3</label>
+            <input type="radio" name="sdtmig_version" value="3.4" id="ig-34">
+            <label for="ig-34">3.4</label>
+          </div>
+        </div>
+        <button type="submit">Map to SDTM</button>
+      </div>
+    </form>
+
+    {% if status == "running" %}
+      <div class="running">Mapping in progress — this page will update automatically.</div>
+      <form method="post" action="/tools/sdtm-automap/abort">
+        <button type="submit" class="mini abort">Abort</button>
+      </form>
+      <script>
+        setTimeout(function(){ location.reload(); }, 3000);
+      </script>
+    {% elif note %}
+      <div class="note">{{ note }}</div>
+    {% endif %}
+
+    {% if rows %}
+      <div class="summary">
+        <span class="stat high">{{ counts.High }} High</span>
+        <span class="stat medium">{{ counts.Medium }} Medium</span>
+        <span class="stat low">{{ counts.Low }} Low</span>
+      </div>
+      <a class="dl" href="/tools/sdtm-automap/download">Download sdtm_automap.xlsx</a>
+      <div style="overflow-x:auto;">
+      <table>
+        <tr>
+          <th>Dataset</th><th>Source Var</th><th>SDTM Domain</th><th>SDTM Var</th>
+          <th>Mapping Logic</th><th>Confidence</th>
+        </tr>
+        {% for r in rows %}
+        <tr class="{{ r.confidence | lower }}">
+          <td class="mono">{{ r.source_dataset }}</td>
+          <td class="mono">{{ r.source_variable }}</td>
+          <td class="mono">{{ r.sdtm_domain }}</td>
+          <td class="mono">{{ r.sdtm_var }}</td>
+          <td>{{ r.mapping_logic }}</td>
+          <td>{{ r.confidence }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      </div>
+    {% endif %}
+  </div>
+
+  <a class="back" href="/">&larr; Back to SpecGen</a>
+</div>
+</body>
+</html>
