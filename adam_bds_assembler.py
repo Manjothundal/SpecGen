@@ -282,8 +282,8 @@ Rules:
 
 def build_improve_prompt(code, dataset_code, row):
     return f"""You are a principal clinical SAS programmer with 15+ years of experience.
-A junior programmer produced the draft below for {dataset_code} variable
-{row['Variable']} ({row['Label']}). Rewrite it correctly.
+Rewrite the draft below for {dataset_code} variable {row['Variable']}
+({row['Label']}) to sign-off quality.
 
 Derivation rule: {row['Derivation']}
 
@@ -294,7 +294,7 @@ Rewrite the code so that it:
 - Correctly implements the derivation rule and nothing more
 - Declares length and label; adds a format ONLY if the spec gives one
 - Never invents values, codes, or dataset/variable names
-- Is code a senior programmer would sign off on
+- Is code a principal programmer would sign off on
 
 Output ONLY the corrected SAS code with one brief comment line.
 No explanation, no markdown fences.

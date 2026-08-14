@@ -27,7 +27,7 @@ def build_improve_prompt(code, row, known_vars, language=None, ig_version=None):
 def _build_sas_improve_prompt(code, row, known_vars, ig_version=None):
     ig_line = f"- Follows CDISC ADaMIG v{ig_version} conventions for this variable (naming, controlled terminology)\n" if ig_version else ""
     return f"""You are a principal clinical SAS programmer with 15+ years of experience.
-A junior programmer produced the draft below. Rewrite it correctly.
+Rewrite the draft below to sign-off quality.
 
 SPECIFICATION
 Variable: {row['Variable']}
@@ -52,7 +52,7 @@ Rewrite the code so that it:
   strip leading/trailing whitespace from character values, and use plain
   ASCII punctuation (no curly quotes or em-dashes) in labels and character
   values
-- Is code a senior programmer would sign off on
+- Is code a principal programmer would sign off on
 {ig_line}
 Output ONLY the corrected SAS code with one brief comment line.
 No explanation, no markdown fences.
@@ -66,7 +66,7 @@ No explanation, no markdown fences.
 def _build_r_improve_prompt(code, row, known_vars, ig_version=None):
     ig_line = f"- Follows CDISC ADaMIG v{ig_version} conventions for this variable (naming, controlled terminology)\n" if ig_version else ""
     return f"""You are a principal clinical R programmer (tidyverse) with 15+ years of experience.
-A junior programmer produced the draft below. Rewrite it correctly.
+Rewrite the draft below to sign-off quality.
 
 SPECIFICATION
 Variable: {row['Variable']}
@@ -100,7 +100,7 @@ Rewrite the code so that it:
 - Avoids common Pinnacle 21 findings: strip leading/trailing whitespace from
   character values, and use plain ASCII punctuation (no curly quotes or
   em-dashes) in character values
-- Is code a senior programmer would sign off on
+- Is code a principal programmer would sign off on
 {ig_line}
 Output ONLY the corrected R code with one brief comment line.
 No explanation, no markdown fences.
