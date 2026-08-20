@@ -11,3 +11,4 @@ chromadb==1.5.9
 python-docx==1.2.0
 striprtf==0.0.32
 pyreadstat==1.3.5
+pywebview==6.2.1

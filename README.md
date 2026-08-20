@@ -62,18 +62,22 @@ CI (GitHub Actions), Docker image (deployable to AWS App Runner or EC2 —
 see `aws/`, not deployed by default), SDTM's real 3-mode pipeline, a SAS
 log checker, independent double-programming QC for ADSL, and Compare &
 verify (deterministic PDF/Word/RTF diffing and mock-shell validation —
-standalone tools at `/tools/log-check` and `/tools/compare`).
+standalone tools at `/tools/log-check` and `/tools/compare`), a data-driven
+SDTM automapper (raw data -> proposed SDTM mappings, no spec needed —
+`/tools/sdtm-automap`), spec-driven ADaM BDS generation (ADVS/ADLB/ADAE/
+ADCM/ADEFF), and a desktop app window (`desktop_app.py` — same Flask app,
+opened in a native OS window instead of a browser tab).
 In progress: run-log model recording, fuller-spec testing.
-Planned: draft spec generation from aCRF/SAP, define.xml support, packaging
-as a Windows .exe.
+Planned: draft spec generation from aCRF/SAP, define.xml support, a fully
+standalone (no Python required) .exe build.
 See [ROADMAP.md](ROADMAP.md).
 
 ## Tech
 
 Python 3.13 · pandas / openpyxl · Anthropic API · Ollama (qwen2.5-coder) ·
 LangGraph (agent pipeline) · Chroma (macro catalog retrieval) ·
-pdfplumber / python-docx / striprtf (output parsing) · Docker ·
-GitHub Actions · Git
+pdfplumber / python-docx / striprtf (output parsing) · pyreadstat (SAS7BDAT) ·
+pywebview (desktop window) · Docker · GitHub Actions · Git
 
 ## Note
 

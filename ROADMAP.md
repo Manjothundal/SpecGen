@@ -921,5 +921,15 @@ the outputs.
 - QC mode: generate independent verification code + PROC COMPARE harness
 - Define.xml support (read specs from define.xml; later write draft define.xml)
 - P21 awareness: prompt rules to avoid common Pinnacle 21 findings
-- Package as Windows .exe
+- Package as Windows .exe — [x] native-window step done: desktop_app.py
+  wraps app.py's existing Flask app unchanged, running it in a background
+  thread and opening it in a pywebview native window (own icon/taskbar
+  entry, no browser chrome) instead of "open a browser to localhost:5000".
+  Verified live: launched it, the embedded Flask server came up and
+  served real traffic through the native window (GET /, favicon.ico,
+  two POST /parse submissions — not just my own test request). Still
+  needs Python + requirements.txt installed on the machine running it —
+  a fully standalone .exe with no Python required (PyInstaller bundling
+  chromadb/onnxruntime, pyreadstat, langgraph, ...) is a separate, bigger
+  step, not done here.
 - Public showcase repo + private working repo (two-repo split)
