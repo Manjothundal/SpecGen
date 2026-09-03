@@ -62,11 +62,18 @@ Usage:
 import argparse
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import pyreadstat
 
 from generator import generate_api, generate_local
+
+# Each raw dataset's mapping is one independent model call — nothing about
+# domain/vitals.csv's mapping depends on demog.csv's, so multiple uploaded
+# files run concurrently instead of one at a time. Same MAX_WORKERS default
+# as assembler.py/sdtm_assembler.py's own concurrent generation.
+MAX_WORKERS = 5
 
 # 12 standard SDTM domains this app's SDTM pipeline already supports
 # (sdtm_assembler.py/sdtm_spec_builder.py), plus SUPP-- for any of them —
@@ -323,12 +330,31 @@ def write_automap_xlsx(rows, output_path):
 
 # ── Main pipeline ────────────────────────────────────────────────────
 
+def _map_one_file(raw_data_dir, fname, use_api, sdtmig_version):
+    """Read + map ONE dataset — independent of every other uploaded file,
+    so run_automapper below runs these concurrently (see MAX_WORKERS)."""
+    dataset_name = os.path.splitext(fname)[0]
+    path = os.path.join(raw_data_dir, fname)
+    print(f"\n  Dataset: {dataset_name} ({fname})")
+
+    df, labels, formats = read_dataset(path)
+    var_meta = extract_variable_metadata(df, labels, formats)
+    print(f"    {len(var_meta)} variables, {len(df)} rows")
+
+    mapped = map_dataset(dataset_name, var_meta, use_api=use_api, sdtmig_version=sdtmig_version)
+    n_high = sum(1 for m in mapped if m["confidence"] == "High")
+    n_med = sum(1 for m in mapped if m["confidence"] == "Medium")
+    n_low = sum(1 for m in mapped if m["confidence"] == "Low")
+    print(f"    Mapped: {n_high} High, {n_med} Medium, {n_low} Low confidence")
+    return mapped
+
+
 def run_automapper(raw_data_dir, output_path, use_api=True, sdtmig_version=None, cancel_event=None):
-    """cancel_event: optional threading.Event, checked once per dataset (a
-    mapping call runs one whole dataset at a time, so between datasets is
-    the natural granularity — same convention as assemble_adsl's
-    cancel_event, which checks once per variable) so a web UI's Abort can
-    stop this cleanly between datasets instead of only after all of them."""
+    """cancel_event: optional threading.Event, checked before reading back
+    each dataset's result (a mapping call runs one whole dataset at a
+    time, so between datasets is the natural granularity — same convention
+    as assemble_adsl's cancel_event) so a web UI's Abort can stop this
+    cleanly instead of waiting for every uploaded file to finish."""
     print(f"Reading raw datasets from: {raw_data_dir}")
     files = sorted(
         f for f in os.listdir(raw_data_dir)
@@ -339,25 +365,23 @@ def run_automapper(raw_data_dir, output_path, use_api=True, sdtmig_version=None,
     print(f"  {len(files)} dataset(s): {', '.join(files)}")
 
     all_rows = []
-    for fname in files:
-        if cancel_event is not None and cancel_event.is_set():
-            print(f"\n  Aborted before {fname}")
-            break
-
-        dataset_name = os.path.splitext(fname)[0]
-        path = os.path.join(raw_data_dir, fname)
-        print(f"\n  Dataset: {dataset_name} ({fname})")
-
-        df, labels, formats = read_dataset(path)
-        var_meta = extract_variable_metadata(df, labels, formats)
-        print(f"    {len(var_meta)} variables, {len(df)} rows")
-
-        mapped = map_dataset(dataset_name, var_meta, use_api=use_api, sdtmig_version=sdtmig_version)
-        n_high = sum(1 for m in mapped if m["confidence"] == "High")
-        n_med = sum(1 for m in mapped if m["confidence"] == "Medium")
-        n_low = sum(1 for m in mapped if m["confidence"] == "Low")
-        print(f"    Mapped: {n_high} High, {n_med} Medium, {n_low} Low confidence")
-        all_rows.extend(mapped)
+    if cancel_event is not None and cancel_event.is_set():
+        print("\n  Aborted before it started")
+    else:
+        executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+        futures = [executor.submit(_map_one_file, raw_data_dir, fname, use_api, sdtmig_version)
+                  for fname in files]
+        try:
+            for fname, future in zip(files, futures):
+                if cancel_event is not None and cancel_event.is_set():
+                    print(f"\n  Aborted before {fname}")
+                    break
+                all_rows.extend(future.result())
+        finally:
+            # Whatever's already running finishes in the background and its
+            # result is simply discarded — same "keep whatever finished
+            # before an abort" philosophy as assembler.py/sdtm_assembler.py.
+            executor.shutdown(wait=False, cancel_futures=True)
 
     write_automap_xlsx(all_rows, output_path)
     return all_rows

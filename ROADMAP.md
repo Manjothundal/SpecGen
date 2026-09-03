@@ -888,6 +888,87 @@ the outputs.
             (both fully deterministic, no mode needed) on every push,
             alongside the existing differ/patcher smoke tests.
 
+- [x] Phase 13: Performance ("make this app super fast")
+      - [x] 13a: _read_runlog_tail (app.py) was reading the WHOLE runlog.csv
+            into memory on every single page render just to show the last 8
+            rows — an O(file size) cost paid on every request to an
+            append-only file that only ever grows across a project's
+            lifetime. New _tail_text_lines() seeks backward from the end in
+            chunks instead, bounded by the tail size, not the file size; the
+            header line is still read separately (a cheap single readline()
+            regardless of file size) since it isn't necessarily inside the
+            tail. Verified byte-for-byte identical output against the old
+            implementation on the real runlog.csv (841 lines at the time)
+            and across 7 edge cases (empty file, header-only, exactly n
+            rows, fewer than n rows, no trailing newline, ...); timed 2.6x
+            faster already at 841 lines, a gap that widens as the file grows
+            since the new version's cost barely depends on total size.
+      - [x] 13b: ADSL's main-step loop (assembler.py, both SAS and R paths)
+            generated one variable at a time — the exact same shape of
+            problem sdtm_assembler.py's generate_all_domains already solved
+            for SDTM domains (Phase 5c: ~4.3x measured on 5 concurrent
+            domains), just never applied to ADSL. Confirmed safe to
+            parallelize by actually reading the code, not assuming: each
+            variable's Writer prompt is built ONLY from that row's own spec
+            fields plus a fixed generic "available variables" description —
+            it never references another variable's generated CODE (in fact
+            `available = known_variables(spec)`, computed before the loop,
+            turned out to be dead — never actually passed into gen_block/
+            build_prompt at all, a pre-existing quirk from before this
+            phase, left alone rather than "fixed" as an unrelated behavior
+            change). New _build_adsl_block_sas/_build_adsl_block_r pull the
+            per-variable logic out of the loop bodies unchanged; the loop
+            now submits every variable to a ThreadPoolExecutor(max_workers=
+            5) and reads results back via zip(rows_to_build, futures) —
+            preserves spec order in the assembled output regardless of
+            completion order. cancel_event is checked before reading back
+            each result rather than before starting each variable (an
+            abort's granularity is now "whatever's already in flight when
+            you click it", up to 5 variables, instead of exactly 1) —
+            executor.shutdown(wait=False, cancel_futures=True) drops
+            anything not yet started and lets already-running work finish
+            in the background with its result simply discarded, so an abort
+            doesn't block waiting for the whole queue to drain either.
+            Verified: mock-mode output byte-for-byte IDENTICAL to the
+            pre-change version for both the SAS and R paths (diffed
+            directly, not just eyeballed) — confirms this is a pure speed
+            change, not a behavior change. Real-mode timing: a small
+            (9-variable) use_macros=False API-mode run went from 5.2s
+            sequential to 4.7s concurrent — a modest win here specifically
+            because individual short-prompt API calls are already fast, so
+            the benefit should scale up on bigger specs (the existing "test
+            against 60-100+ variables" open item below would be a much
+            better stress test than this repo's small demo spec). The
+            bigger question — does Offline mode's local Ollama server even
+            process concurrent requests in parallel, or silently queue them
+            or one at a time, making this a no-op for local mode — was
+            checked directly against the running Ollama server (not
+            assumed): 3 short concurrent generate calls completed in 6.9s
+            versus 23.0s sequential, confirming Ollama genuinely
+            parallelizes and Offline mode benefits at least as much as API
+            mode, likely more given how much slower each individual local
+            call is (directly observed all through this session — 15-20
+            minute waits for a 20-variable Offline ADSL run were common).
+      - [x] 13c: sdtm_automapper.py's per-dataset loop got the same
+            treatment — each uploaded raw file's mapping is one independent
+            model call (no shared state between demog.csv's mapping and
+            vitals.csv's), so multiple files now run concurrently instead
+            of one at a time, same MAX_WORKERS=5 default. Verified with a
+            monkeypatched timing test (3 simulated 0.3s calls: 0.55s
+            concurrent vs. ~0.9s sequential) and confirmed the concurrent
+            results still land in the correct file order in the output
+            workbook.
+      - Deliberately NOT parallelized: adam_bds_assembler.py's and
+        qc_generator.py's per-variable loops. Unlike ADSL, these were
+        BUILT with a real sequential dependency — each variable's prompt
+        explicitly tells the Writer which EARLIER variables (in spec row
+        order) are already available, so a later row can reference an
+        earlier one by name (documented in both modules' own context-
+        building functions). Parallelizing those would silently tell the
+        model a variable exists before it's actually been derived —
+        a correctness regression, not just a behavior change, so left
+        exactly as they were.
+
 ## Open items (near-term)
 - Test against a fuller, realistic ADSL spec (60-100+ variables)
 - Fix any items surfaced by that test (informats, TRT01A edge cases)

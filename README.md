@@ -65,8 +65,15 @@ verify (deterministic PDF/Word/RTF diffing and mock-shell validation —
 standalone tools at `/tools/log-check` and `/tools/compare`), a data-driven
 SDTM automapper (raw data -> proposed SDTM mappings, no spec needed —
 `/tools/sdtm-automap`), spec-driven ADaM BDS generation (ADVS/ADLB/ADAE/
-ADCM/ADEFF), and a desktop app window (`desktop_app.py` — same Flask app,
-opened in a native OS window instead of a browser tab).
+ADCM/ADEFF), a desktop app window (`desktop_app.py` — same Flask app,
+opened in a native OS window instead of a browser tab), and concurrent
+generation — ADSL's main-step loop and the SDTM automapper's per-file
+loop build multiple variables/datasets at once (ThreadPoolExecutor,
+same pattern already proven for SDTM domain generation) instead of one
+at a time; verified as a pure speed change (byte-identical output to the
+old sequential version) with real timing to back it up, including
+confirming Offline mode's local Ollama server genuinely parallelizes
+concurrent requests rather than silently queuing them.
 In progress: run-log model recording, fuller-spec testing.
 Planned: draft spec generation from aCRF/SAP, define.xml support, a fully
 standalone (no Python required) .exe build.

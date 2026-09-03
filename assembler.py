@@ -1,9 +1,22 @@
+from concurrent.futures import ThreadPoolExecutor
+
 from generator import generate_code
 from prompt_builder import build_prompt
 from reviewer import review_block
 from improver import improve_block
 from macro_lookup import load_catalog, find_macro, find_by_pattern
 import config
+
+# Same default as sdtm_assembler.py's generate_all_domains (measured there:
+# ~4.3x on 5 concurrent domains) — the main-step loop below is the ADSL
+# equivalent of that speedup, just never wired up. Safe because each
+# variable's Writer prompt is built ONLY from that row's own spec fields
+# (Variable/Label/Type/Derivation) plus a fixed generic "available
+# variables" description — it never references another variable's
+# generated CODE, so there's no real data dependency between iterations
+# to preserve; only the ASSEMBLED OUTPUT needs spec order, which is
+# restored by reading results back via zip(rows_to_build, futures) below.
+MAX_WORKERS = 5
 
 catalog = load_catalog()
 # Variables derived as side effects of another variable's macro call
@@ -46,9 +59,14 @@ def gen_block(row, skip_macro=False, language=None, writer_mode=None, ig_version
 
 def assemble_adsl(spec, derived, ex_summary, main_step, language=None, writer_mode=None,
                   reviewer_mode=None, cancel_event=None, use_macros=True, ig_version=None):
-    """cancel_event: optional threading.Event — checked once per variable in the
-    main-step loop so a slow ADSL run (up to 3 model calls per variable) can be
-    aborted between variables. The partial program returned on abort keeps
+    """Main-step variables build concurrently (see MAX_WORKERS above) — each
+    one's Writer call is independent of every other's, so there's no reason
+    to wait for one before starting the next.
+
+    cancel_event: optional threading.Event, checked before reading back each
+    variable's result so a slow ADSL run can be aborted mid-flight; whatever
+    already finished (or was already running when the event fired) is kept,
+    unstarted work is dropped. The partial program returned on abort keeps
     whatever variables finished; unfinished ones are simply absent from the
     output (the trailing keep/select list still names every spec variable, so
     a partial program won't run as-is in SAS/R — that's expected, matching how
@@ -74,8 +92,34 @@ def assemble_adsl(spec, derived, ex_summary, main_step, language=None, writer_mo
 
 
 # ===========================================================================
-# SAS PATH — unchanged from the original assemble_adsl
+# SAS PATH
 # ===========================================================================
+
+def _build_adsl_block_sas(row, writer_mode, ig_version, use_macros):
+    """One variable's wrapped SAS block — exact-match/pattern-hint/model-
+    draft decision, independent of every other variable's block (see
+    MAX_WORKERS above), so the main-step loop can run these concurrently."""
+    var = row["Variable"]
+
+    # 1. Exact catalog match — use macro call directly (reparametrized
+    # against this spec's actual Derivation rule where recognizable — see
+    # macro_lookup._reparametrize)
+    match = find_macro(var, catalog, derivation=str(row["Derivation"])) if use_macros else None
+    if match:
+        print("Macro match:", var, "->", match["macro"])
+        return f"/*-- BEGIN {var} --*/\n/* {var}: using validated macro */\n{match['call']}\n/*-- END {var} --*/"
+
+    # 2. Pattern match + generate (Writer only — Improve/Review are separate
+    # on-demand actions per variable now, see app.py's
+    # improve_adsl_block/review_adsl_block, so a fresh Generate isn't paying
+    # for 2 extra sequential model calls per variable it may not want)
+    pmatch = find_by_pattern(var, str(row["Derivation"]), catalog) if use_macros else None
+    block = clean(gen_block(row, language="sas", writer_mode=writer_mode, ig_version=ig_version))
+    if pmatch:
+        print("   Pattern hint:", var, "->", pmatch["pattern"])
+        block = pmatch["suggested_call"] + "\n" + block
+    return f"/*-- BEGIN {var} --*/\n{block}\n/*-- END {var} --*/"
+
 
 def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None,
                        cancel_event=None, use_macros=True, ig_version=None):
@@ -229,45 +273,39 @@ def _assemble_adsl_sas(spec, derived, ex_summary, main_step, writer_mode=None, r
     parts.append("  by usubjid;")
     parts.append("")
 
-    # main-step derived variables, in spec Order
-    available = known_variables(spec)
+    # Main-step derived variables, in spec Order. Skip macro-side-effect
+    # rows up front, then build every remaining variable's block
+    # concurrently (see MAX_WORKERS above) instead of one Writer call at a
+    # time — results are read back out in spec order via zip(), so the
+    # assembled program is identical either way, just faster to produce.
+    rows_to_build = []
     for i, row in main_step.sort_values("Order").iterrows():
-        if cancel_event is not None and cancel_event.is_set():
-            parts.append(f"/* -- generation aborted by user before variable {row['Variable']} -- */")
-            break
-        # Skip variables already derived as macro side effects — but only
-        # when macros are actually in use; with use_macros=False nothing
-        # produces AGEGR1N/TRT01PN as a side effect anymore, so skipping them
-        # here would drop them from the output entirely instead of routing
-        # them through Writer/Improver/Reviewer like any other variable.
         if use_macros and row["Variable"] in MACRO_SIDE_EFFECTS:
             print("Side effect (skipped):", row["Variable"])
             continue
+        rows_to_build.append(row)
 
-        var = row["Variable"]
-
-        # 1. Exact catalog match — use macro call directly (reparametrized
-        # against this spec's actual Derivation rule where recognizable —
-        # see macro_lookup._reparametrize)
-        match = find_macro(var, catalog, derivation=str(row["Derivation"])) if use_macros else None
-        if match:
-            print("Macro match:", var, "->", match["macro"])
-            block = f"/*-- BEGIN {var} --*/\n/* {var}: using validated macro */\n{match['call']}\n/*-- END {var} --*/"
-        else:
-            # 2. Pattern match + generate (Writer only — Improve/Review are
-            # separate on-demand actions per variable now, see
-            # app.py's improve_adsl_block/review_adsl_block, so a fresh
-            # Generate isn't paying for 2 extra sequential model calls per
-            # variable it may not want)
-            pmatch = find_by_pattern(var, str(row["Derivation"]), catalog) if use_macros else None
-            block = clean(gen_block(row, language="sas", writer_mode=writer_mode, ig_version=ig_version))
-            if pmatch:
-                print("   Pattern hint:", var, "->", pmatch["pattern"])
-                block = pmatch["suggested_call"] + "\n" + block
-            block = f"/*-- BEGIN {var} --*/\n{block}\n/*-- END {var} --*/"
-
-        parts.append(block)
-        parts.append("")
+    if cancel_event is not None and cancel_event.is_set():
+        parts.append("/* -- generation aborted by user before it started -- */")
+    else:
+        executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+        futures = [executor.submit(_build_adsl_block_sas, row, writer_mode, ig_version, use_macros)
+                  for row in rows_to_build]
+        try:
+            for row, future in zip(rows_to_build, futures):
+                if cancel_event is not None and cancel_event.is_set():
+                    parts.append(f"/* -- generation aborted by user before variable {row['Variable']} -- */")
+                    break
+                parts.append(future.result())
+                parts.append("")
+        finally:
+            # Whatever's already running finishes in the background and its
+            # result is simply discarded — same "keep whatever finished
+            # before an abort" philosophy as SDTM's own abort handling
+            # (see app.py). cancel_futures drops anything not yet started,
+            # so an abort stops new work immediately instead of waiting for
+            # the whole queue to drain.
+            executor.shutdown(wait=False, cancel_futures=True)
 
     # TRT01A fallback: if never dosed, use planned treatment
     parts.append("/* TRT01A fallback: subjects never dosed take planned treatment */")
@@ -407,6 +445,44 @@ mh_summary <- mh |>
   )'''
 
 
+def _build_adsl_block_r(row, writer_mode, ig_version):
+    """One variable's wrapped, mutate()-indented R block — independent of
+    every other variable's block (see MAX_WORKERS above), so the main-step
+    loop can run these concurrently."""
+    var = row["Variable"]
+    # No macro branch in R (SAS-only catalog). Writer only — Improve/Review
+    # are separate on-demand actions per variable now (see app.py's
+    # improve_adsl_block/review_adsl_block), not run automatically here.
+    block = gen_block(row, language="r", writer_mode=writer_mode, ig_version=ig_version)
+
+    # indent the derivation into the mutate() and wrap in R markers.
+    # The mutate() argument separator MUST be a real comma on the code
+    # line — a trailing "#" comment would swallow a comma placed after it,
+    # so the comma goes on the last non-comment code line, before END.
+    raw_lines = block.splitlines()
+    indented = ["    " + ln for ln in raw_lines]
+    # find the last line that is actual code (not a pure # comment) to carry
+    # the mutate() separator comma
+    comma_idx = None
+    for i in range(len(indented) - 1, -1, -1):
+        if not indented[i].lstrip().startswith("#"):
+            comma_idx = i
+            break
+    if comma_idx is not None:
+        indented[comma_idx] = _r_add_comma(indented[comma_idx])
+    else:
+        # Writer produced no actual code, only comments (e.g. punted on an
+        # ambiguous derivation). A bare "," here would leave TWO commas in a
+        # row inside mutate() (a parse/argument error) and never create the
+        # {var} column, so the final select({var}) would fail with
+        # "object not found". Emit a typed NA stub instead: keeps the comma
+        # count correct and the column real, while making the gap visible.
+        na_value = "NA_character_" if str(row["Type"]).lower() == "text" else "NA_real_"
+        indented.append(f"    {var} = {na_value},  # WRITER PRODUCED NO CODE for this derivation")
+    body = "\n".join(indented)
+    return f"    # -- BEGIN {var} -- #\n{body}\n    # -- END {var} -- #"
+
+
 def _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode=None, reviewer_mode=None, cancel_event=None,
                      ig_version=None):
     parts = []
@@ -439,49 +515,30 @@ def _assemble_adsl_r(spec, derived, ex_summary, main_step, writer_mode=None, rev
     parts.append("  left_join(mh_summary, by = \"USUBJID\") |>")
     parts.append("  mutate(")
 
-    # ---- main-step derived variables, in spec Order (each an inner mutate expr)
-    available = known_variables(spec)
+    # ---- main-step derived variables, in spec Order (each an inner mutate
+    # expr) — built concurrently, same reasoning and pattern as the SAS
+    # path's main loop above (see MAX_WORKERS at the top of this file).
+    rows_to_build = []
     for i, row in main_step.sort_values("Order").iterrows():
-        if cancel_event is not None and cancel_event.is_set():
-            parts.append(f"    # -- generation aborted by user before variable {row['Variable']} -- #")
-            break
         if row["Variable"] in MACRO_SIDE_EFFECTS:
             print("Side effect (skipped):", row["Variable"])
             continue
+        rows_to_build.append(row)
 
-        var = row["Variable"]
-        # No macro branch in R (SAS-only catalog). Writer only — Improve/Review
-        # are separate on-demand actions per variable now (see app.py's
-        # improve_adsl_block/review_adsl_block), not run automatically here.
-        block = gen_block(row, language="r", writer_mode=writer_mode, ig_version=ig_version)
-
-        # indent the derivation into the mutate() and wrap in R markers.
-        # The mutate() argument separator MUST be a real comma on the code
-        # line — a trailing "#" comment would swallow a comma placed after it,
-        # so the comma goes on the last non-comment code line, before END.
-        raw_lines = block.splitlines()
-        indented = ["    " + ln for ln in raw_lines]
-        # find the last line that is actual code (not a pure # comment) to carry
-        # the mutate() separator comma
-        comma_idx = None
-        for i in range(len(indented) - 1, -1, -1):
-            if not indented[i].lstrip().startswith("#"):
-                comma_idx = i
-                break
-        if comma_idx is not None:
-            indented[comma_idx] = _r_add_comma(indented[comma_idx])
-        else:
-            # Writer produced no actual code, only comments (e.g. punted on an
-            # ambiguous derivation). A bare "," here would leave TWO commas in a
-            # row inside mutate() (a parse/argument error) and never create the
-            # {var} column, so the final select({var}) would fail with
-            # "object not found". Emit a typed NA stub instead: keeps the comma
-            # count correct and the column real, while making the gap visible.
-            na_value = "NA_character_" if str(row["Type"]).lower() == "text" else "NA_real_"
-            indented.append(f"    {var} = {na_value},  # WRITER PRODUCED NO CODE for this derivation")
-        body = "\n".join(indented)
-        wrapped = f"    # -- BEGIN {var} -- #\n{body}\n    # -- END {var} -- #"
-        parts.append(wrapped)
+    if cancel_event is not None and cancel_event.is_set():
+        parts.append("    # -- generation aborted by user before it started -- #")
+    else:
+        executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+        futures = [executor.submit(_build_adsl_block_r, row, writer_mode, ig_version)
+                  for row in rows_to_build]
+        try:
+            for row, future in zip(rows_to_build, futures):
+                if cancel_event is not None and cancel_event.is_set():
+                    parts.append(f"    # -- generation aborted by user before variable {row['Variable']} -- #")
+                    break
+                parts.append(future.result())
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     # ---- TRT01A fallback (== SAS: if missing then planned)
     parts.append("    # TRT01A fallback: subjects never dosed take planned treatment")

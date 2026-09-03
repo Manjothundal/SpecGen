@@ -842,15 +842,46 @@ def _render(active_otype=None, note=None, note_otype=None):
     )
 
 
+def _tail_text_lines(path, n, chunk_size=4096):
+    """The last n non-empty lines of a text file, read by seeking backward
+    from the end in chunks — bounded work regardless of total file size,
+    unlike reading the whole file into a list line by line. Every page
+    render calls this (via _read_runlog_tail below) for a file that's
+    append-only and only grows over a project's lifetime, so this staying
+    O(tail) instead of O(whole file) matters more with every run logged."""
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        pos = f.tell()
+        blocks = []
+        newline_count = 0
+        while pos > 0 and newline_count <= n:
+            read_size = min(chunk_size, pos)
+            pos -= read_size
+            f.seek(pos)
+            block = f.read(read_size)
+            blocks.append(block)
+            newline_count += block.count(b"\n")
+        data = b"".join(reversed(blocks))
+    text = data.decode("utf-8", errors="replace")
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    return lines[-n:]
+
+
 def _read_runlog_tail(n=8):
-    if not os.path.exists("runlog.csv"):
+    path = "runlog.csv"
+    if not os.path.exists(path):
         return []
-    with open("runlog.csv", encoding="utf-8") as f:
-        lines = [l.strip() for l in f if l.strip()]
-    if len(lines) < 2:
+    with open(path, encoding="utf-8") as f:
+        header_line = f.readline().strip()  # cheap regardless of file size — stops at the first newline
+    if not header_line:
         return []
-    header = lines[0].split(",")
-    rows = [dict(zip(header, l.split(","))) for l in lines[1:][-n:]]
+    header = header_line.split(",")
+
+    # header itself can land in the tail slice on a small file — it's not
+    # a data row, drop it if so.
+    data_lines = [l for l in _tail_text_lines(path, n + 1) if l != header_line]
+
+    rows = [dict(zip(header, l.split(","))) for l in data_lines[-n:]]
     rows.reverse()
     return rows
 
