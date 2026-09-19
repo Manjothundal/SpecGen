@@ -54,3 +54,11 @@ jobs:
 
       - name: Run compare & verify smoke test
         run: python test_compare_verify.py
+
+      # Review module tests (tests/). Mock mode keeps CI free: no API key,
+      # no Ollama.
+      - name: Run pytest
+        env:
+          SPECGEN_WRITER_MODE: mock
+          SPECGEN_REVIEWER_MODE: mock
+        run: pytest tests/ -v

@@ -1,0 +1,6 @@
+*.pdf        binary
+*.xpt        binary
+*.sas7bdat   binary
+*.docx       binary
+*.xlsx       binary
+*.rtf        binary
