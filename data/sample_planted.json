@@ -1,0 +1,75 @@
+{
+  "note": "Ground truth for the planted inconsistencies. Computed by build_sample_review_data.py from the built datasets; the review checks must find these and report these counts.",
+  "planted": [
+    {
+      "check": "check_teae_window",
+      "expected": {
+        "flagged_Y_outside_sap_window": 9,
+        "records_flagged_Y": 66,
+        "subjects_with_any_teae_current": {
+          "Drug A 100mg": 11,
+          "Drug A 50mg": 17,
+          "Placebo": 15
+        },
+        "subjects_with_any_teae_under_sap": {
+          "Drug A 100mg": 8,
+          "Drug A 50mg": 15,
+          "Placebo": 14
+        }
+      },
+      "id": "P1",
+      "sap_ref": "SAP 6.2",
+      "summary": "TRTEMFL derived with last dose + 30 days; SAP says last dose + 7 days.",
+      "where": "ADAE.TRTEMFL"
+    },
+    {
+      "check": "check_bign",
+      "expected": {
+        "adsl_ittfl_n": {
+          "Drug A 100mg": 20,
+          "Drug A 50mg": 20,
+          "Placebo": 20
+        },
+        "adsl_saffl_n": {
+          "Drug A 100mg": 20,
+          "Drug A 50mg": 20,
+          "Placebo": 19
+        },
+        "arms_that_disagree": [
+          "Placebo"
+        ],
+        "printed_header_n": {
+          "Drug A 100mg": 20,
+          "Drug A 50mg": 20,
+          "Placebo": 20,
+          "Total": 59
+        }
+      },
+      "id": "P2",
+      "sap_ref": "SAP 4.5",
+      "summary": "Placebo header N is the ITT count; the table is a Safety Population table.",
+      "where": "Table 14.1.1 column header, Placebo"
+    },
+    {
+      "check": "check_tlf_inventory",
+      "expected": {
+        "delivered": [
+          "14.1.1",
+          "14.3.1"
+        ],
+        "missing": [
+          "14.3.2"
+        ],
+        "sap_tables": [
+          "14.1.1",
+          "14.3.1",
+          "14.3.2"
+        ]
+      },
+      "id": "P3",
+      "sap_ref": "SAP 9",
+      "summary": "Table 14.3.2 is required by the SAP and was not delivered.",
+      "where": "Table inventory"
+    }
+  ]
+}
