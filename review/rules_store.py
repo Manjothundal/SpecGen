@@ -149,10 +149,11 @@ def next_rule_id(path=DEFAULT_PATH):
     return f"R-{max(nums, default=0) + 1:03d}"
 
 
-def add_rule(rule, path=DEFAULT_PATH, created_by=None):
+def add_rule(rule, path=DEFAULT_PATH, created_by=None, created_at=None):
     """Add a brand-new rule. Always saved as version 1, status=draft - a rule
     only becomes active through approve_rule(). rule_id is assigned if absent.
-    Returns the stored rule."""
+    created_at defaults to now; a fixed value is for fixture builders that must
+    write the same file every time. Returns the stored rule."""
     rule = dict(rule)
     rule.setdefault("rule_id", None)
     rule["rule_id"] = rule["rule_id"] or next_rule_id(path)
@@ -161,7 +162,7 @@ def add_rule(rule, path=DEFAULT_PATH, created_by=None):
     rule.setdefault("params", {})
     rule.setdefault("owner", "Biostatistics")
     rule["created_by"] = created_by or rule.get("created_by") or "unknown"
-    rule["created_at"] = _now()
+    rule["created_at"] = created_at or _now()
     rule["version"] = 1
     rule["status"] = "draft"
     validate_rule(rule)
