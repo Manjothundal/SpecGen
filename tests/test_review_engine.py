@@ -105,6 +105,22 @@ def test_sample_run_with_drafts_finds_the_planted_problems_and_says_it_used_draf
     assert all(r["status"] == "draft" for r in result.rule_results)
 
 
+def test_finding_keys_survive_a_run_that_renumbers_every_label(seed_copy):
+    # Spec 4.4. Resolve one issue and re-run: every F-nnn below it shifts, but the
+    # key of each surviving finding is unchanged, so a decision recorded against a
+    # key in run 1 still attaches to the same issue in run 2.
+    before = run(seed_copy, include_drafts=True)
+    rs.revise_rule("R-006", {"check": None}, seed_copy)
+    after = run(seed_copy, include_drafts=True)
+
+    b = {f.rule_id: f for f in before.findings}
+    a = {f.rule_id: f for f in after.findings}
+    shared = sorted(set(a) & set(b))
+    assert shared and all(b[r].finding_id != a[r].finding_id for r in shared)   # labels all moved
+    assert all(b[r].finding_key == a[r].finding_key for r in shared)            # keys all held
+    assert len({f.finding_key for f in before.findings}) == len(before.findings)
+
+
 def test_the_sample_run_groups_the_planted_big_n_error_under_one_root_cause(seed_copy):
     # P2: Table 14.1.1 prints the ITT N of 20 for Placebo where the Safety N is 19.
     # That one wrong header is the cause of the percentages finding (same table) and

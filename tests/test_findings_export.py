@@ -9,7 +9,7 @@ from openpyxl import Workbook, load_workbook
 from pydantic import ValidationError
 
 from review.findings import (COLUMNS, Finding, dedupe, export_findings_xlsx, finalise,
-                             order_findings, read_findings_xlsx)
+                             make_finding_key, object_of, order_findings, read_findings_xlsx)
 
 
 def mk(output_file="Table 14.1.1 (t_14_1_1.rtf)", severity="major", rule_id="R-001", **over):
@@ -238,3 +238,45 @@ def test_reading_a_sheet_with_the_wrong_columns_is_refused(tmp_path):
     wb.save(str(tmp_path / "bad.xlsx"))
     with pytest.raises(ValueError):
         read_findings_xlsx(str(tmp_path / "bad.xlsx"))
+
+
+# --- finding_key: identity that survives a re-run (spec 4.4) ---------------------
+
+def test_finding_key_ignores_the_numbers_and_the_wording():
+    # The same issue with different counts is the same issue, so the decision a
+    # reviewer already made about it still applies.
+    base = mk()
+    assert base.finding_key == mk(evidence="Placebo prints N=21, ADSL has 19.").finding_key
+    assert base.finding_key == mk(what_is_wrong="Rewritten explanation.").finding_key
+
+
+def test_finding_key_ignores_the_run_label_and_the_decision():
+    # F-nnn is positional and renumbers between runs; the key must not move with it.
+    base = mk()
+    decided = mk(finding_id="F-009", run_id="RUN-9", decision="rejected",
+                 decided_by="mhundal", decided_at="2026-09-20T10:00:00")
+    assert base.finding_key == decided.finding_key
+
+
+def test_finding_key_ignores_the_file_the_object_was_read_from():
+    assert object_of("Table 14.1.1 (t_14_1_1.rtf)") == "Table 14.1.1"
+    assert object_of("ADAE (adae.xpt)") == "ADAE"
+    assert mk().finding_key == mk(output_file="Table 14.1.1 (t_14_1_1_v2.rtf)").finding_key
+
+
+def test_finding_key_separates_a_different_rule_object_or_keyed_detail():
+    base = mk()
+    assert base.finding_key != mk(rule_id="R-007").finding_key
+    assert base.finding_key != mk(output_file="Table 14.3.1 (t.rtf)").finding_key
+    assert base.finding_key != mk(key_object="TRTEMFL").finding_key
+
+
+def test_finding_key_is_not_serialised_so_the_export_keeps_seven_columns(tmp_path):
+    assert "finding_key" not in mk().model_dump()
+    rows = read_findings_xlsx(export_findings_xlsx([mk()], str(tmp_path / "f.xlsx")))
+    assert list(rows[0]) == COLUMNS
+
+
+def test_make_finding_key_is_pure_and_repeatable():
+    a = make_finding_key("R-001", "Table 14.1.1 (t.rtf)", None)
+    assert a == make_finding_key("R-001", "Table 14.1.1", "") == mk().finding_key

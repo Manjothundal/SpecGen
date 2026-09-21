@@ -130,6 +130,46 @@ class Proposal(BaseModel):
     requires_approval: bool = True
 ```
 
+### 4.4 Finding identity: `F-nnn` vs `finding_key`
+
+Two identifiers, two different jobs. Getting this wrong means a finding rejected today is raised as new next week.
+
+**`F-nnn` is a display label, scoped to one run.** It is the `#` column, and it is what the link text says ("Root cause: see finding F-003"). It is positional: findings are ordered by severity and numbered in that order, so fixing one finding renumbers every finding below it on the next run. Measured on the sample package: retiring one rule moved `R-001` from F-003 to F-002 and shifted three other findings with it. References stay correct **inside** one sheet, because the text is written in the same pass that assigns the numbers. Nothing outside a single sheet may key on `F-nnn`.
+
+**`finding_key` is stable across runs.** It is a hash of:
+
+- `rule_id`,
+- the object the finding is raised against, normalised: the table id or dataset name with any file name stripped, so `Table 14.1.1 (t_14_1_1.rtf)` and `Table 14.1.1 (t_14_1_1_v2.rtf)` are the same object,
+- the identifying detail the check keys on (variable, parameter) where the rule and the object are not enough to tell two findings apart.
+
+It excludes every count, percentage and computed value, deliberately. The same issue with different numbers is the same finding: if Placebo N moves from 20 to 21 and is still wrong, the reviewer's decision still applies to it.
+
+`finding_key` is **not** a column. The export keeps exactly the seven columns in 4.2.
+
+### 4.5 Decisions carry forward (design for Piece E)
+
+Decisions attach to `finding_key`, never to `F-nnn`. The decision store is a small versioned table beside the rules:
+
+```
+finding_key | decision | decided_by | decided_at | run_id | label | rule_id | rule_version | note
+```
+
+`label` is the `F-nnn` the finding carried in the run it was decided in, kept so an audit reader can tie a durable key back to the sheet that was on the screen that day.
+
+After `finalise()`, the engine looks up each finding's `finding_key` in the store. A hit means this exact issue has been decided before, and the run carries the decision forward:
+
+- `decision`, `decided_by` and `decided_at` are pre-filled from the store, so the `Decision` column reads `Rejected` rather than `Open`;
+- the Findings screen marks the row as carried forward and shows who decided it, when, and in which run;
+- the reviewer can change it. That appends a new row to the store and a new audit entry; it never overwrites the previous decision.
+
+So a finding rejected in run 1 appears in run 2 already marked `Rejected`, with the previous decider and date visible, under whatever `F-nnn` it happens to land on that run.
+
+Rules for the carry-forward:
+
+- **Shown, never hidden.** A rejected finding still appears in the sheet and in the count. Suppressing it would hide a real disagreement from the next reader.
+- **A changed rule invalidates the decision.** If `rule_version` has moved since the decision was made, the decision is shown but flagged stale ("decided against R-001 v1, now v2") and the reviewer has to confirm it again. The rule changed, so what was accepted may no longer be what is being asked.
+- **The audit record carries all three.** `runlog.log_decision` writes `run_id` + `finding_key` + `F-nnn` together, so the durable identity and the label a human read are both recoverable.
+
 ## 5. Checks to implement in `checks.py` (Piece B)
 
 All pure functions: `check_x(datasets, outputs, rule, ctx) -> list[Finding]`. No model calls, no I/O.
@@ -180,7 +220,7 @@ Do not start a piece until the previous one runs and its tests pass.
 
 **Piece E - Review tab in the Flask app**
 - Fourth tab "Review", with the same 4-screen pattern: Inputs (pick SAP, dataset folder, output folder) -> Run checks (background job + Abort, reuse the existing job plumbing) -> Findings (table, filter by severity, Accept / Reject per row) -> Export & audit (xlsx download, Commit to Git).
-- Decisions write to the audit trail via `runlog.py` (extend with `log_decision`): finding id, user, decision, timestamp, rule version, model version.
+- Decisions write to the audit trail via `runlog.py` (extend with `log_decision`): `run_id`, `finding_key`, `F-nnn`, user, decision, timestamp, rule version, model version. Decisions attach to `finding_key`, and a decision made in an earlier run is carried forward into this one - see 4.4 and 4.5.
 - Draft rules in the browser: the Run checks screen shows how many rules are approved and how many are draft before the run starts. If a run would have no approved rules, the tab does not quietly fall back to drafts - it offers an explicit "Approve for this run" action, which records the approver and a timestamp in the audit log via `runlog.py` and bumps the rule the normal way through `rules_store.approve_rule()`. There is no silent bypass and no UI equivalent of `--include-drafts` that leaves no trace: either the rules were approved by a named person, or the findings sheet is labelled a trial run.
 - Keep the per-otype state slice pattern already used by the ADaM / SDTM / TLF tabs.
 

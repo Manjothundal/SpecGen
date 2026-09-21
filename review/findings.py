@@ -19,6 +19,13 @@ the cause's id. There is NO column for this - the link is carried in the text of
                          Table 14.3.1."
     on the pointers:    "Root cause: see finding F-012 against ADaM/adsl.xpt."
 
+Two identifiers (spec 4.4). finding_id is the F-nnn label printed in "#", and it
+is positional: it is assigned in final order and renumbers whenever the set of
+findings changes, so it means something only inside one run. finding_key is a
+hash of the rule, the object and the detail the check keyed on, with every count
+left out; it is the same from run to run, so a decision recorded against it still
+attaches to the issue next time. finding_key is not exported as a column.
+
 Workflow: build findings (review.checks gives dicts), then finalise(): it orders
 them (a root cause directly above the findings that point at it), numbers them
 F-001, F-002 ... in that order, and writes the link text. The "#" column carries
@@ -29,6 +36,7 @@ finding without a source reference or without numeric evidence cannot be built.
 No model calls; nothing here reads or writes anything but the xlsx it is given.
 """
 
+import hashlib
 import re
 from typing import Literal, Optional
 
@@ -44,6 +52,9 @@ DECISIONS = ("open", "accepted", "rejected")
 COLUMNS = ["#", "Output / File", "What is wrong", "Evidence", "Source ref", "Severity", "Decision"]
 
 _ID_RE = re.compile(r"^F-(\d+)$")
+# a trailing "(...)" on an object name is the file it was read from, or a short
+# gloss; neither identifies the object, and the file name changes between runs
+_OBJECT_SUFFIX = re.compile(r"\s*\([^()]*\)\s*$")
 _TABLE_REF = re.compile(r"\b(Table|Listing|Figure) (\d+(?:\.\d+)*)")
 
 
@@ -65,6 +76,15 @@ class Finding(BaseModel):
     decided_at: Optional[str] = None
     rule_id: Optional[str] = None
     root_cause_id: Optional[str] = None
+    # set by a check only when rule_id plus the object cannot tell two of its own
+    # findings apart (the variable or parameter it keyed on). Never a count.
+    key_object: Optional[str] = None
+
+    @property
+    def finding_key(self):
+        """Stable across runs, unlike finding_id. See spec 4.4: decisions attach
+        to this, F-nnn is only the label for one run."""
+        return make_finding_key(self.rule_id, self.output_file, self.key_object)
 
     @field_validator("output_file", "what_is_wrong", "evidence", "source_ref")
     @classmethod
@@ -86,6 +106,22 @@ class Finding(BaseModel):
         if self.decision != "open" and not (self.decided_by and self.decided_at):
             raise ValueError("a decision other than 'open' needs decided_by and decided_at")
         return self
+
+
+def object_of(output_file):
+    """The thing a finding is raised against, without the file it was read from:
+    'Table 14.1.1 (t_14_1_1.rtf)' and 'Table 14.1.1 (t_14_1_1_v2.rtf)' are the
+    same table, and 'ADAE (adae.xpt)' is ADAE."""
+    return _OBJECT_SUFFIX.sub("", output_file or "").strip()
+
+
+def make_finding_key(rule_id, output_file, key_object=None):
+    """Identity of an issue, stable from run to run: the rule, the object it is
+    raised against, and the detail the check keyed on. No counts and no computed
+    values go in - the same issue with different numbers is the same finding, and
+    the decision a reviewer made about it still applies."""
+    parts = [(rule_id or "").strip(), object_of(output_file), (key_object or "").strip()]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
 def to_findings(items):
