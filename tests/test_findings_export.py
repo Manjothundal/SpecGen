@@ -101,8 +101,8 @@ def test_finalise_numbers_in_order_and_writes_the_link_text():
     by = {f.finding_id: f for f in out}
     cause = by["F-012"]
     assert cause.output_file == "ADaM/adsl.xpt" and cause.root_cause_id is None
-    assert cause.what_is_wrong == ("SAFFL is wrong in ADSL. This is the dataset-level cause of the findings "
-                                   "raised against Table 14.1.1 and Table 14.3.1.1.")
+    assert cause.what_is_wrong == ("SAFFL is wrong in ADSL. This is the dataset-level cause of findings "
+                                   "F-013 (Table 14.1.1) and F-014 (Table 14.3.1.1).")
     pointing = [f for f in out if f.root_cause_id]
     assert [f.finding_id for f in pointing] == ["F-013", "F-014"]        # directly below the cause
     for f in pointing:
@@ -115,7 +115,8 @@ def test_three_findings_are_joined_with_commas_and_and():
     root = mk("ADSL (adsl.xpt)", finding_id="r")
     deps = [mk(f"Table 14.{i}.1", rule_id=f"R-10{i}", finding_id=f"d{i}", root_cause_id="r") for i in (1, 2, 3)]
     out = finalise([root] + deps)
-    assert "raised against Table 14.1.1, Table 14.2.1 and Table 14.3.1." in out[0].what_is_wrong
+    assert ("cause of findings F-002 (Table 14.1.1), F-003 (Table 14.2.1) and F-004 (Table 14.3.1)."
+            in out[0].what_is_wrong)
 
 
 def test_finalise_is_repeatable_and_does_not_change_its_input():
@@ -169,7 +170,7 @@ def test_export_puts_a_root_cause_above_the_findings_that_point_to_it(tmp_path, 
     rows = read_findings_xlsx(export_findings_xlsx(linked, str(tmp_path / "f.xlsx")))
     assert [r["Output / File"] for r in rows] == ["ADaM/adsl.xpt", "Table 14.1.1 (t.rtf)",
                                                   "Table 14.3.1 (t.rtf)", "Table 14.2.1 (t.rtf)"]
-    assert "This is the dataset-level cause of the findings raised against Table 14.1.1 and Table 14.3.1." \
+    assert "This is the dataset-level cause of findings F-002 (Table 14.1.1) and F-003 (Table 14.3.1)." \
         in rows[0]["What is wrong"]
     assert all("Root cause: see finding F-001 against ADaM/adsl.xpt." in r["What is wrong"] for r in rows[1:3])
     assert "Root cause" not in rows[3]["What is wrong"]
@@ -177,13 +178,14 @@ def test_export_puts_a_root_cause_above_the_findings_that_point_to_it(tmp_path, 
 
 def test_export_sorts_by_itself_even_when_given_findings_out_of_order(tmp_path, linked):
     rows = read_findings_xlsx(export_findings_xlsx(list(reversed(linked)), str(tmp_path / "f.xlsx")))
-    assert [r["#"] for r in rows] == [1, 2, 3, 4]
+    assert [r["#"] for r in rows] == ["F-001", "F-002", "F-003", "F-004"]
 
 
-def test_the_hash_column_is_the_number_in_the_finding_id_even_for_a_filtered_export(tmp_path, linked):
+def test_the_hash_column_is_the_finding_id_even_for_a_filtered_export(tmp_path, linked):
+    # The id is printed in no other column, so "see finding F-004" has to be findable here.
     subset = [f for f in linked if f.finding_id in ("F-002", "F-004")]
     rows = read_findings_xlsx(export_findings_xlsx(subset, str(tmp_path / "f.xlsx")))
-    assert [r["#"] for r in rows] == [2, 4]
+    assert [r["#"] for r in rows] == ["F-002", "F-004"]
 
 
 def test_the_hash_column_counts_from_one_when_findings_have_no_ids(tmp_path):
@@ -195,7 +197,7 @@ def test_round_trip_gives_back_every_value(tmp_path, linked):
     rows = read_findings_xlsx(export_findings_xlsx(linked, str(tmp_path / "f.xlsx")))
     assert len(rows) == len(linked) == 4
     for row, f in zip(rows, order_findings(linked)):
-        assert row == {"#": int(f.finding_id[2:]), "Output / File": f.output_file,
+        assert row == {"#": f.finding_id, "Output / File": f.output_file,
                        "What is wrong": f.what_is_wrong, "Evidence": f.evidence, "Source ref": f.source_ref,
                        "Severity": f.severity.capitalize(), "Decision": f.decision.capitalize()}
     assert {r["Decision"] for r in rows} == {"Open", "Accepted"}

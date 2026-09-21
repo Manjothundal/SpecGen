@@ -32,6 +32,7 @@ SAP_TABLES = [
 
 RULES = [
     dict(scope="tlf", topic="big_n", severity="major", sap_ref="SAP 4.5", check="check_bign",
+         params={"root_cause_of": ["check_cross_table_n", "check_percentages"]},
          description="Big N in each column header equals the analysis-population count in ADSL "
                      "(Safety: SAFFL='Y' by TRT01A)."),
     dict(scope="tlf", topic="population_filter", severity="critical", sap_ref="SAP 4.3",

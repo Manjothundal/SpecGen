@@ -181,6 +181,7 @@ Do not start a piece until the previous one runs and its tests pass.
 **Piece E - Review tab in the Flask app**
 - Fourth tab "Review", with the same 4-screen pattern: Inputs (pick SAP, dataset folder, output folder) -> Run checks (background job + Abort, reuse the existing job plumbing) -> Findings (table, filter by severity, Accept / Reject per row) -> Export & audit (xlsx download, Commit to Git).
 - Decisions write to the audit trail via `runlog.py` (extend with `log_decision`): finding id, user, decision, timestamp, rule version, model version.
+- Draft rules in the browser: the Run checks screen shows how many rules are approved and how many are draft before the run starts. If a run would have no approved rules, the tab does not quietly fall back to drafts - it offers an explicit "Approve for this run" action, which records the approver and a timestamp in the audit log via `runlog.py` and bumps the rule the normal way through `rules_store.approve_rule()`. There is no silent bypass and no UI equivalent of `--include-drafts` that leaves no trace: either the rules were approved by a named person, or the findings sheet is labelled a trial run.
 - Keep the per-otype state slice pattern already used by the ADaM / SDTM / TLF tabs.
 
 **Piece F - agent chat pane**
@@ -196,7 +197,8 @@ Do not start a piece until the previous one runs and its tests pass.
 
 ## 7. Acceptance criteria
 
-- `python -m review.review_engine ...` produces `findings.xlsx` with the exact column order, on the sample SAP plus the existing generated datasets and TLFs.
+- `python -m review.review_engine --datasets data/sample_datasets --outputs data/sample_outputs --rules data/review_rules.csv --out findings.xlsx --include-drafts` produces `findings.xlsx` with the exact column order, on the sample SAP plus the existing generated datasets and TLFs.
+- The engine refuses to run when no rule is approved, and says so; this is by design, not a bug. A rule is approved by a person, never by the tool. The seeded `data/review_rules.csv` ships every rule as `status=draft`, so the command above needs `--include-drafts`, and the run is then labelled a trial on the console and on the "Run info" sheet. Dropping `--include-drafts` on unapproved rules must keep failing with a clear message.
 - The three planted inconsistencies in `sample_sap.pdf` are all caught, with correct counts in the evidence column.
 - Every finding in the export has a non-empty `Source ref` and `Evidence`.
 - The Review tab runs the same flow in the browser, and Accept / Reject writes to the audit log.

@@ -1,5 +1,5 @@
 rule_id,scope,topic,description,sap_ref,severity,check,params,status,owner,version,created_by,created_at
-R-001,tlf,big_n,Big N in each column header equals the analysis-population count in ADSL (Safety: SAFFL='Y' by TRT01A).,SAP 4.5,major,check_bign,{},draft,Biostatistics,1,SpecGen sample seed,2026-09-19T10:00:00
+R-001,tlf,big_n,Big N in each column header equals the analysis-population count in ADSL (Safety: SAFFL='Y' by TRT01A).,SAP 4.5,major,check_bign,"{""root_cause_of"": [""check_cross_table_n"", ""check_percentages""]}",draft,Biostatistics,1,SpecGen sample seed,2026-09-19T10:00:00
 R-002,tlf,population_filter,Demographic and safety tables are built on the Safety Population.,SAP 4.3,critical,check_population_filter,"{""table_populations"": {""14.1.1"": ""safety"", ""14.3.1"": ""safety"", ""14.3.2"": ""safety""}}",draft,Biostatistics,1,SpecGen sample seed,2026-09-19T10:00:00
 R-003,cross,cross_table_n,The same N is used for a treatment group in every Safety Population table.,SAP 4.5,major,check_cross_table_n,{},draft,Biostatistics,1,SpecGen sample seed,2026-09-19T10:00:00
 R-004,adam,baseline_per_period,Baseline is defined per treatment period: ABLFL='Y' in each period a subject has records in.,SAP 5.1,major,check_baseline_per_period,"{""dataset"": ""ADVS""}",draft,Biostatistics,1,SpecGen sample seed,2026-09-19T10:00:00

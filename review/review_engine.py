@@ -12,12 +12,13 @@ A rule whose check cannot look (dataset or variable missing, param missing) is
 SKIPPED and listed - it is never turned into a finding and never counted as a pass.
 A rule with no check function is text-only and is not run.
 
-Root causes. A dataset-level rule can declare, in its params, which other checks'
-findings it is the cause of:  "root_cause_of": ["check_percentages", ...]. An
-output finding from one of those checks is linked to the dataset finding when the
-table it is raised against names that dataset in its "Source:" footnote. The link
-is written into the text of both findings (see review.findings); the first
-matching root, by rule id, wins. No rule, no link.
+Root causes. A rule can declare, in its params, which other checks' findings it
+is the cause of:  "root_cause_of": ["check_percentages", ...]. A finding from one
+of those checks is linked to that rule's finding when it is reached by it: for a
+dataset-level root, the consequence's table names the dataset in its "Source:"
+footnote; for an output-level root, the consequence is raised against a table the
+root is raised against too. The link is written into the text of both findings
+(see review.findings); the first matching root, by rule id, wins. No rule, no link.
 
 This piece runs the deterministic checks only. The model pass is added later.
 """
@@ -110,24 +111,49 @@ def _sources_by_table(outputs):
     return sources
 
 
+def _declares_root(rule):
+    return list(((rule or {}).get("params") or {}).get("root_cause_of") or [])
+
+
 def link_root_causes(findings, rules_by_id, outputs, dataset_names):
-    """Set root_cause_id on output findings caused by a dataset-level finding (see
-    module docstring). Findings need finding_ids (temporary ones are fine). Changes
-    the findings in place; returns the number of links made."""
+    """Set root_cause_id on the findings caused by another finding (see module
+    docstring). Findings need finding_ids (temporary ones are fine). Changes the
+    findings in place; returns the number of links made.
+
+    A root is any finding whose rule declares root_cause_of. How a consequence is
+    matched to it depends on where the root sits:
+
+      dataset-level root ("ADSL")  - the consequence is raised against a table
+                                     that names that dataset in its "Source:"
+                                     footnote.
+      output-level root ("Table 14.1.1")
+                                   - the consequence is raised against a table
+                                     the root is also raised against. One wrong
+                                     number in a table header is the cause of
+                                     the percentages and cross-table findings
+                                     that read it.
+
+    A root never becomes someone else's consequence, so links cannot form a chain
+    or a cycle. The first matching root, by rule id, wins.
+    """
     sources = _sources_by_table(outputs)
     roots = sorted((f for f in findings
-                    if f.root_cause_id is None and _dataset_token(f.output_file, dataset_names)),
+                    if f.root_cause_id is None and _declares_root(rules_by_id.get(f.rule_id))),
                    key=lambda f: (f.rule_id or "", f.output_file))
+    root_ids = {id(f) for f in roots}
     made = 0
     for root in roots:
-        explained = ((rules_by_id.get(root.rule_id) or {}).get("params") or {}).get("root_cause_of") or []
-        if not explained:
-            continue
+        explained = _declares_root(rules_by_id.get(root.rule_id))
         ds = _dataset_token(root.output_file, dataset_names)
+        root_tables = set(table_refs(root.output_file))
         for f in findings:
             check = (rules_by_id.get(f.rule_id) or {}).get("check")
-            if (f is root or f.root_cause_id is not None or check not in explained
-                    or not any(ds in sources.get(t, ()) for t in table_refs(f.output_file))):
+            if f is root or id(f) in root_ids or f.root_cause_id is not None or check not in explained:
+                continue
+            tables = table_refs(f.output_file)
+            reached = (any(ds in sources.get(t, ()) for t in tables) if ds
+                       else bool(root_tables.intersection(tables)))
+            if not reached:
                 continue
             f.root_cause_id = root.finding_id
             made += 1

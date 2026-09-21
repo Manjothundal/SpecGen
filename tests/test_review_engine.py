@@ -105,12 +105,30 @@ def test_sample_run_with_drafts_finds_the_planted_problems_and_says_it_used_draf
     assert all(r["status"] == "draft" for r in result.rule_results)
 
 
-def test_no_root_cause_is_linked_in_the_sample_run(seed_copy):
-    # The three P2 findings are all output-level, and no seed rule declares a
-    # dataset-level cause, so nothing is linked. Links exist only where a rule says so.
+def test_the_sample_run_groups_the_planted_big_n_error_under_one_root_cause(seed_copy):
+    # P2: Table 14.1.1 prints the ITT N of 20 for Placebo where the Safety N is 19.
+    # That one wrong header is the cause of the percentages finding (same table) and
+    # the cross-table N finding (14.1.1 against 14.3.1). R-001 says so in its params.
     result = run(seed_copy, include_drafts=True)
-    assert result.links == 0 and all(f.root_cause_id is None for f in result.findings)
-    assert all("Root cause" not in f.what_is_wrong for f in result.findings)
+    by_rule = {f.rule_id: f for f in result.findings}
+    cause, pct, cross = by_rule["R-001"], by_rule["R-007"], by_rule["R-003"]
+
+    assert result.links == 2
+    assert cause.root_cause_id is None
+    assert pct.root_cause_id == cause.finding_id and cross.root_cause_id == cause.finding_id
+    # the root sits directly above the findings that point at it
+    assert result.findings.index(cause) < result.findings.index(pct)
+    assert result.findings.index(cause) < result.findings.index(cross)
+    # an output-level cause does not call itself "dataset-level"
+    assert "dataset-level" not in cause.what_is_wrong
+    assert cause.what_is_wrong.endswith(
+        "This is the cause of findings F-004 (Table 14.1.1) and "
+        "F-005 (Table 14.1.1, Table 14.3.1).")
+    for f in (pct, cross):
+        assert f.what_is_wrong.endswith(
+            f"Root cause: see finding {cause.finding_id} against {cause.output_file}.")
+    # the unrelated findings stay unlinked
+    assert by_rule["R-006"].root_cause_id is None and by_rule["R-010"].root_cause_id is None
 
 
 def test_rules_that_cannot_look_are_skipped_and_listed_never_findings(seed_copy):
@@ -152,7 +170,7 @@ def test_cli_with_drafts_writes_the_workbook_and_warns(tmp_path, capsys):
     assert "DRAFT RULES INCLUDED" in text and "WARNING: 2 rule(s) were skipped" in text
     assert "Findings: 5 (1 critical, 4 major, 0 minor)" in text
     rows = read_findings_xlsx(str(out))
-    assert [r["#"] for r in rows] == [1, 2, 3, 4, 5]
+    assert [r["#"] for r in rows] == ["F-001", "F-002", "F-003", "F-004", "F-005"]
     assert rows[0]["Severity"] == "Critical" and rows[0]["Source ref"] == "SAP 6.2"
     assert all(r["Evidence"] and r["Source ref"] for r in rows)
 
@@ -197,10 +215,26 @@ def test_no_rule_no_link():
     assert link_root_causes([root, a], rules, LINK_OUTPUTS, {"ADSL"}) == 0 and a.root_cause_id is None
 
 
-def test_an_output_level_finding_is_never_a_root_cause():
+def test_an_output_level_finding_is_a_root_cause_for_its_own_table():
+    # A wrong number in one table's header causes the findings that read that
+    # header. The reach is the table itself, not every table in the run.
     rules = {**LINK_RULES, "R-001": {"check": "check_bign", "params": {"root_cause_of": ["check_percentages"]}}}
-    a, b = fnd("t1", "R-001", "Table 14.1.1 (t.rtf)"), fnd("t2", "R-007", "Table 14.3.1.1 (t.rtf)")
+    a, same = fnd("t1", "R-001", "Table 14.1.1 (t.rtf)"), fnd("t2", "R-007", "Table 14.1.1 (t.rtf)")
+    other = fnd("t3", "R-007", "Table 14.3.1.1 (t.rtf)")
+    assert link_root_causes([a, same, other], rules, LINK_OUTPUTS, {"ADSL"}) == 1
+    assert same.root_cause_id == "t1"
+    assert a.root_cause_id is None and other.root_cause_id is None
+
+
+def test_a_root_cause_never_becomes_another_root_cause_s_consequence():
+    # Both rules declare root_cause_of and both are raised against Table 14.1.1;
+    # neither may be linked to the other, or the sheet would chain or loop.
+    rules = {**LINK_RULES,
+             "R-001": {"check": "check_bign", "params": {"root_cause_of": ["check_percentages"]}},
+             "R-007": {"check": "check_percentages", "params": {"root_cause_of": ["check_bign"]}}}
+    a, b = fnd("t1", "R-001", "Table 14.1.1 (t.rtf)"), fnd("t2", "R-007", "Table 14.1.1 (t.rtf)")
     assert link_root_causes([a, b], rules, LINK_OUTPUTS, {"ADSL"}) == 0
+    assert a.root_cause_id is None and b.root_cause_id is None
 
 
 def test_linked_findings_finalise_into_the_agreed_text():
@@ -210,16 +244,18 @@ def test_linked_findings_finalise_into_the_agreed_text():
     out = finalise([b, a, root])
     assert out[0].output_file == "ADSL (adsl.xpt)" and out[0].root_cause_id is None
     assert out[0].what_is_wrong.endswith(
-        "This is the dataset-level cause of the findings raised against Table 14.1.1 and Table 14.3.1.1.")
+        "This is the dataset-level cause of findings F-002 (Table 14.1.1) and F-003 (Table 14.3.1.1).")
     assert all(f.what_is_wrong.endswith("Root cause: see finding F-001 against ADSL (adsl.xpt).") for f in out[1:])
 
 
 def test_linking_end_to_end_through_the_engine_with_a_deliberately_contrived_rule(tmp_path):
-    # Mechanism test only: this rule declares that the ADAE flag problem is the cause of the
-    # cross-table N finding. Table 14.3.1 names ADAE in its Source footnote, so they link.
-    # The seed rules make no such claim, and the sample run above links nothing.
+    # Mechanism test for a DATASET-level root: this rule declares that the ADAE flag problem
+    # is the cause of the cross-table N finding. Table 14.3.1 names ADAE in its Source
+    # footnote, so they link. R-001's seeded output-level claim is dropped first so this
+    # test isolates the dataset path (the seeded link is covered by the sample-run test).
     path = str(tmp_path / "rules.csv")
     shutil.copy(SEED, path)
+    rs.revise_rule("R-001", {"params": {}}, path)
     rs.revise_rule("R-006", {"params": {"window_days": 7, "root_cause_of": ["check_cross_table_n"]}}, path)
     result = run(path, include_drafts=True)
 
@@ -229,6 +265,7 @@ def test_linking_end_to_end_through_the_engine_with_a_deliberately_contrived_rul
     assert cause.root_cause_id is None and pointing.root_cause_id == cause.finding_id
     assert result.findings.index(cause) + 1 == result.findings.index(pointing)     # root directly above
     assert cause.what_is_wrong.endswith(
-        "This is the dataset-level cause of the findings raised against Table 14.1.1 and Table 14.3.1.")
+        f"This is the dataset-level cause of finding {pointing.finding_id} "
+        "(Table 14.1.1, Table 14.3.1).")
     assert pointing.what_is_wrong.endswith(f"Root cause: see finding {cause.finding_id} against ADAE (adae.xpt).")
     assert all(f.root_cause_id is None for f in result.findings if f.rule_id not in ("R-003",))

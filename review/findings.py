@@ -6,20 +6,23 @@ and no others:
 
     #  |  Output / File  |  What is wrong  |  Evidence  |  Source ref  |  Severity  |  Decision
 
-Root causes. Several findings can share one cause that sits in a dataset. The
-dataset finding keeps root_cause_id = None; every finding raised against an
-output because of it has root_cause_id set to the dataset finding's id. There is
-NO column for this - the link is carried in the text of "What is wrong", the way
-findings sheets are written by hand:
+Root causes. Several findings can share one cause. The cause may sit in a dataset
+or in an output (one wrong number in a table header is the cause of the
+percentages and cross-table findings that read it). The cause keeps
+root_cause_id = None; every finding raised because of it has root_cause_id set to
+the cause's id. There is NO column for this - the link is carried in the text of
+"What is wrong", the way findings sheets are written by hand:
 
-    on the cause:      "This is the dataset-level cause of the findings raised
-                        against Table 14.1.1 and Table 14.3.1.1."
-    on the pointers:   "Root cause: see finding F-012 against ADaM/adsl.xpt."
+    on a dataset cause: "This is the dataset-level cause of the findings raised
+                         against Table 14.1.1 and Table 14.3.1.1."
+    on an output cause: "This is the cause of the findings raised against
+                         Table 14.3.1."
+    on the pointers:    "Root cause: see finding F-012 against ADaM/adsl.xpt."
 
 Workflow: build findings (review.checks gives dicts), then finalise(): it orders
 them (a root cause directly above the findings that point at it), numbers them
-F-001, F-002 ... in that order, and writes the link text. The "#" column is the
-number in the finding id, so "see finding F-012" is row 12 of the sheet.
+F-001, F-002 ... in that order, and writes the link text. The "#" column carries
+the finding id itself, so "see finding F-012" can be looked up in the sheet.
 
 Design rule 2 (evidence or it does not exist) is enforced here, in the model: a
 finding without a source reference or without numeric evidence cannot be built.
@@ -184,7 +187,7 @@ def finalise(findings, run_id=None):
         if root is None:
             raise ValueError(f"{f.finding_id} points at root cause {f.root_cause_id}, which is not in the run")
         if root is f or root.root_cause_id is not None:
-            raise ValueError(f"root cause {f.root_cause_id} must be a dataset-level finding with no root of its own")
+            raise ValueError(f"root cause {f.root_cause_id} must be a finding with no root of its own")
 
     ordered = order_findings(work)
     remap = {f.finding_id: f"F-{n:03d}" for n, f in enumerate(ordered, 1)}
@@ -201,14 +204,14 @@ def finalise(findings, run_id=None):
             pointing.setdefault(f.root_cause_id, []).append(f)
     for root_id, deps in pointing.items():
         root = by_new[root_id]
-        refs = []
-        for d in deps:
-            for ref in (table_refs(d.output_file) or [d.output_file]):
-                if ref not in refs:
-                    refs.append(ref)
+        # commas inside the brackets, so the "and" joining the findings stays readable
+        labels = [f"{d.finding_id} ({', '.join(table_refs(d.output_file) or [d.output_file])})"
+                  for d in deps]
+        level = "dataset-level " if not table_refs(root.output_file) else ""
+        word = "finding" if len(labels) == 1 else "findings"
         root.what_is_wrong = _add_sentence(
             root.what_is_wrong,
-            f"This is the dataset-level cause of the findings raised against {_join_and(refs)}.")
+            f"This is the {level}cause of {word} {_join_and(labels)}.")
         for d in deps:
             d.what_is_wrong = _add_sentence(
                 d.what_is_wrong, f"Root cause: see finding {root_id} against {root.output_file}.")
@@ -236,12 +239,14 @@ _WIDTHS = [6, 34, 62, 78, 14, 11, 11]
 
 
 def _row_numbers(items):
-    """The '#' column: the number inside each finding_id when every finding has a
-    distinct F-nnn id (so 'see finding F-012' is row 12, even in a filtered export);
-    otherwise 1, 2, 3 ... in export order."""
+    """The '#' column: the finding_id itself when every finding has a distinct
+    F-nnn id, so "see finding F-012" can be found in the sheet by reading the
+    column - the id is printed nowhere else, and the sheet survives filtering and
+    re-sorting. Falls back to 1, 2, 3 ... in export order for a list that has not
+    been through finalise()."""
     nums = [_ID_RE.match(f.finding_id or "") for f in items]
     if all(nums) and len({m.group(1) for m in nums}) == len(nums):
-        return [int(m.group(1)) for m in nums]
+        return [f.finding_id for f in items]
     return list(range(1, len(items) + 1))
 
 
